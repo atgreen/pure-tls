@@ -177,10 +177,9 @@
          (transcript-hash (if (typep transcript 'octet-vector)
                               transcript
                               (ironclad:digest-sequence digest transcript))))
-    (ironclad:produce-mac
-     (ironclad:update-mac
-      (ironclad:make-mac :hmac finished-key :digest-name digest)
-      transcript-hash))))
+    (let ((hmac (ironclad:make-hmac finished-key digest)))
+      (ironclad:update-mac hmac transcript-hash)
+      (ironclad:produce-mac hmac))))
 
 ;;;; Traffic Key Derivation
 

@@ -30,6 +30,8 @@
   (record-layer nil)
   ;; Handshake transcript (raw bytes for hashing)
   (transcript nil :type (or null octet-vector))
+  ;; Buffer for handshake messages (multiple messages may arrive in one record)
+  (message-buffer nil :type (or null octet-vector))
   ;; Server's certificate
   (peer-certificate nil)
   ;; Selected ALPN protocol
@@ -170,6 +172,9 @@
             (key-schedule-derive-handshake-traffic-secrets
              ks (client-handshake-transcript hs))
             (setf (client-handshake-key-schedule hs) ks)
+            ;; Feed existing transcript (ClientHello + ServerHello) into the key schedule's
+            ;; incremental transcript hash for later use in Finished verification
+            (key-schedule-update-transcript ks (client-handshake-transcript hs))
             ;; Install server handshake keys for reading
             (multiple-value-bind (key iv)
                 (key-schedule-derive-read-keys ks :handshake)
@@ -223,14 +228,15 @@
 
 ;;;; Finished Processing
 
-(defun process-server-finished (hs message)
-  "Process server Finished message."
+(defun process-server-finished (hs message raw-bytes)
+  "Process server Finished message.
+   RAW-BYTES are the serialized message bytes for updating transcript after verification."
   (let* ((finished (handshake-message-body message))
          (received-verify-data (finished-message-verify-data finished))
          (ks (client-handshake-key-schedule hs))
          (cipher-suite (client-handshake-selected-cipher-suite hs))
          ;; Compute expected verify_data
-         ;; Note: transcript at this point excludes this Finished message
+         ;; Note: transcript at this point excludes this Finished message (that's critical!)
          (transcript-hash (key-schedule-transcript-hash-value ks))
          (expected-verify-data
            (compute-finished-verify-data
@@ -242,10 +248,11 @@
       (error 'tls-handshake-error
              :message "Server Finished verification failed"
              :state :wait-finished))
+    ;; NOW update transcript with server Finished (after verification)
+    (client-handshake-update-transcript hs raw-bytes)
     ;; Derive master secret and application traffic secrets
     (key-schedule-derive-master-secret ks)
     ;; Need transcript including server Finished for app secrets
-    ;; The transcript was already updated when we received this message
     (key-schedule-derive-application-traffic-secrets
      ks (client-handshake-transcript hs))
     ;; Install server application keys for reading
@@ -294,27 +301,61 @@
 
 ;;;; Main Handshake Loop
 
-(defun read-handshake-message (hs)
-  "Read and parse a handshake message from the record layer."
-  (multiple-value-bind (content-type data)
-      (record-layer-read (client-handshake-record-layer hs))
-    ;; Handle alerts
-    (when (= content-type +content-type-alert+)
-      (process-alert data))
-    ;; Skip change_cipher_spec (compatibility)
-    (when (= content-type +content-type-change-cipher-spec+)
-      (return-from read-handshake-message (read-handshake-message hs)))
-    ;; Must be handshake
-    (unless (= content-type +content-type-handshake+)
-      (error 'tls-handshake-error
-             :message (format nil "Expected handshake, got content type ~D" content-type)))
-    ;; Update transcript with raw message bytes
-    (client-handshake-update-transcript hs data)
-    ;; Parse the message
-    (parse-handshake-message data
-                             :hash-length (when (client-handshake-selected-cipher-suite hs)
-                                            (cipher-suite-hash-length
-                                             (client-handshake-selected-cipher-suite hs))))))
+(defun handshake-buffer-has-complete-message-p (buffer)
+  "Check if the buffer contains at least one complete handshake message."
+  (when (and buffer (>= (length buffer) 4))
+    ;; Parse the length from the header
+    (let ((msg-length (decode-uint24 buffer 1)))
+      (>= (length buffer) (+ 4 msg-length)))))
+
+(defun handshake-buffer-extract-message (buffer)
+  "Extract one handshake message from the buffer.
+   Returns (VALUES message-bytes remaining-buffer)."
+  (let* ((msg-length (decode-uint24 buffer 1))
+         (total-length (+ 4 msg-length))
+         (message (subseq buffer 0 total-length))
+         (remaining (if (> (length buffer) total-length)
+                        (subseq buffer total-length)
+                        nil)))
+    (values message remaining)))
+
+(defun read-handshake-message (hs &key (update-transcript t))
+  "Read and parse a handshake message from the record layer.
+   Handles multiple messages per TLS record by buffering.
+   If UPDATE-TRANSCRIPT is nil, the transcript is not updated (caller must do it).
+   Returns (VALUES message raw-bytes) where raw-bytes are the serialized message bytes."
+  ;; Read more data if needed
+  (loop while (not (handshake-buffer-has-complete-message-p
+                    (client-handshake-message-buffer hs)))
+        do (multiple-value-bind (content-type data)
+               (record-layer-read (client-handshake-record-layer hs))
+             ;; Handle alerts
+             (when (= content-type +content-type-alert+)
+               (process-alert data))
+             ;; Skip change_cipher_spec (compatibility) - just continue loop
+             (unless (= content-type +content-type-change-cipher-spec+)
+               ;; Must be handshake
+               (unless (= content-type +content-type-handshake+)
+                 (error 'tls-handshake-error
+                        :message (format nil "Expected handshake, got content type ~D" content-type)))
+               ;; Append to buffer
+               (setf (client-handshake-message-buffer hs)
+                     (if (client-handshake-message-buffer hs)
+                         (concat-octet-vectors (client-handshake-message-buffer hs) data)
+                         data)))))
+  ;; Extract one message from buffer
+  (multiple-value-bind (message-bytes remaining)
+      (handshake-buffer-extract-message (client-handshake-message-buffer hs))
+    (setf (client-handshake-message-buffer hs) remaining)
+    ;; Optionally update transcript with raw message bytes
+    (when update-transcript
+      (client-handshake-update-transcript hs message-bytes))
+    ;; Parse the message and return both parsed message and raw bytes
+    (values (parse-handshake-message message-bytes
+                                     :hash-length (when (client-handshake-selected-cipher-suite hs)
+                                                    (cipher-suite-hash-length
+                                                     (client-handshake-selected-cipher-suite hs))))
+            message-bytes)))
 
 (defun perform-client-handshake (record-layer &key hostname alpn-protocols
                                                    (verify-mode +verify-required+))
@@ -349,14 +390,19 @@
                     :state :wait-encrypted-extensions))
            (process-encrypted-extensions hs message)))
         (:wait-cert-or-finished
-         (let ((message (read-handshake-message hs)))
+         ;; Don't update transcript automatically - we need to handle Finished specially
+         (multiple-value-bind (message raw-bytes)
+             (read-handshake-message hs :update-transcript nil)
            (case (handshake-message-type message)
              (#.+handshake-certificate+
+              ;; Update transcript now for Certificate
+              (client-handshake-update-transcript hs raw-bytes)
               (process-certificate hs message))
              (#.+handshake-finished+
               ;; No certificate, go directly to finished
+              ;; Don't update transcript yet - process-server-finished will do it after verification
               (setf (client-handshake-state hs) :wait-finished)
-              (process-server-finished hs message))
+              (process-server-finished hs message raw-bytes))
              (t (error 'tls-handshake-error
                        :message "Expected Certificate or Finished"
                        :state :wait-cert-or-finished)))))
@@ -368,12 +414,14 @@
                     :state :wait-certificate-verify))
            (process-certificate-verify hs message)))
         (:wait-finished
-         (let ((message (read-handshake-message hs)))
+         ;; Don't update transcript yet - we need to verify first, THEN update
+         (multiple-value-bind (message raw-bytes)
+             (read-handshake-message hs :update-transcript nil)
            (unless (= (handshake-message-type message) +handshake-finished+)
              (error 'tls-handshake-error
                     :message "Expected Finished"
                     :state :wait-finished))
-           (process-server-finished hs message)))
+           (process-server-finished hs message raw-bytes)))
         (:send-finished
          (send-client-finished hs))
         (:connected
