@@ -38,8 +38,8 @@ Or add to your ASDF system:
 ### Basic HTTPS Client
 
 ```lisp
-(ql:quickload :cl-tls)
-(ql:quickload :usocket)
+(asdf:load-system :cl-tls)
+(asdf:load-system :usocket)
 
 (let* ((socket (usocket:socket-connect "example.com" 443
                                         :element-type '(unsigned-byte 8)))
@@ -78,7 +78,7 @@ Or add to your ASDF system:
 ### Using the cl+ssl Compatibility Layer
 
 ```lisp
-(ql:quickload :cl-tls/compat)
+(asdf:load-system :cl-tls/compat)
 
 ;; Use familiar cl+ssl API
 (cl+ssl:make-ssl-client-stream stream
