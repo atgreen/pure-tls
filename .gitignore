@@ -1,0 +1,23 @@
+# Common Lisp compilation artifacts
+*.fasl
+*.fas
+*.lib
+*.o
+*.lx64fsl
+*.dx64fsl
+
+# ASDF cache
+.cache/
+
+# ocicl dependencies (managed separately)
+ocicl/
+systems.csv
+
+# Editor files
+*~
+\#*\#
+.#*
+
+# Test files
+test-connect.lisp
+test-load.lisp
