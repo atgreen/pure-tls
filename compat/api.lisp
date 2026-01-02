@@ -4,7 +4,7 @@
 ;;;
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 ;;;
-;;; Provides cl+ssl-compatible API wrapping cl-tls.
+;;; Provides cl+ssl-compatible API wrapping pure-tls.
 
 (in-package #:cl+ssl)
 
@@ -78,17 +78,17 @@
                           private-key-file
                           private-key-password
                           private-key-file-type)
-  "Create a new SSL context (wraps cl-tls:make-tls-context)."
+  "Create a new SSL context (wraps pure-tls:make-tls-context)."
   (declare (ignore method disabled-protocols options min-proto-version
                    session-cache-mode verify-callback cipher-list
                    pem-password-callback private-key-password
                    private-key-file-type))
   (let ((tls-verify-mode (cond
-                           ((zerop verify-mode) cl-tls:+verify-none+)
+                           ((zerop verify-mode) pure-tls:+verify-none+)
                            ((logtest verify-mode +ssl-verify-fail-if-no-peer-cert+)
-                            cl-tls:+verify-required+)
-                           (t cl-tls:+verify-peer+))))
-    (cl-tls:make-tls-context
+                            pure-tls:+verify-required+)
+                           (t pure-tls:+verify-peer+))))
+    (pure-tls:make-tls-context
      :verify-mode tls-verify-mode
      :verify-depth verify-depth
      :certificate-chain-file certificate-chain-file
@@ -100,12 +100,12 @@
 
 (defun ssl-ctx-free (context)
   "Free an SSL context."
-  (cl-tls:tls-context-free context))
+  (pure-tls:tls-context-free context))
 
 (defmacro with-global-context ((ssl-ctx &key auto-free-p) &body body)
   "Execute BODY with *SSL-GLOBAL-CONTEXT* bound to SSL-CTX."
   `(let ((*ssl-global-context* ,ssl-ctx))
-     (cl-tls:with-tls-context (,ssl-ctx :auto-free-p ,auto-free-p)
+     (pure-tls:with-tls-context (,ssl-ctx :auto-free-p ,auto-free-p)
        ,@body)))
 
 ;;;; Stream Creation
@@ -123,15 +123,15 @@
                                         (buffer-size *default-buffer-size*)
                                         (input-buffer-size buffer-size)
                                         (output-buffer-size buffer-size))
-  "Create an SSL client stream (wraps cl-tls:make-tls-client-stream)."
+  "Create an SSL client stream (wraps pure-tls:make-tls-client-stream)."
   (declare (ignore unwrap-stream-p certificate key password cipher-list method
                    input-buffer-size output-buffer-size))
   (let ((tls-verify-mode (cond
-                           ((null verify) cl-tls:+verify-none+)
-                           ((eq verify :optional) cl-tls:+verify-peer+)
-                           ((eq verify :required) cl-tls:+verify-required+)
-                           (t cl-tls:+verify-required+))))
-    (cl-tls:make-tls-client-stream
+                           ((null verify) pure-tls:+verify-none+)
+                           ((eq verify :optional) pure-tls:+verify-peer+)
+                           ((eq verify :required) pure-tls:+verify-required+)
+                           (t pure-tls:+verify-required+))))
+    (pure-tls:make-tls-client-stream
      socket
      :hostname hostname
      :verify tls-verify-mode
@@ -150,10 +150,10 @@
                                         (buffer-size *default-buffer-size*)
                                         (input-buffer-size buffer-size)
                                         (output-buffer-size buffer-size))
-  "Create an SSL server stream (wraps cl-tls:make-tls-server-stream)."
+  "Create an SSL server stream (wraps pure-tls:make-tls-server-stream)."
   (declare (ignore unwrap-stream-p password cipher-list method
                    input-buffer-size output-buffer-size))
-  (cl-tls:make-tls-server-stream
+  (pure-tls:make-tls-server-stream
    socket
    :certificate certificate
    :key key
@@ -165,11 +165,11 @@
 
 (defun ssl-stream-x509-certificate (ssl-stream)
   "Get the peer's X.509 certificate."
-  (cl-tls:tls-peer-certificate ssl-stream))
+  (pure-tls:tls-peer-certificate ssl-stream))
 
 (defun get-selected-alpn-protocol (ssl-stream)
   "Get the selected ALPN protocol."
-  (cl-tls:tls-selected-alpn ssl-stream))
+  (pure-tls:tls-selected-alpn ssl-stream))
 
 (defgeneric stream-fd (stream)
   (:documentation "Get the file descriptor for a stream.")
@@ -184,12 +184,12 @@
 (defun decode-certificate (format bytes)
   "Decode a certificate from bytes."
   (declare (ignore format))
-  (cl-tls::parse-certificate bytes))
+  (pure-tls::parse-certificate bytes))
 
 (defun decode-certificate-from-file (path &key format)
   "Load and decode a certificate from a file."
   (declare (ignore format))
-  (cl-tls::parse-certificate-from-file path))
+  (pure-tls::parse-certificate-from-file path))
 
 (defun x509-free (cert)
   "Free an X.509 certificate (no-op in pure Lisp)."
@@ -198,29 +198,29 @@
 
 (defun certificate-not-after-time (cert)
   "Get the notAfter time of a certificate."
-  (cl-tls:certificate-not-after cert))
+  (pure-tls:certificate-not-after cert))
 
 (defun certificate-not-before-time (cert)
   "Get the notBefore time of a certificate."
-  (cl-tls:certificate-not-before cert))
+  (pure-tls:certificate-not-before cert))
 
 (defun certificate-subject-common-names (cert)
   "Get the subject common names of a certificate."
-  (cl-tls:certificate-subject-common-names cert))
+  (pure-tls:certificate-subject-common-names cert))
 
 (defun certificate-fingerprint (cert &optional (algorithm :sha1))
   "Get the fingerprint of a certificate."
-  (cl-tls:certificate-fingerprint cert algorithm))
+  (pure-tls:certificate-fingerprint cert algorithm))
 
 (defun verify-hostname (cert hostname)
   "Verify that a certificate matches a hostname."
-  (cl-tls:verify-hostname cert hostname))
+  (pure-tls:verify-hostname cert hostname))
 
 ;;;; Utility Functions
 
 (defun random-bytes (count)
   "Generate random bytes."
-  (cl-tls:random-bytes count))
+  (pure-tls:random-bytes count))
 
 (defun use-certificate-chain-file (path)
   "Load a certificate chain file into the global context."

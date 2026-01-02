@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements TLS 1.3 handshake message parsing and serialization.
 
-(in-package #:cl-tls)
+(in-package #:pure-tls)
 
 ;;;; Handshake Message Structure
 ;;;

@@ -7,7 +7,7 @@
 ;;; Implements ASN.1 DER (Distinguished Encoding Rules) parsing
 ;;; for X.509 certificate processing.
 
-(in-package #:cl-tls)
+(in-package #:pure-tls)
 
 ;;;; ASN.1 Tag Classes and Types
 
@@ -115,31 +115,31 @@
 
 (defun decode-primitive-value (class tag raw-bytes)
   "Decode a primitive ASN.1 value."
-  (when (= class +asn1-class-universal+)
-    (case tag
-      (#.+asn1-boolean+
-       (not (zerop (aref raw-bytes 0))))
-      (#.+asn1-integer+
-       (decode-der-integer raw-bytes))
-      (#.+asn1-bit-string+
-       ;; First byte is unused bits count
-       (list :unused-bits (aref raw-bytes 0)
-             :data (subseq raw-bytes 1)))
-      (#.+asn1-octet-string+
-       raw-bytes)
-      (#.+asn1-null+
-       nil)
-      (#.+asn1-object-identifier+
-       (decode-der-oid raw-bytes))
-      ((#.+asn1-utf8-string+ #.+asn1-printable-string+ #.+asn1-ia5-string+)
-       (octets-to-string raw-bytes))
-      (#.+asn1-utc-time+
-       (decode-utc-time (octets-to-string raw-bytes)))
-      (#.+asn1-generalized-time+
-       (decode-generalized-time (octets-to-string raw-bytes)))
-      (t raw-bytes)))
-  ;; For non-universal, return raw bytes
-  raw-bytes)
+  (if (= class +asn1-class-universal+)
+      (case tag
+        (#.+asn1-boolean+
+         (not (zerop (aref raw-bytes 0))))
+        (#.+asn1-integer+
+         (decode-der-integer raw-bytes))
+        (#.+asn1-bit-string+
+         ;; First byte is unused bits count
+         (list :unused-bits (aref raw-bytes 0)
+               :data (subseq raw-bytes 1)))
+        (#.+asn1-octet-string+
+         raw-bytes)
+        (#.+asn1-null+
+         nil)
+        (#.+asn1-object-identifier+
+         (decode-der-oid raw-bytes))
+        ((#.+asn1-utf8-string+ #.+asn1-printable-string+ #.+asn1-ia5-string+)
+         (octets-to-string raw-bytes))
+        (#.+asn1-utc-time+
+         (decode-utc-time (octets-to-string raw-bytes)))
+        (#.+asn1-generalized-time+
+         (decode-generalized-time (octets-to-string raw-bytes)))
+        (t raw-bytes))
+      ;; For non-universal, return raw bytes
+      raw-bytes))
 
 ;;;; Integer Decoding
 
@@ -282,6 +282,8 @@
     ((1 2 840 10045 4 3 2) . :ecdsa-with-sha256)
     ((1 2 840 10045 4 3 3) . :ecdsa-with-sha384)
     ((1 2 840 10045 4 3 4) . :ecdsa-with-sha512)
+    ;; EC Public Key
+    ((1 2 840 10045 2 1) . :ec-public-key)
     ;; EC Curves
     ((1 2 840 10045 3 1 7) . :prime256v1)
     ((1 3 132 0 34) . :secp384r1)

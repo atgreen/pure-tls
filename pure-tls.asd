@@ -1,10 +1,10 @@
-;;; cl-tls.asd
+;;; pure-tls.asd
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 
-(asdf:defsystem #:cl-tls
+(asdf:defsystem #:pure-tls
   :description "Pure Common Lisp TLS 1.3 implementation"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
@@ -42,22 +42,22 @@
                (:file "src/context")
                (:file "src/streams")))
 
-(asdf:defsystem #:cl-tls/compat
-  :description "cl+ssl compatibility layer for cl-tls"
+(asdf:defsystem #:pure-tls/compat
+  :description "cl+ssl compatibility layer for pure-tls"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
   :version "0.1.0"
-  :depends-on (#:cl-tls
+  :depends-on (#:pure-tls
                #:usocket)
   :serial t
   :components ((:file "compat/package")
                (:file "compat/api")))
 
-(asdf:defsystem #:cl-tls/test
-  :description "Tests for cl-tls"
+(asdf:defsystem #:pure-tls/test
+  :description "Tests for pure-tls"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
-  :depends-on (#:cl-tls
+  :depends-on (#:pure-tls
                #:fiveam)
   :serial t
   :components ((:module "test"

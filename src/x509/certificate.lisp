@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements X.509 certificate parsing using the ASN.1 parser.
 
-(in-package #:cl-tls)
+(in-package #:pure-tls)
 
 ;;;; X.509 Certificate Structure
 ;;;
@@ -137,9 +137,15 @@
     (make-x509-name :rdns (nreverse rdns))))
 
 (defun parse-algorithm-identifier (node)
-  "Parse an AlgorithmIdentifier."
+  "Parse an AlgorithmIdentifier.
+   Returns the algorithm OID name, or for EC algorithms, the curve OID."
   (let ((children (asn1-children node)))
-    (oid-name (asn1-node-value (first children)))))
+    (let ((algorithm (oid-name (asn1-node-value (first children)))))
+      ;; For EC public keys, the second parameter is the curve OID
+      (if (and (member algorithm '(:ec-public-key :ecdsa))
+               (second children))
+          (oid-name (asn1-node-value (second children)))
+          algorithm))))
 
 (defun parse-subject-public-key-info (node)
   "Parse SubjectPublicKeyInfo."
@@ -300,13 +306,11 @@
       bytes)))
 
 (defun pem-encoded-p (bytes)
-  "Check if bytes look like PEM encoding."
-  (and (>= (length bytes) 11)
-       (= (aref bytes 0) (char-code #\-))
-       (= (aref bytes 1) (char-code #\-))
-       (= (aref bytes 2) (char-code #\-))
-       (= (aref bytes 3) (char-code #\-))
-       (= (aref bytes 4) (char-code #\-))))
+  "Check if bytes look like PEM encoding.
+   Handles files that start with comments before the PEM block."
+  (and (>= (length bytes) 27)  ; Length of -----BEGIN CERTIFICATE-----
+       (let ((text (octets-to-string bytes)))
+         (search "-----BEGIN" text))))
 
 (defun pem-decode (bytes label)
   "Decode PEM-encoded data, extracting the block with the given LABEL."

@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements X.509 certificate verification including hostname matching.
 
-(in-package #:cl-tls)
+(in-package #:pure-tls)
 
 ;;;; Hostname Verification (RFC 6125)
 
@@ -102,25 +102,35 @@
   ;; Verify each certificate's dates
   (dolist (cert chain)
     (verify-certificate-dates cert now))
-  ;; Verify the chain links
+  ;; Verify the chain links (both name matching AND signature verification)
   (loop for i from 0 below (1- (length chain))
         for cert = (nth i chain)
         for issuer = (nth (1+ i) chain)
         do (unless (certificate-issued-by-p cert issuer)
              (error 'tls-certificate-error
-                    :message "Certificate chain is broken")))
-  ;; Check if root is trusted
+                    :message "Certificate chain is broken (issuer mismatch)"))
+           ;; Verify the cryptographic signature
+           (unless (verify-certificate-signature cert issuer)
+             (error 'tls-certificate-error
+                    :message "Certificate signature verification failed in chain")))
+  ;; Check if root is trusted and verify its signature
   (let ((root (car (last chain))))
-    (unless (find-if (lambda (trusted)
-                       (certificate-equal-p root trusted))
-                     trusted-roots)
-      ;; Maybe the chain's issuer is a trusted root
-      (unless (find-if (lambda (trusted)
-                         (certificate-issued-by-p root trusted))
-                       trusted-roots)
+    ;; Try to find matching trusted root
+    (let ((trusted-issuer (or (find-if (lambda (trusted)
+                                         (certificate-equal-p root trusted))
+                                       trusted-roots)
+                              (find-if (lambda (trusted)
+                                         (certificate-issued-by-p root trusted))
+                                       trusted-roots))))
+      (unless trusted-issuer
         (error 'tls-verification-error
                :message "Certificate chain not anchored in trusted root"
-               :reason :unknown-ca))))
+               :reason :unknown-ca))
+      ;; If root is not self-signed, verify signature against trusted issuer
+      (unless (certificate-equal-p root trusted-issuer)
+        (unless (verify-certificate-signature root trusted-issuer)
+          (error 'tls-certificate-error
+                 :message "Root certificate signature verification failed")))))
   t)
 
 (defun certificate-issued-by-p (cert issuer-cert)
@@ -143,15 +153,115 @@
          (algorithm (x509-certificate-signature-algorithm cert))
          (public-key-info (x509-certificate-subject-public-key-info issuer-cert))
          (key-algorithm (getf public-key-info :algorithm))
-         (public-key (getf public-key-info :public-key)))
-    (declare (ignore tbs signature algorithm key-algorithm public-key))
-    ;; TODO: Implement actual signature verification
-    ;; This requires:
-    ;; 1. Parsing the public key based on algorithm
-    ;; 2. Performing the appropriate signature verification
-    ;; For now, return true (INSECURE - placeholder)
-    (warn "Certificate signature verification not implemented")
-    t))
+         (public-key-bytes (getf public-key-info :public-key)))
+    (handler-case
+        (cond
+          ;; RSA signatures (various algorithms)
+          ((member algorithm '(:sha256-with-rsa-encryption
+                               :sha256WithRSAEncryption
+                               :sha384-with-rsa-encryption
+                               :sha384WithRSAEncryption
+                               :sha512-with-rsa-encryption
+                               :sha512WithRSAEncryption
+                               :rsa-pkcs1-sha256
+                               :rsa-pkcs1-sha384
+                               :rsa-pkcs1-sha512))
+           (let* ((hash-algo (cert-sig-algorithm-to-hash algorithm))
+                  (public-key (parse-rsa-public-key public-key-bytes)))
+             (ironclad:verify-signature public-key tbs signature
+                                        :pkcs1v15 hash-algo)))
+          ;; RSA-PSS
+          ((member algorithm '(:rsa-pss :rsassa-pss))
+           ;; RSA-PSS needs to extract hash from signature parameters
+           ;; For now, default to SHA-256
+           (let ((public-key (parse-rsa-public-key public-key-bytes)))
+             (ironclad:verify-signature public-key tbs signature
+                                        :pss :sha256)))
+          ;; ECDSA signatures
+          ((member algorithm '(:ecdsa-with-sha256
+                               :ecdsa-with-SHA256
+                               :ecdsa-with-sha384
+                               :ecdsa-with-SHA384
+                               :ecdsa-with-sha512
+                               :ecdsa-with-SHA512))
+           (let* ((hash-algo (cert-sig-algorithm-to-hash algorithm))
+                  (hash (ironclad:digest-sequence hash-algo tbs))
+                  (parsed-sig (parse-ecdsa-cert-signature signature))
+                  (r (getf parsed-sig :r))
+                  (s (getf parsed-sig :s))
+                  (public-key (make-ecdsa-public-key-from-der key-algorithm public-key-bytes)))
+             (when public-key
+               (ironclad:verify-signature public-key hash
+                                          (ironclad:make-signature :ecdsa :r r :s s)))))
+          ;; Ed25519
+          ((member algorithm '(:ed25519))
+           (let ((public-key (ironclad:make-public-key :ed25519 :y public-key-bytes)))
+             (ironclad:verify-signature public-key tbs signature)))
+          (t
+           (warn "Unknown certificate signature algorithm: ~A" algorithm)
+           ;; Return NIL for unknown algorithms to indicate verification failure
+           nil))
+      (error (e)
+        (error 'tls-certificate-error
+               :message (format nil "Certificate signature verification failed: ~A" e))))))
+
+(defun cert-sig-algorithm-to-hash (algorithm)
+  "Map certificate signature algorithm to hash algorithm keyword."
+  (cond
+    ((member algorithm '(:sha256-with-rsa-encryption
+                         :sha256WithRSAEncryption
+                         :rsa-pkcs1-sha256
+                         :ecdsa-with-sha256
+                         :ecdsa-with-SHA256)) :sha256)
+    ((member algorithm '(:sha384-with-rsa-encryption
+                         :sha384WithRSAEncryption
+                         :rsa-pkcs1-sha384
+                         :ecdsa-with-sha384
+                         :ecdsa-with-SHA384)) :sha384)
+    ((member algorithm '(:sha512-with-rsa-encryption
+                         :sha512WithRSAEncryption
+                         :rsa-pkcs1-sha512
+                         :ecdsa-with-sha512
+                         :ecdsa-with-SHA512)) :sha512)
+    (t :sha256)))
+
+(defun parse-rsa-public-key (public-key-der)
+  "Parse an RSA public key from DER-encoded bytes."
+  (let ((parsed (parse-der public-key-der)))
+    (when (asn1-sequence-p parsed)
+      (let ((children (asn1-children parsed)))
+        (when (>= (length children) 2)
+          (ironclad:make-public-key :rsa
+                                    :n (asn1-node-value (first children))
+                                    :e (asn1-node-value (second children))))))))
+
+(defun parse-ecdsa-cert-signature (signature)
+  "Parse a DER-encoded ECDSA signature into r and s values."
+  (let ((parsed (parse-der signature)))
+    (when (asn1-sequence-p parsed)
+      (let ((children (asn1-children parsed)))
+        (when (>= (length children) 2)
+          (list :r (asn1-node-value (first children))
+                :s (asn1-node-value (second children))))))))
+
+(defun make-ecdsa-public-key-from-der (key-algorithm public-key-bytes)
+  "Create an ECDSA public key from DER-encoded bytes."
+  ;; Determine curve from algorithm
+  (let ((curve (cond
+                 ((member key-algorithm '(:ecdsa-p256 :secp256r1 :prime256v1
+                                          :ec-public-key)) :secp256r1)
+                 ((member key-algorithm '(:ecdsa-p384 :secp384r1)) :secp384r1)
+                 ((member key-algorithm '(:ecdsa-p521 :secp521r1)) :secp521r1)
+                 (t :secp256r1))))
+    ;; Public key bytes should be uncompressed point (04 || X || Y)
+    (when (and (plusp (length public-key-bytes))
+               (= (aref public-key-bytes 0) 4))
+      (let* ((coord-len (floor (1- (length public-key-bytes)) 2))
+             (x (subseq public-key-bytes 1 (1+ coord-len)))
+             (y (subseq public-key-bytes (1+ coord-len))))
+        (ironclad:make-public-key curve
+                                  :x (octets-to-integer x)
+                                  :y (octets-to-integer y))))))
 
 ;;;; Trust Store
 

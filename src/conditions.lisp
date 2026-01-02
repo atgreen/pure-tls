@@ -1,10 +1,10 @@
-;;; conditions.lisp --- Error conditions for cl-tls
+;;; conditions.lisp --- Error conditions for pure-tls
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 
-(in-package #:cl-tls)
+(in-package #:pure-tls)
 
 ;;;; Base Condition
 

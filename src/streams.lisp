@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements TLS streams using Gray streams.
 
-(in-package #:cl-tls)
+(in-package #:pure-tls)
 
 ;;;; TLS Stream Class
 
@@ -210,12 +210,18 @@
 ;;;; Stream Accessors
 
 (defun tls-peer-certificate (stream)
-  "Return the peer's certificate, if available."
+  "Return the peer's certificate, if available.
+   Returns an x509-certificate structure (already parsed)."
   (let ((hs (tls-stream-handshake stream)))
     (when hs
-      (let ((cert-bytes (client-handshake-peer-certificate hs)))
-        (when cert-bytes
-          (parse-certificate cert-bytes))))))
+      (client-handshake-peer-certificate hs))))
+
+(defun tls-peer-certificate-chain (stream)
+  "Return the peer's full certificate chain, if available.
+   Returns a list of x509-certificate structures (leaf first)."
+  (let ((hs (tls-stream-handshake stream)))
+    (when hs
+      (client-handshake-peer-certificate-chain hs))))
 
 (defun tls-selected-alpn (stream)
   "Return the negotiated ALPN protocol, if any."
@@ -260,23 +266,31 @@
                                 :stream socket
                                 :close-callback close-callback
                                 :buffer-size buffer-size))
-         (record-layer (make-record-layer socket)))
+         (record-layer (make-record-layer socket))
+         (trust-store (tls-context-trust-store context)))
     (setf (tls-stream-record-layer stream) record-layer)
-    ;; Perform handshake
+    ;; Perform handshake (CertificateVerify is verified during handshake)
     (let ((hs (perform-client-handshake
                record-layer
                :hostname hostname
                :alpn-protocols (or alpn-protocols
                                    (tls-context-alpn-protocols context))
-               :verify-mode verify)))
+               :verify-mode verify
+               :trust-store trust-store)))
       (setf (tls-stream-handshake stream) hs)
-      ;; Verify certificate if required
+      ;; Verify certificate chain and hostname if verification enabled
       (when (and (member verify (list +verify-peer+ +verify-required+))
                  (client-handshake-peer-certificate hs))
-        (let ((cert (parse-certificate (client-handshake-peer-certificate hs))))
-          (verify-peer-certificate cert hostname
-                                   :verify-mode verify
-                                   :trust-store (tls-context-trust-store context)))))
+        (let ((cert (client-handshake-peer-certificate hs))
+              (chain (client-handshake-peer-certificate-chain hs)))
+          ;; Verify hostname
+          (when hostname
+            (verify-hostname cert hostname))
+          ;; Verify certificate chain with trust store (if we have one and verify is required)
+          (when (and (= verify +verify-required+)
+                     trust-store
+                     chain)
+            (verify-certificate-chain chain (trust-store-certificates trust-store))))))
     ;; Wrap with flexi-stream if external-format specified
     (if external-format
         (flexi-streams:make-flexi-stream stream :external-format external-format)

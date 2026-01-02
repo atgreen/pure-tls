@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements the TLS 1.3 record layer (RFC 8446 Section 5).
 
-(in-package #:cl-tls)
+(in-package #:pure-tls)
 
 ;;;; TLS Record Structure
 ;;;
@@ -34,16 +34,34 @@
 
 ;;;; Record Layer I/O
 
+(defun read-exact-bytes (stream buffer count)
+  "Read exactly COUNT bytes from STREAM into BUFFER.
+   Loops until all bytes are read or EOF is reached.
+   Returns the number of bytes actually read (may be less than COUNT at EOF)."
+  (let ((total-read 0))
+    (loop while (< total-read count)
+          do (let ((bytes-read (read-sequence buffer stream
+                                              :start total-read
+                                              :end count)))
+               (when (= bytes-read total-read)
+                 ;; No progress - EOF reached
+                 (return total-read))
+               (setf total-read bytes-read)))
+    total-read))
+
 (defun read-tls-record (stream)
   "Read a TLS record from STREAM.
-   Returns a TLS-RECORD structure or signals an error."
+   Returns a TLS-RECORD structure or signals an error.
+   Properly handles short reads from the underlying stream."
   (let ((header (make-octet-vector 5)))
-    ;; Read 5-byte header
-    (let ((bytes-read (read-sequence header stream)))
+    ;; Read 5-byte header (loop until complete or EOF)
+    (let ((bytes-read (read-exact-bytes stream header 5)))
       (when (zerop bytes-read)
         (error 'tls-connection-closed :clean nil))
       (when (< bytes-read 5)
-        (error 'tls-decode-error :message "Incomplete record header")))
+        (error 'tls-decode-error
+               :message (format nil "Incomplete record header: expected 5 bytes, got ~D"
+                                bytes-read))))
     ;; Parse header
     (let* ((content-type (aref header 0))
            (version (decode-uint16 header 1))
@@ -51,12 +69,12 @@
       ;; Validate length
       (when (> length +max-record-size-with-padding+)
         (error 'tls-record-overflow :size length))
-      ;; Read fragment
+      ;; Read fragment (loop until complete or EOF)
       (let ((fragment (make-octet-vector length)))
-        (let ((bytes-read (read-sequence fragment stream)))
+        (let ((bytes-read (read-exact-bytes stream fragment length)))
           (when (< bytes-read length)
             (error 'tls-decode-error
-                   :message (format nil "Incomplete record: expected ~D bytes, got ~D"
+                   :message (format nil "Incomplete record fragment: expected ~D bytes, got ~D"
                                     length bytes-read))))
         (make-tls-record :content-type content-type
                          :version version

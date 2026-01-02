@@ -1,4 +1,4 @@
-# cl-tls
+# pure-tls
 
 A pure Common Lisp implementation of TLS 1.3 (RFC 8446).
 
@@ -24,13 +24,13 @@ A pure Common Lisp implementation of TLS 1.3 (RFC 8446).
 Using [ocicl](https://github.com/ocicl/ocicl):
 
 ```sh
-ocicl install cl-tls
+ocicl install pure-tls
 ```
 
 Or add to your ASDF system:
 
 ```lisp
-:depends-on (#:cl-tls)
+:depends-on (#:pure-tls)
 ```
 
 ## Usage
@@ -38,16 +38,16 @@ Or add to your ASDF system:
 ### Basic HTTPS Client
 
 ```lisp
-(asdf:load-system :cl-tls)
+(asdf:load-system :pure-tls)
 (asdf:load-system :usocket)
 
 (let* ((socket (usocket:socket-connect "example.com" 443
                                         :element-type '(unsigned-byte 8)))
-       (tls (cl-tls:make-tls-client-stream
+       (tls (pure-tls:make-tls-client-stream
               (usocket:socket-stream socket)
               :hostname "example.com")))
   ;; Send HTTP request
-  (write-sequence (cl-tls:string-to-octets
+  (write-sequence (pure-tls:string-to-octets
                     "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
                   tls)
   (force-output tls)
@@ -61,24 +61,24 @@ Or add to your ASDF system:
 ### With Certificate Verification
 
 ```lisp
-(cl-tls:make-tls-client-stream stream
+(pure-tls:make-tls-client-stream stream
   :hostname "example.com"
-  :verify cl-tls:+verify-peer+)  ; Verify server certificate
+  :verify pure-tls:+verify-peer+)  ; Verify server certificate
 ```
 
 ### ALPN Protocol Negotiation
 
 ```lisp
-(let ((tls (cl-tls:make-tls-client-stream stream
+(let ((tls (pure-tls:make-tls-client-stream stream
              :hostname "example.com"
              :alpn-protocols '("h2" "http/1.1"))))
-  (format t "Selected protocol: ~A~%" (cl-tls:tls-selected-alpn tls)))
+  (format t "Selected protocol: ~A~%" (pure-tls:tls-selected-alpn tls)))
 ```
 
 ### Using the cl+ssl Compatibility Layer
 
 ```lisp
-(asdf:load-system :cl-tls/compat)
+(asdf:load-system :pure-tls/compat)
 
 ;; Use familiar cl+ssl API
 (cl+ssl:make-ssl-client-stream stream

@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements the TLS 1.3 key schedule (RFC 8446 Section 7.1).
 
-(in-package #:cl-tls)
+(in-package #:pure-tls)
 
 ;;;; Key Schedule State
 ;;;

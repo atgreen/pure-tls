@@ -8,7 +8,7 @@
 ;;; - AES-128-GCM
 ;;; - ChaCha20-Poly1305
 
-(in-package #:cl-tls)
+(in-package #:pure-tls)
 
 ;;;; AEAD Cipher Interface
 

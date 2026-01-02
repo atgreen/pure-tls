@@ -4,7 +4,7 @@
 ;;;
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 
-(in-package #:cl-tls)
+(in-package #:pure-tls)
 
 ;;;; TLS Version Constants
 

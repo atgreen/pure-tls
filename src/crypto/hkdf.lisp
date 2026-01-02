@@ -7,7 +7,7 @@
 ;;; Implements RFC 5869 HKDF (HMAC-based Key Derivation Function)
 ;;; as used in TLS 1.3 key schedule.
 
-(in-package #:cl-tls)
+(in-package #:pure-tls)
 
 ;;;; HKDF Implementation
 

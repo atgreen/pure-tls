@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements the TLS 1.3 client handshake state machine.
 
-(in-package #:cl-tls)
+(in-package #:pure-tls)
 
 ;;;; Client Handshake State
 
@@ -16,6 +16,8 @@
   (hostname nil :type (or null string))
   (alpn-protocols nil :type list)
   (verify-mode +verify-required+ :type fixnum)
+  ;; Trust store for certificate verification
+  (trust-store nil)
   ;; Cipher suites we support
   (cipher-suites (list +tls-aes-128-gcm-sha256+
                        +tls-chacha20-poly1305-sha256+)
@@ -32,8 +34,10 @@
   (transcript nil :type (or null octet-vector))
   ;; Buffer for handshake messages (multiple messages may arrive in one record)
   (message-buffer nil :type (or null octet-vector))
-  ;; Server's certificate
+  ;; Server's certificate (parsed X.509)
   (peer-certificate nil)
+  ;; Full certificate chain (list of parsed certificates)
+  (peer-certificate-chain nil :type list)
   ;; Selected ALPN protocol
   (selected-alpn nil :type (or null string))
   ;; State
@@ -210,21 +214,215 @@
       (when (= (client-handshake-verify-mode hs) +verify-required+)
         (error 'tls-certificate-error
                :message "Server did not provide a certificate")))
-    ;; Store the first certificate (server's certificate)
+    ;; Parse and store the entire certificate chain
     (when cert-list
-      (let ((first-cert (first cert-list)))
-        (setf (client-handshake-peer-certificate hs)
-              (certificate-entry-cert-data first-cert))))
+      (let ((parsed-chain
+              (mapcar (lambda (entry)
+                        (parse-certificate (certificate-entry-cert-data entry)))
+                      cert-list)))
+        ;; Store the full chain
+        (setf (client-handshake-peer-certificate-chain hs) parsed-chain)
+        ;; Store the leaf certificate (first in chain) for easy access
+        (setf (client-handshake-peer-certificate hs) (first parsed-chain))))
     (setf (client-handshake-state hs) :wait-certificate-verify)))
 
 ;;;; CertificateVerify Processing
 
+(defun make-certificate-verify-content (transcript-hash)
+  "Construct the content that is signed in CertificateVerify.
+   Per RFC 8446 Section 4.4.3, this is:
+   - 64 bytes of 0x20 (space)
+   - The context string 'TLS 1.3, server CertificateVerify'
+   - A single 0 byte
+   - The transcript hash"
+  (let* ((context-string "TLS 1.3, server CertificateVerify")
+         (content-length (+ 64 (length context-string) 1 (length transcript-hash)))
+         (content (make-octet-vector content-length))
+         (pos 0))
+    ;; 64 spaces (0x20)
+    (dotimes (i 64)
+      (setf (aref content pos) #x20)
+      (incf pos))
+    ;; Context string
+    (loop for char across context-string do
+      (setf (aref content pos) (char-code char))
+      (incf pos))
+    ;; Single 0 byte
+    (setf (aref content pos) 0)
+    (incf pos)
+    ;; Transcript hash
+    (replace content transcript-hash :start1 pos)
+    content))
+
+(defun verify-certificate-verify-signature (cert algorithm signature content)
+  "Verify the CertificateVerify signature using the certificate's public key.
+   Returns T on success, signals an error on failure."
+  (let* ((public-key-info (x509-certificate-subject-public-key-info cert))
+         (key-algorithm (getf public-key-info :algorithm))
+         (public-key-bytes (getf public-key-info :public-key)))
+    ;; Determine hash algorithm from signature algorithm
+    (multiple-value-bind (hash-algo sig-type)
+        (signature-algorithm-params algorithm)
+      (unless sig-type
+        (error 'tls-handshake-error
+               :message (format nil "Unsupported signature algorithm: ~X" algorithm)))
+      ;; Verify based on key type
+      (cond
+        ;; RSA-PSS signatures
+        ((member sig-type '(:rsa-pss-rsae :rsa-pss-pss))
+         (verify-rsa-pss-signature public-key-bytes content signature hash-algo))
+        ;; RSA PKCS#1 v1.5 signatures
+        ((eq sig-type :rsa-pkcs1)
+         (verify-rsa-pkcs1-signature public-key-bytes content signature hash-algo))
+        ;; ECDSA signatures
+        ((eq sig-type :ecdsa)
+         (verify-ecdsa-signature public-key-bytes content signature hash-algo key-algorithm))
+        ;; Ed25519 (handles its own hashing internally)
+        ((eq sig-type :ed25519)
+         (verify-ed25519-signature public-key-bytes content signature))
+        (t
+         (error 'tls-handshake-error
+                :message (format nil "Unsupported signature type: ~A" sig-type)))))))
+
+(defun signature-algorithm-params (algorithm)
+  "Return (hash-algorithm signature-type) for a TLS signature algorithm code."
+  (case algorithm
+    (#.+sig-rsa-pkcs1-sha256+ (values :sha256 :rsa-pkcs1))
+    (#.+sig-rsa-pkcs1-sha384+ (values :sha384 :rsa-pkcs1))
+    (#.+sig-rsa-pkcs1-sha512+ (values :sha512 :rsa-pkcs1))
+    (#.+sig-rsa-pss-rsae-sha256+ (values :sha256 :rsa-pss-rsae))
+    (#.+sig-rsa-pss-rsae-sha384+ (values :sha384 :rsa-pss-rsae))
+    (#.+sig-rsa-pss-rsae-sha512+ (values :sha512 :rsa-pss-rsae))
+    (#.+sig-rsa-pss-pss-sha256+ (values :sha256 :rsa-pss-pss))
+    (#.+sig-rsa-pss-pss-sha384+ (values :sha384 :rsa-pss-pss))
+    (#.+sig-rsa-pss-pss-sha512+ (values :sha512 :rsa-pss-pss))
+    (#.+sig-ecdsa-secp256r1-sha256+ (values :sha256 :ecdsa))
+    (#.+sig-ecdsa-secp384r1-sha384+ (values :sha384 :ecdsa))
+    (#.+sig-ecdsa-secp521r1-sha512+ (values :sha512 :ecdsa))
+    (#.+sig-ed25519+ (values nil :ed25519))
+    (t (values nil nil))))
+
+(defun verify-rsa-pss-signature (public-key-der content signature hash-algo)
+  "Verify an RSA-PSS signature."
+  (handler-case
+      (let ((public-key (ironclad:make-public-key :rsa
+                          :n (parse-rsa-public-key-n public-key-der)
+                          :e (parse-rsa-public-key-e public-key-der))))
+        (ironclad:verify-signature public-key content signature
+                                   :pss hash-algo))
+    (error (e)
+      (error 'tls-handshake-error
+             :message (format nil "RSA-PSS signature verification failed: ~A" e)))))
+
+(defun verify-rsa-pkcs1-signature (public-key-der content signature hash-algo)
+  "Verify an RSA PKCS#1 v1.5 signature."
+  (handler-case
+      (let ((public-key (ironclad:make-public-key :rsa
+                          :n (parse-rsa-public-key-n public-key-der)
+                          :e (parse-rsa-public-key-e public-key-der))))
+        (ironclad:verify-signature public-key content signature
+                                   :pkcs1v15 hash-algo))
+    (error (e)
+      (error 'tls-handshake-error
+             :message (format nil "RSA PKCS#1 signature verification failed: ~A" e)))))
+
+(defun verify-ecdsa-signature (public-key-der content signature hash-algo key-algorithm)
+  "Verify an ECDSA signature."
+  (handler-case
+      (let* ((curve (ecdsa-curve-from-algorithm key-algorithm))
+             ;; Parse the ECDSA signature (DER encoded r and s)
+             (parsed-sig (parse-ecdsa-signature signature))
+             (r (getf parsed-sig :r))
+             (s (getf parsed-sig :s))
+             ;; Hash the content
+             (hash (ironclad:digest-sequence hash-algo content))
+             ;; Make the public key
+             (public-key (make-ecdsa-public-key curve public-key-der))
+             ;; Get coordinate size for the curve
+             (coord-size (ecase curve
+                           (:secp256r1 32)
+                           (:secp384r1 48)
+                           (:secp521r1 66)))
+             ;; Convert r and s to fixed-size byte arrays and concatenate
+             (r-bytes (integer-to-octets r coord-size))
+             (s-bytes (integer-to-octets s coord-size))
+             (raw-sig (concatenate '(vector (unsigned-byte 8)) r-bytes s-bytes)))
+        ;; Ironclad ECDSA verify-signature expects raw r||s signature
+        (ironclad:verify-signature public-key hash raw-sig))
+    (error (e)
+      (error 'tls-handshake-error
+             :message (format nil "ECDSA signature verification failed: ~A" e)))))
+
+(defun verify-ed25519-signature (public-key-der content signature)
+  "Verify an Ed25519 signature."
+  (handler-case
+      (let ((public-key (ironclad:make-public-key :ed25519 :y public-key-der)))
+        (ironclad:verify-signature public-key content signature))
+    (error (e)
+      (error 'tls-handshake-error
+             :message (format nil "Ed25519 signature verification failed: ~A" e)))))
+
+(defun ecdsa-curve-from-algorithm (key-algorithm)
+  "Determine the ECDSA curve from the key algorithm OID."
+  (cond
+    ((member key-algorithm '(:ecdsa-p256 :secp256r1 :prime256v1)) :secp256r1)
+    ((member key-algorithm '(:ecdsa-p384 :secp384r1)) :secp384r1)
+    ((member key-algorithm '(:ecdsa-p521 :secp521r1)) :secp521r1)
+    (t :secp256r1)))  ; Default to P-256
+
+(defun make-ecdsa-public-key (curve public-key-bytes)
+  "Create an ECDSA public key from raw bytes."
+  ;; Public key bytes should be uncompressed point (04 || X || Y)
+  (when (and (plusp (length public-key-bytes))
+             (= (aref public-key-bytes 0) 4))
+    (let* ((coord-len (floor (1- (length public-key-bytes)) 2))
+           (x (subseq public-key-bytes 1 (1+ coord-len)))
+           (y (subseq public-key-bytes (1+ coord-len))))
+      (ironclad:make-public-key (ecase curve
+                                  (:secp256r1 :secp256r1)
+                                  (:secp384r1 :secp384r1)
+                                  (:secp521r1 :secp521r1))
+                                :x (octets-to-integer x)
+                                :y (octets-to-integer y)))))
+
+(defun parse-ecdsa-signature (signature)
+  "Parse a DER-encoded ECDSA signature into r and s values."
+  (let ((parsed (parse-der signature)))
+    (when (asn1-sequence-p parsed)
+      (let ((children (asn1-children parsed)))
+        (when (>= (length children) 2)
+          (list :r (asn1-node-value (first children))
+                :s (asn1-node-value (second children))))))))
+
+(defun parse-rsa-public-key-n (public-key-der)
+  "Extract the modulus N from an RSA public key."
+  (let ((parsed (parse-der public-key-der)))
+    (when (asn1-sequence-p parsed)
+      (asn1-node-value (first (asn1-children parsed))))))
+
+(defun parse-rsa-public-key-e (public-key-der)
+  "Extract the exponent E from an RSA public key."
+  (let ((parsed (parse-der public-key-der)))
+    (when (asn1-sequence-p parsed)
+      (asn1-node-value (second (asn1-children parsed))))))
+
 (defun process-certificate-verify (hs message)
   "Process CertificateVerify message."
-  (declare (ignore hs message))
-  ;; TODO: Verify signature over transcript
-  ;; For now, we trust the signature
-  (setf (client-handshake-state hs) :wait-finished))
+  (let* ((cert-verify (handshake-message-body message))
+         (algorithm (certificate-verify-algorithm cert-verify))
+         (signature (certificate-verify-signature cert-verify))
+         (cert (client-handshake-peer-certificate hs)))
+    ;; Must have a certificate to verify
+    (unless cert
+      (error 'tls-handshake-error
+             :message "No certificate to verify CertificateVerify signature"))
+    ;; Get the transcript hash at this point (excludes CertificateVerify)
+    (let* ((ks (client-handshake-key-schedule hs))
+           (transcript-hash (key-schedule-transcript-hash-value ks))
+           (content (make-certificate-verify-content transcript-hash)))
+      ;; Verify the signature
+      (verify-certificate-verify-signature cert algorithm signature content))
+    (setf (client-handshake-state hs) :wait-finished)))
 
 ;;;; Finished Processing
 
@@ -358,13 +556,16 @@
             message-bytes)))
 
 (defun perform-client-handshake (record-layer &key hostname alpn-protocols
-                                                   (verify-mode +verify-required+))
+                                                   (verify-mode +verify-required+)
+                                                   trust-store)
   "Perform the TLS 1.3 client handshake.
-   Returns a CLIENT-HANDSHAKE structure on success."
+   Returns a CLIENT-HANDSHAKE structure on success.
+   TRUST-STORE is used for certificate chain verification when verify-mode is +verify-required+."
   (let ((hs (make-client-handshake
              :hostname hostname
              :alpn-protocols alpn-protocols
              :verify-mode verify-mode
+             :trust-store trust-store
              :record-layer record-layer)))
     ;; Send ClientHello
     (send-client-hello hs)
@@ -399,7 +600,11 @@
               (client-handshake-update-transcript hs raw-bytes)
               (process-certificate hs message))
              (#.+handshake-finished+
-              ;; No certificate, go directly to finished
+              ;; Server sent Finished without certificate (PSK mode)
+              ;; This is NOT allowed when verify-mode is +verify-required+
+              (when (= (client-handshake-verify-mode hs) +verify-required+)
+                (error 'tls-certificate-error
+                       :message "Server did not provide a certificate but verification is required"))
               ;; Don't update transcript yet - process-server-finished will do it after verification
               (setf (client-handshake-state hs) :wait-finished)
               (process-server-finished hs message raw-bytes))

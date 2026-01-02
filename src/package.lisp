@@ -1,4 +1,4 @@
-;;; package.lisp --- Package definitions for cl-tls
+;;; package.lisp --- Package definitions for pure-tls
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
@@ -6,7 +6,7 @@
 
 (in-package #:cl-user)
 
-(defpackage #:cl-tls
+(defpackage #:pure-tls
   (:use #:cl #:trivial-gray-streams)
   (:export
    ;; Stream creation
@@ -26,6 +26,7 @@
 
    ;; Stream accessors
    #:tls-peer-certificate
+   #:tls-peer-certificate-chain
    #:tls-selected-alpn
    #:tls-cipher-suite
    #:tls-version
@@ -42,6 +43,10 @@
 
    ;; Crypto utilities
    #:random-bytes
+
+   ;; String utilities
+   #:string-to-octets
+   #:octets-to-string
 
    ;; Conditions
    #:tls-error

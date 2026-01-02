@@ -1,10 +1,10 @@
-;;; utils.lisp --- Utility functions for cl-tls
+;;; utils.lisp --- Utility functions for pure-tls
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 
-(in-package #:cl-tls)
+(in-package #:pure-tls)
 
 ;;;; Type Definitions
 
@@ -241,3 +241,28 @@
     (dotimes (i (length a) result)
       (setf (aref result i)
             (logxor (aref a i) (aref b i))))))
+
+;;;; Integer/Octet Conversions
+
+(defun octets-to-integer (octets)
+  "Convert an octet vector to an integer (big-endian)."
+  (let ((result 0))
+    (loop for octet across octets
+          do (setf result (logior (ash result 8) octet)))
+    result))
+
+(defun integer-to-octets (integer &optional (min-length 0))
+  "Convert an integer to an octet vector (big-endian).
+   If MIN-LENGTH is specified, pad with leading zeros if necessary."
+  (if (zerop integer)
+      (make-array (max 1 min-length) :element-type 'octet :initial-element 0)
+      (let ((octets nil))
+        (loop while (plusp integer)
+              do (push (ldb (byte 8 0) integer) octets)
+                 (setf integer (ash integer -8)))
+        (let* ((octet-vec (coerce octets '(vector (unsigned-byte 8))))
+               (result (make-array (max (length octet-vec) min-length)
+                                   :element-type 'octet
+                                   :initial-element 0)))
+          (replace result octet-vec :start1 (- (length result) (length octet-vec)))
+          result))))

@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements TLS context for configuration and session management.
 
-(in-package #:cl-tls)
+(in-package #:pure-tls)
 
 ;;;; TLS Context
 
@@ -35,10 +35,21 @@
 (defvar *default-tls-context* nil
   "The default TLS context used when none is specified.")
 
+(defvar *auto-load-system-trust-store* t
+  "When true, automatically load system CA trust store for verify-required mode.")
+
 (defun ensure-default-context ()
-  "Ensure a default TLS context exists."
+  "Ensure a default TLS context exists.
+   If verify mode is +verify-required+ and auto-load is enabled,
+   automatically loads the system trust store."
   (unless *default-tls-context*
-    (setf *default-tls-context* (make-tls-context)))
+    (let ((ctx (make-tls-context)))
+      ;; Auto-load system trust store if verify-required and no trust store set
+      (when (and *auto-load-system-trust-store*
+                 (= (tls-context-verify-mode ctx) +verify-required+)
+                 (null (tls-context-trust-store ctx)))
+        (setf (tls-context-trust-store ctx) (load-system-trust-store)))
+      (setf *default-tls-context* ctx)))
   *default-tls-context*)
 
 ;;;; Context Creation
@@ -51,7 +62,8 @@
                            ca-file
                            ca-directory
                            cipher-suites
-                           alpn-protocols)
+                           alpn-protocols
+                           (auto-load-system-ca t))
   "Create a new TLS context with the specified configuration.
 
    VERIFY-MODE - Certificate verification mode:
@@ -71,7 +83,10 @@
 
    CIPHER-SUITES - List of allowed cipher suites.
 
-   ALPN-PROTOCOLS - List of ALPN protocol names."
+   ALPN-PROTOCOLS - List of ALPN protocol names.
+
+   AUTO-LOAD-SYSTEM-CA - If T (default), automatically load system CA store
+     when verify-mode is +VERIFY-REQUIRED+ and no CA file/directory is specified."
   (let ((ctx (make-tls-context-struct
               :verify-mode verify-mode
               :verify-depth verify-depth
@@ -85,9 +100,16 @@
       (setf (tls-context-private-key ctx)
             (load-private-key private-key-file)))
     ;; Load trusted CAs
-    (when (or ca-file ca-directory)
-      (setf (tls-context-trust-store ctx)
-            (make-trust-store-from-sources ca-file ca-directory)))
+    (cond
+      ;; Explicit CA file or directory specified
+      ((or ca-file ca-directory)
+       (setf (tls-context-trust-store ctx)
+             (make-trust-store-from-sources ca-file ca-directory)))
+      ;; Auto-load system CAs if verify-required and enabled
+      ((and auto-load-system-ca
+            (= verify-mode +verify-required+))
+       (setf (tls-context-trust-store ctx)
+             (load-system-trust-store))))
     ;; Set cipher suites
     (when cipher-suites
       (setf (tls-context-cipher-suites ctx) cipher-suites))
@@ -113,7 +135,8 @@
 ;;;; Certificate Loading
 
 (defun load-certificate-chain (path)
-  "Load a certificate chain from a PEM file."
+  "Load a certificate chain from a PEM file.
+   Skips certificates that fail to parse (with a warning)."
   (let ((bytes (read-file-bytes path))
         (certs nil))
     (if (pem-encoded-p bytes)
@@ -126,12 +149,18 @@
               (let ((end-pos (search "-----END CERTIFICATE-----" text :start2 begin-pos)))
                 (unless end-pos (return))
                 (let* ((block-end (+ end-pos (length "-----END CERTIFICATE-----")))
-                       (pem-block (subseq text begin-pos block-end))
-                       (der (pem-decode (string-to-octets pem-block) "CERTIFICATE")))
-                  (push (parse-certificate der) certs)
+                       (pem-block (subseq text begin-pos block-end)))
+                  (handler-case
+                      (let ((der (pem-decode (string-to-octets pem-block) "CERTIFICATE")))
+                        (push (parse-certificate der) certs))
+                    (error (e)
+                      (warn "Failed to parse certificate at position ~D: ~A" begin-pos e)))
                   (setf start block-end))))))
         ;; Single DER certificate
-        (push (parse-certificate bytes) certs))
+        (handler-case
+            (push (parse-certificate bytes) certs)
+          (error (e)
+            (warn "Failed to parse certificate from ~A: ~A" path e))))
     (nreverse certs)))
 
 (defun load-private-key (path)
