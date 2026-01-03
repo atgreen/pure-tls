@@ -183,6 +183,82 @@
     (is (equal ecdsa-sha256-oid '(1 2 840 10045 4 3 2))
         "ECDSA-SHA256 OID should be correct")))
 
+;;;; Bundled Certificate Tests (from badssl.com)
+
+(defvar *test-certs-dir*
+  (merge-pathnames "certs/"
+                   (asdf:system-relative-pathname :pure-tls/test "test/"))
+  "Directory containing bundled test certificates.")
+
+(defun test-cert-path (filename)
+  "Return path to a bundled test certificate."
+  (merge-pathnames filename *test-certs-dir*))
+
+(test parse-expired-certificate
+  "Test parsing an expired certificate"
+  (let* ((cert-path (test-cert-path "wildcard-expired.pem"))
+         (cert (pure-tls:parse-certificate-from-file cert-path)))
+    (is (not (null cert))
+        "Should successfully parse expired certificate")
+    (is (< (pure-tls:certificate-not-after cert) (get-universal-time))
+        "Certificate should be expired (notAfter in the past)")))
+
+(test parse-self-signed-certificate
+  "Test parsing a self-signed certificate"
+  (let* ((cert-path (test-cert-path "wildcard-self-signed.pem"))
+         (cert (pure-tls:parse-certificate-from-file cert-path)))
+    (is (not (null cert))
+        "Should successfully parse self-signed certificate")
+    ;; Self-signed: subject CN contains *.badssl.com
+    (let ((cns (pure-tls:certificate-subject-common-names cert)))
+      (is (member "*.badssl.com" cns :test #'string=)
+          "Self-signed cert should have correct CN"))
+    ;; Also verify it's expired (Aug 2018)
+    (is (< (pure-tls:certificate-not-after cert) (get-universal-time))
+        "Self-signed test cert should be expired")))
+
+(test parse-superfish-ca
+  "Test parsing the Superfish malware CA certificate"
+  (let* ((cert-path (test-cert-path "ca-superfish.crt"))
+         (cert (pure-tls:parse-certificate-from-file cert-path)))
+    (is (not (null cert))
+        "Should successfully parse Superfish CA")
+    ;; Verify it's the known bad CA by checking subject CN
+    (let ((cns (pure-tls:certificate-subject-common-names cert)))
+      (is (member "Superfish, Inc." cns :test #'string=)
+          "Should identify Superfish CA by CN"))))
+
+(test parse-edellroot-ca
+  "Test parsing the eDellRoot malware CA certificate"
+  (let* ((cert-path (test-cert-path "ca-edellroot.crt"))
+         (cert (pure-tls:parse-certificate-from-file cert-path)))
+    (is (not (null cert))
+        "Should successfully parse eDellRoot CA")
+    ;; Verify it's the known bad CA
+    (let ((cns (pure-tls:certificate-subject-common-names cert)))
+      (is (member "eDellRoot" cns :test #'string=)
+          "Should identify eDellRoot CA by CN"))))
+
+(test expired-certificate-detected
+  "Test that expired certificates are properly detected"
+  (let* ((cert-path (test-cert-path "wildcard-expired.pem"))
+         (cert (pure-tls:parse-certificate-from-file cert-path))
+         (not-after (pure-tls:certificate-not-after cert))
+         (not-before (pure-tls:certificate-not-before cert)))
+    ;; Verify the certificate dates
+    (is (< not-before not-after)
+        "notBefore should be before notAfter")
+    (is (< not-after (get-universal-time))
+        "Expired cert's notAfter should be in the past")
+    ;; The wildcard-expired.pem was valid Apr 9-12, 2015
+    ;; notAfter should be April 12, 2015 23:59:59 UTC
+    (multiple-value-bind (sec min hour date month year)
+        (decode-universal-time not-after 0)
+      (declare (ignore sec min hour))
+      (is (= year 2015) "Should expire in 2015")
+      (is (= month 4) "Should expire in April")
+      (is (= date 12) "Should expire on the 12th"))))
+
 ;;;; Test Runner
 
 (defun run-certificate-tests ()
