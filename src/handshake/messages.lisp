@@ -302,6 +302,10 @@
   "Parse a KeyUpdate from bytes."
   (make-key-update :request-update (aref data 0)))
 
+(defun serialize-key-update (msg)
+  "Serialize a KeyUpdate to bytes."
+  (octet-vector (key-update-request-update msg)))
+
 ;;;; Generic Handshake Message Handling
 
 (defun wrap-handshake-message (msg-type body)

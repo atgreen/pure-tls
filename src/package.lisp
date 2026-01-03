@@ -31,6 +31,7 @@
    #:tls-cipher-suite
    #:tls-version
    #:tls-client-hostname
+   #:tls-request-key-update
 
    ;; Certificate handling
    #:parse-certificate

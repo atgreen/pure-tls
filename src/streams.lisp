@@ -93,6 +93,85 @@
 
 ;;;; Input Methods
 
+(defun tls-stream-get-key-schedule (stream)
+  "Get the key schedule from the stream's handshake."
+  (let ((hs (tls-stream-handshake stream)))
+    (typecase hs
+      (client-handshake (client-handshake-key-schedule hs))
+      (server-handshake (server-handshake-key-schedule hs)))))
+
+(defun tls-stream-get-cipher-suite (stream)
+  "Get the cipher suite from the stream's handshake."
+  (let ((hs (tls-stream-handshake stream)))
+    (typecase hs
+      (client-handshake (client-handshake-selected-cipher-suite hs))
+      (server-handshake (server-handshake-selected-cipher-suite hs)))))
+
+(defun tls-stream-is-client-p (stream)
+  "Check if this is a client stream."
+  (client-handshake-p (tls-stream-handshake stream)))
+
+(defun tls-stream-process-key-update (stream key-update)
+  "Process a KeyUpdate message, updating read keys and responding if requested."
+  (let* ((ks (tls-stream-get-key-schedule stream))
+         (cipher-suite (tls-stream-get-cipher-suite stream))
+         (is-client (tls-stream-is-client-p stream)))
+    ;; Update the sender's traffic secret (our read keys)
+    ;; For client: sender is server, so update server application traffic secret
+    ;; For server: sender is client, so update client application traffic secret
+    (if is-client
+        ;; We're client, received from server - update server app secret
+        (setf (key-schedule-server-application-traffic-secret ks)
+              (key-schedule-update-traffic-secret
+               (key-schedule-server-application-traffic-secret ks)
+               cipher-suite))
+        ;; We're server, received from client - update client app secret
+        (setf (key-schedule-client-application-traffic-secret ks)
+              (key-schedule-update-traffic-secret
+               (key-schedule-client-application-traffic-secret ks)
+               cipher-suite)))
+    ;; Install new read keys
+    (multiple-value-bind (key iv)
+        (key-schedule-derive-read-keys ks :application)
+      (record-layer-install-keys (tls-stream-record-layer stream)
+                                 :read key iv cipher-suite))
+    ;; If update was requested, send our own KeyUpdate
+    (when (= (key-update-request-update key-update) +key-update-requested+)
+      (tls-stream-send-key-update stream :request-update nil))))
+
+(defun tls-stream-send-key-update (stream &key (request-update nil))
+  "Send a KeyUpdate message and update our write keys.
+   REQUEST-UPDATE if true, asks the peer to also update their keys."
+  (let* ((ks (tls-stream-get-key-schedule stream))
+         (cipher-suite (tls-stream-get-cipher-suite stream))
+         (is-client (tls-stream-is-client-p stream))
+         (msg (make-key-update
+               :request-update (if request-update
+                                   +key-update-requested+
+                                   +key-update-not-requested+)))
+         (msg-bytes (serialize-key-update msg))
+         (handshake-msg (wrap-handshake-message +handshake-key-update+ msg-bytes)))
+    ;; Send the KeyUpdate message
+    (record-layer-write (tls-stream-record-layer stream)
+                        +content-type-handshake+ handshake-msg)
+    ;; Update our traffic secret (write keys)
+    (if is-client
+        ;; We're client, updating our write keys
+        (setf (key-schedule-client-application-traffic-secret ks)
+              (key-schedule-update-traffic-secret
+               (key-schedule-client-application-traffic-secret ks)
+               cipher-suite))
+        ;; We're server, updating our write keys
+        (setf (key-schedule-server-application-traffic-secret ks)
+              (key-schedule-update-traffic-secret
+               (key-schedule-server-application-traffic-secret ks)
+               cipher-suite)))
+    ;; Install new write keys
+    (multiple-value-bind (key iv)
+        (key-schedule-derive-write-keys ks :application)
+      (record-layer-install-keys (tls-stream-record-layer stream)
+                                 :write key iv cipher-suite))))
+
 (defun tls-stream-fill-buffer (stream)
   "Read more data from the record layer into the input buffer."
   (multiple-value-bind (content-type data)
@@ -107,7 +186,17 @@
        nil)
       (#.+content-type-handshake+
        ;; Post-handshake messages (e.g., NewSessionTicket, KeyUpdate)
-       ;; For now, ignore them
+       (let ((msg (parse-handshake-message data)))
+         (case (handshake-message-type msg)
+           (#.+handshake-key-update+
+            (tls-stream-process-key-update stream (handshake-message-body msg)))
+           (#.+handshake-new-session-ticket+
+            ;; NewSessionTicket - ignore for now (session resumption not implemented)
+            nil)
+           (t
+            ;; Unknown post-handshake message - ignore
+            nil)))
+       ;; Recursively try to get more data
        (tls-stream-fill-buffer stream))
       (t
        (error 'tls-error :message (format nil "Unexpected content type: ~D" content-type))))))
@@ -253,6 +342,16 @@
   (let ((hs (tls-stream-handshake stream)))
     (when (server-handshake-p hs)
       (server-handshake-client-hostname hs))))
+
+(defun tls-request-key-update (stream &key (request-peer-update t))
+  "Request a TLS 1.3 key update on STREAM.
+   This updates the sending keys immediately and optionally requests
+   the peer to also update their keys.
+
+   REQUEST-PEER-UPDATE - If true (default), the peer must respond with
+                         their own KeyUpdate message. If false, only our
+                         sending keys are updated."
+  (tls-stream-send-key-update stream :request-update request-peer-update))
 
 ;;;; Stream Creation
 

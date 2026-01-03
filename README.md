@@ -155,6 +155,7 @@ Create a TLS server stream over a TCP socket.
 - `(tls-cipher-suite stream)` - Returns the negotiated cipher suite
 - `(tls-version stream)` - Returns the TLS version (always 1.3)
 - `(tls-client-hostname stream)` - Returns the client's SNI hostname (server-side only)
+- `(tls-request-key-update stream &key request-peer-update)` - Request a TLS 1.3 key update
 
 ### Context Management
 
