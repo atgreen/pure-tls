@@ -50,10 +50,8 @@
       (let* ((now (get-internal-real-time))
              (age-ms (/ (* 1000 (- now (session-ticket-received-at ticket)))
                         internal-time-units-per-second)))
-        (if (< age-ms (* 1000 (session-ticket-lifetime ticket)))
-            ticket
-            ;; Ticket expired, remove it
-            (progn
+        (cond ((< age-ms (* 1000 (session-ticket-lifetime ticket))) ticket)
+      (t 
               (remhash hostname *session-ticket-cache*)
               nil))))))
 
@@ -205,7 +203,7 @@
 (defun decode-uint32-be (data offset)
   "Decode a 32-bit unsigned integer from 4 bytes big-endian."
   (logior (ash (aref data offset) 24)
-          (ash (aref data (+ offset 1)) 16)
+          (ash (aref data (1+ offset)) 16)
           (ash (aref data (+ offset 2)) 8)
           (aref data (+ offset 3))))
 
@@ -224,7 +222,7 @@
 (defun decode-uint64-be (data offset)
   "Decode a 64-bit unsigned integer from 8 bytes big-endian."
   (logior (ash (aref data offset) 56)
-          (ash (aref data (+ offset 1)) 48)
+          (ash (aref data (1+ offset)) 48)
           (ash (aref data (+ offset 2)) 40)
           (ash (aref data (+ offset 3)) 32)
           (ash (aref data (+ offset 4)) 24)
@@ -245,7 +243,7 @@
     ;; Pack the plaintext
     (replace plaintext resumption-master-secret)
     (setf (aref plaintext rms-len) (ldb (byte 8 8) cipher-suite))
-    (setf (aref plaintext (+ rms-len 1)) (ldb (byte 8 0) cipher-suite))
+    (setf (aref plaintext (1+ rms-len)) (ldb (byte 8 0) cipher-suite))
     (setf (aref plaintext (+ rms-len 2)) nonce-len)
     (replace plaintext nonce :start1 (+ rms-len 3))
     (let ((time-bytes (encode-uint64-be creation-time)))
@@ -280,7 +278,7 @@
                    (test-nonce-len-offset 34)
                    (cipher-suite (when (> total-len test-nonce-len-offset)
                                    (logior (ash (aref plaintext test-cs-offset) 8)
-                                           (aref plaintext (+ test-cs-offset 1)))))
+                                           (aref plaintext (1+ test-cs-offset)))))
                    (rms-len (if (and cipher-suite
                                      (= cipher-suite +tls-aes-256-gcm-sha384+))
                                 48
@@ -291,7 +289,7 @@
                      (nonce-offset (+ rms-len 3)))
                 (when (> total-len nonce-len-offset)
                   (let* ((cipher-suite (logior (ash (aref plaintext cs-offset) 8)
-                                               (aref plaintext (+ cs-offset 1))))
+                                               (aref plaintext (1+ cs-offset))))
                          (nonce-len (aref plaintext nonce-len-offset))
                          (time-offset (+ nonce-offset nonce-len)))
                     (when (>= total-len (+ time-offset 8))

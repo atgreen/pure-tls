@@ -204,12 +204,12 @@
            (#.+handshake-new-session-ticket+
             ;; NewSessionTicket - cache for session resumption
             (tls-stream-process-new-session-ticket stream (handshake-message-body msg)))
-           (t
+           (otherwise
             ;; Unknown post-handshake message - ignore
             nil)))
        ;; Recursively try to get more data
        (tls-stream-fill-buffer stream))
-      (t
+      (otherwise
        (error 'tls-error :message (format nil "Unexpected content type: ~D" content-type))))))
 
 (defun tls-stream-buffer-remaining (stream)
@@ -511,7 +511,7 @@
        (read-response tls))"
   `(let ((,var (make-tls-client-stream ,socket ,@args)))
      (unwind-protect
-         (progn ,@body)
+         (unquote-splicing body)
        (close ,var))))
 
 (defmacro with-tls-server-stream ((var socket &rest args) &body body)
@@ -525,5 +525,5 @@
        (handle-request tls))"
   `(let ((,var (make-tls-server-stream ,socket ,@args)))
      (unwind-protect
-         (progn ,@body)
+         (unquote-splicing body)
        (close ,var))))

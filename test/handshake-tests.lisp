@@ -208,17 +208,17 @@
   ;; AES-128-GCM-SHA256
   (is (= (pure-tls::cipher-suite-key-length pure-tls:+tls-aes-128-gcm-sha256+) 16))
   (is (= (pure-tls::cipher-suite-hash-length pure-tls:+tls-aes-128-gcm-sha256+) 32))
-  (is (eq (pure-tls::cipher-suite-digest pure-tls:+tls-aes-128-gcm-sha256+) :sha256))
+  (is (eql (pure-tls::cipher-suite-digest pure-tls:+tls-aes-128-gcm-sha256+) :sha256))
 
   ;; AES-256-GCM-SHA384
   (is (= (pure-tls::cipher-suite-key-length pure-tls:+tls-aes-256-gcm-sha384+) 32))
   (is (= (pure-tls::cipher-suite-hash-length pure-tls:+tls-aes-256-gcm-sha384+) 48))
-  (is (eq (pure-tls::cipher-suite-digest pure-tls:+tls-aes-256-gcm-sha384+) :sha384))
+  (is (eql (pure-tls::cipher-suite-digest pure-tls:+tls-aes-256-gcm-sha384+) :sha384))
 
   ;; ChaCha20-Poly1305-SHA256
   (is (= (pure-tls::cipher-suite-key-length pure-tls:+tls-chacha20-poly1305-sha256+) 32))
   (is (= (pure-tls::cipher-suite-hash-length pure-tls:+tls-chacha20-poly1305-sha256+) 32))
-  (is (eq (pure-tls::cipher-suite-digest pure-tls:+tls-chacha20-poly1305-sha256+) :sha256)))
+  (is (eql (pure-tls::cipher-suite-digest pure-tls:+tls-chacha20-poly1305-sha256+) :sha256)))
 
 ;;;; Named Group Tests
 

@@ -106,7 +106,7 @@
                          (let* (;; Total binders length (1 byte per binder length + binder data)
                                 (total-binders-len
                                   (loop for b in binders
-                                        sum (+ 1 (length b))))
+                                        sum (1+ (length b))))
                                 ;; Truncated hello is everything except the binders
                                 ;; The extension ends with: 2 bytes binders length + binders data
                                 (truncated-len (- (length raw-client-hello)
@@ -679,7 +679,7 @@
          (send-new-session-ticket hs)
          (return hs))
 
-        (t
+        (otherwise
          (error 'tls-handshake-error
                 :message (format nil "Unknown state: ~A" (server-handshake-state hs))
                 :state (server-handshake-state hs)))))))

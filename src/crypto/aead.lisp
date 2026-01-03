@@ -237,7 +237,7 @@
                     (aes-gcm-encrypt key nonce plaintext aad))
                    (#.+tls-chacha20-poly1305-sha256+
                     (chacha20-poly1305-encrypt key nonce plaintext aad))
-                   (t (error 'tls-crypto-error
+                   (otherwise (error 'tls-crypto-error
                              :operation "AEAD encrypt"
                              :message (format nil "Unsupported cipher suite: ~X" suite))))))
     (aead-increment-sequence cipher)
@@ -256,7 +256,7 @@
                     (aes-gcm-decrypt key nonce ciphertext aad))
                    (#.+tls-chacha20-poly1305-sha256+
                     (chacha20-poly1305-decrypt key nonce ciphertext aad))
-                   (t (error 'tls-crypto-error
+                   (otherwise (error 'tls-crypto-error
                              :operation "AEAD decrypt"
                              :message (format nil "Unsupported cipher suite: ~X" suite))))))
     (aead-increment-sequence cipher)
@@ -284,11 +284,11 @@
   (let ((policy *record-padding-policy*))
     (cond
       ((null policy) plaintext-length)
-      ((eq policy :block-256)
+      ((eql policy :block-256)
        (* 256 (ceiling (1+ plaintext-length) 256)))  ; +1 for content type
-      ((eq policy :block-1024)
+      ((eql policy :block-1024)
        (* 1024 (ceiling (1+ plaintext-length) 1024)))
-      ((eq policy :fixed-4096)
+      ((eql policy :fixed-4096)
        (min 4096 (max plaintext-length 4096)))
       ((functionp policy)
        (funcall policy plaintext-length))

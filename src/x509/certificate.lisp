@@ -189,7 +189,7 @@
        (parse-basic-constraints value-bytes))
       (:key-usage
        (parse-key-usage value-bytes))
-      (t
+      (otherwise
        ;; Return raw bytes for unknown extensions
        value-bytes))))
 
@@ -251,13 +251,13 @@
 (defun certificate-subject-common-names (cert)
   "Get all Common Name values from the certificate subject."
   (loop for (oid . value) in (x509-name-rdns (x509-certificate-subject cert))
-        when (eq oid :common-name)
+        when (eql oid :common-name)
           collect value))
 
 (defun certificate-issuer-common-names (cert)
   "Get all Common Name values from the certificate issuer."
   (loop for (oid . value) in (x509-name-rdns (x509-certificate-issuer cert))
-        when (eq oid :common-name)
+        when (eql oid :common-name)
           collect value))
 
 (defun certificate-dns-names (cert)
@@ -266,7 +266,7 @@
                        :key #'x509-extension-oid)))
     (when san-ext
       (loop for (type value) in (x509-extension-value san-ext)
-            when (eq type :dns)
+            when (eql type :dns)
               collect value))))
 
 (defun certificate-not-before (cert)

@@ -178,8 +178,8 @@ wrap it in a stream. Otherwise return it as-is."
                    input-buffer-size output-buffer-size))
   (let ((tls-verify-mode (cond
                            ((null verify) pure-tls:+verify-none+)
-                           ((eq verify :optional) pure-tls:+verify-peer+)
-                           ((eq verify :required) pure-tls:+verify-required+)
+                           ((eql verify :optional) pure-tls:+verify-peer+)
+                           ((eql verify :required) pure-tls:+verify-required+)
                            (t pure-tls:+verify-required+)))
         (actual-stream (%ensure-stream socket)))
     (ensure-initialized)
@@ -215,8 +215,8 @@ wrap it in a stream. Otherwise return it as-is."
                    input-buffer-size output-buffer-size))
   (let ((tls-verify-mode (cond
                            ((null verify) pure-tls:+verify-none+)
-                           ((eq verify :optional) pure-tls:+verify-peer+)
-                           ((eq verify :required) pure-tls:+verify-required+)
+                           ((eql verify :optional) pure-tls:+verify-peer+)
+                           ((eql verify :required) pure-tls:+verify-required+)
                            (t pure-tls:+verify-none+))))
     (ensure-initialized)
     (pure-tls:make-tls-server-stream

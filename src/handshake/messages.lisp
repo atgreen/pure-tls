@@ -354,7 +354,7 @@
                 (parse-new-session-ticket body))
                (#.+handshake-key-update+
                 (parse-key-update body))
-               (t body))))))  ; Return raw bytes for unknown types
+               (otherwise body))))))  ; Return raw bytes for unknown types
 
 (defun handshake-message-name (msg-type)
   "Return a human-readable name for a handshake message type."
@@ -370,4 +370,4 @@
     (#.+handshake-finished+ "Finished")
     (#.+handshake-key-update+ "KeyUpdate")
     (#.+handshake-message-hash+ "MessageHash")
-    (t (format nil "Unknown(~D)" msg-type))))
+    (otherwise (format nil "Unknown(~D)" msg-type))))

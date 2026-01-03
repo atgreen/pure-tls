@@ -129,7 +129,7 @@
      :sha256)
     (#.+tls-aes-256-gcm-sha384+
      :sha384)
-    (t :sha256)))
+    (otherwise :sha256)))
 
 (defun cipher-suite-key-length (cipher-suite)
   "Return the key length in bytes for a cipher suite."
@@ -137,7 +137,7 @@
     (#.+tls-aes-128-gcm-sha256+ 16)
     (#.+tls-aes-256-gcm-sha384+ 32)
     (#.+tls-chacha20-poly1305-sha256+ 32)
-    (t 16)))
+    (otherwise 16)))
 
 (defun cipher-suite-hash-length (cipher-suite)
   "Return the hash output length in bytes for a cipher suite."
@@ -147,4 +147,4 @@
      32)
     (#.+tls-aes-256-gcm-sha384+
      48)
-    (t 32)))
+    (otherwise 32)))

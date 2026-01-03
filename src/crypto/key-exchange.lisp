@@ -68,7 +68,7 @@
      (make-x25519-key-exchange))
     (#.+group-secp256r1+
      (make-secp256r1-key-exchange))
-    (t
+    (otherwise
      (error 'tls-crypto-error
             :operation "key exchange"
             :message (format nil "Unsupported group: ~X" group)))))
@@ -81,7 +81,7 @@
        (x25519-compute-shared-secret key-exchange peer-public-key))
       (#.+group-secp256r1+
        (secp256r1-compute-shared-secret key-exchange peer-public-key))
-      (t
+      (otherwise
        (error 'tls-crypto-error
               :operation "compute shared secret"
               :message (format nil "Unsupported group: ~X" group))))))
@@ -94,7 +94,7 @@
     (#.+group-secp256r1+ 65)  ; uncompressed point
     (#.+group-secp384r1+ 97)  ; uncompressed point
     (#.+group-secp521r1+ 133) ; uncompressed point
-    (t 0)))
+    (otherwise 0)))
 
 (defun named-group-name (group)
   "Return the human-readable name for a named group."
@@ -107,7 +107,7 @@
     (#.+group-ffdhe2048+ "ffdhe2048")
     (#.+group-ffdhe3072+ "ffdhe3072")
     (#.+group-ffdhe4096+ "ffdhe4096")
-    (t (format nil "unknown(~X)" group))))
+    (otherwise (format nil "unknown(~X)" group))))
 
 ;;;; Supported Groups for ClientHello
 
@@ -146,4 +146,4 @@
     (#.+sig-rsa-pss-rsae-sha512+ "rsa_pss_rsae_sha512")
     (#.+sig-ed25519+ "ed25519")
     (#.+sig-ed448+ "ed448")
-    (t (format nil "unknown(~X)" sig-alg))))
+    (otherwise (format nil "unknown(~X)" sig-alg))))

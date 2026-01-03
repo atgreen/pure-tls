@@ -285,6 +285,4 @@ Signals an error with details on verification failure."
       ;; Release individual certs (CFArray doesn't retain with NULL callbacks)
       (dolist (cert certs)
         (when cert
-          (%cf-release cert))))))
-
-) ; end #+(and (or darwin macos) (not windows)) progn
+          (%cf-release cert))))))) ; end #+(and (or darwin macos) (not windows)) progn

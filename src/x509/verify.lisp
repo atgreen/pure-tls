@@ -136,7 +136,7 @@
              (error 'tls-certificate-error
                     :message "Certificate signature verification failed in chain")))
   ;; Check if chain is anchored in trusted roots.
-  (let* ((root (car (last chain)))
+  (let* ((root (first (last chain)))
          (anchored (or (find-if (lambda (trusted)
                                   (find-if (lambda (cert)
                                              (or (certificate-equal-p cert trusted)
@@ -222,7 +222,7 @@
         (return-from verify-rsa-pkcs1v15-signature nil))
       ;; Extract DigestInfo (everything after the 0x00 separator)
       (let* ((digest-info (subseq em (1+ separator-pos)))
-             (prefix (cdr (assoc hash-algo *digest-info-prefixes*)))
+             (prefix (rest (assoc hash-algo *digest-info-prefixes*)))
              (hash-len (ironclad:digest-length hash-algo)))
         (unless prefix
           (error "Unknown hash algorithm: ~A" hash-algo))

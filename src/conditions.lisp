@@ -115,7 +115,7 @@
     (#.+alert-unknown-psk-identity+ "unknown_psk_identity")
     (#.+alert-certificate-required+ "certificate_required")
     (#.+alert-no-application-protocol+ "no_application_protocol")
-    (t (format nil "unknown(~D)" code))))
+    (otherwise (format nil "unknown(~D)" code))))
 
 ;;;; Decode Errors
 

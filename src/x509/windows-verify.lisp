@@ -291,6 +291,4 @@ Signals an error with details on verification failure."
     (#x800B010D "CERT_E_REVOCATION_FAILURE - Revocation check failed")
     (#x800B010E "CERT_E_CN_NO_MATCH - Certificate CN does not match hostname")
     (#x800B010F "CERT_E_WRONG_USAGE - Certificate wrong usage")
-    (otherwise (format nil "Error code: #x~X" code))))
-
-) ; end #+windows progn
+    (otherwise (format nil "Error code: #x~X" code))))) ; end #+windows progn

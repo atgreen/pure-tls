@@ -4,21 +4,21 @@
 ;;;
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 
-(asdf:defsystem #:pure-tls
+(asdf:defsystem "pure-tls"
   :description "Pure Common Lisp TLS 1.3 implementation"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
   :version "1.2.0"
-  :defsystem-depends-on (#:trivial-features)
-  :depends-on (#:ironclad
-               #:trivial-gray-streams
-               #:flexi-streams
-               #:alexandria
-               #:cl-base64
-               #:trivial-features
+  :defsystem-depends-on ("trivial-features")
+  :depends-on ("ironclad"
+               "trivial-gray-streams"
+               "flexi-streams"
+               "alexandria"
+               "cl-base64"
+               "trivial-features"
                ;; CFFI needed on Windows and macOS for native cert validation
-               (:feature :windows #:cffi)
-               (:feature (:or :darwin :macos) #:cffi))
+               (:feature :windows "cffi")
+               (:feature (:or :darwin :macos) "cffi"))
   :serial t
   :components ((:file "src/package")
                (:file "src/constants")
@@ -52,24 +52,24 @@
                (:file "src/context")
                (:file "src/streams")))
 
-(asdf:defsystem #:pure-tls/cl+ssl-compat
+(asdf:defsystem "pure-tls/cl+ssl-compat"
   :description "cl+ssl API compatibility layer for pure-tls"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
   :version "1.2.0"
-  :depends-on (#:pure-tls
-               #:usocket)
+  :depends-on ("pure-tls"
+               "usocket")
   :serial t
   :components ((:file "compat/package")
                (:file "compat/api")))
 
-(asdf:defsystem #:pure-tls/test
+(asdf:defsystem "pure-tls/test"
   :description "Tests for pure-tls"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
-  :depends-on (#:pure-tls
-               #:fiveam
-               #:usocket)
+  :depends-on ("pure-tls"
+               "fiveam"
+               "usocket")
   :serial t
   :components ((:module "test"
                 :serial t

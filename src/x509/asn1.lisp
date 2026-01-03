@@ -137,7 +137,7 @@
          (decode-utc-time (octets-to-string raw-bytes)))
         (#.+asn1-generalized-time+
          (decode-generalized-time (octets-to-string raw-bytes)))
-        (t raw-bytes))
+        (otherwise raw-bytes))
       ;; For non-universal, return raw bytes
       raw-bytes))
 
@@ -291,5 +291,5 @@
 
 (defun oid-name (oid)
   "Get the symbolic name for an OID, or the OID itself if unknown."
-  (or (cdr (assoc oid *well-known-oids* :test #'equal))
+  (or (rest (assoc oid *well-known-oids* :test #'equal))
       oid))

@@ -89,7 +89,7 @@
         "Inner plaintext length should be content + type + padding")
     (is (= (aref inner 5) 23)
         "Content type byte should be at position after content")
-    (is (= (aref inner 8) 0)
+    (is (zerop (aref inner 8))
         "Padding bytes should be zero")))
 
 ;;;; Record Padding Policy Tests
@@ -104,7 +104,7 @@
 (test record-padding-policy-block
   "Test block padding policy"
   (let ((pure-tls:*record-padding-policy* :block-256))
-    (is (eq pure-tls:*record-padding-policy* :block-256)
+    (is (eql pure-tls:*record-padding-policy* :block-256)
         "Block-256 padding policy should be set")))
 
 ;;;; Alert Record Tests
@@ -116,7 +116,7 @@
 
 (test alert-description-constants
   "Verify important alert description constants"
-  (is (= pure-tls:+alert-close-notify+ 0))
+  (is (zerop +alert-close-notify+))
   (is (= pure-tls:+alert-unexpected-message+ 10))
   (is (= pure-tls:+alert-bad-record-mac+ 20))
   (is (= pure-tls:+alert-handshake-failure+ 40))

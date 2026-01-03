@@ -44,23 +44,23 @@
 
 (test connect-google
   "Connect to google.com"
-  (is (eq (try-tls-connect "www.google.com") :success)))
+  (is (eql (try-tls-connect "www.google.com") :success)))
 
 (test connect-cloudflare
   "Connect to cloudflare.com"
-  (is (eq (try-tls-connect "www.cloudflare.com") :success)))
+  (is (eql (try-tls-connect "www.cloudflare.com") :success)))
 
 (test connect-github
   "Connect to github.com"
-  (is (eq (try-tls-connect "github.com") :success)))
+  (is (eql (try-tls-connect "github.com") :success)))
 
 (test connect-mozilla
   "Connect to mozilla.org"
-  (is (eq (try-tls-connect "www.mozilla.org") :success)))
+  (is (eql (try-tls-connect "www.mozilla.org") :success)))
 
 (test connect-amazon
   "Connect to amazon.com"
-  (is (eq (try-tls-connect "www.amazon.com") :success)))
+  (is (eql (try-tls-connect "www.amazon.com") :success)))
 
 #+windows
 (defun %make-empty-trust-context ()
@@ -76,7 +76,7 @@
   "Connect to google.com using Windows CryptoAPI verification"
   (let ((ctx (%make-empty-trust-context))
         (pure-tls:*use-windows-certificate-store* t))
-    (is (eq (try-tls-connect "www.google.com" :context ctx) :success))))
+    (is (eql (try-tls-connect "www.google.com" :context ctx) :success))))
 
 ;;;; Test Runner
 

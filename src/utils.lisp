@@ -245,7 +245,7 @@
    Ensures zeroization even if BODY signals an error."
   `(let ((,var ,init-form))
      (unwind-protect
-          (progn ,@body)
+          (unquote-splicing body)
        (zeroize ,var))))
 
 ;;;; String Encoding
@@ -270,7 +270,7 @@
   #+allegro (sys:getenv name)
   #+lispworks (lispworks:environment-variable name)
   #+abcl (ext:getenv name)
-  #+cmucl (cdr (assoc name ext:*environment-list* :test #'string=))
+  #+cmucl (rest (assoc name ext:*environment-list* :test #'string=))
   #+clasp (ext:getenv name)
   #-(or sbcl ccl ecl clisp allegro lispworks abcl cmucl clasp)
   (error "get-environment-variable not implemented for this Lisp"))

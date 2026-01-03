@@ -55,7 +55,7 @@
             ;; Note: PSK needs context (client vs server hello)
             ;; For now, return raw bytes - caller will parse appropriately
             data)
-           (t data))))  ; Return raw bytes for unknown extensions
+           (otherwise data))))  ; Return raw bytes for unknown extensions
 
 (defun serialize-extension (ext)
   "Serialize an extension to bytes."
@@ -80,7 +80,7 @@
                (serialize-psk-key-exchange-modes-extension ext-data))
               (#.+extension-pre-shared-key+
                (serialize-pre-shared-key-extension ext-data))
-              (t (if (typep ext-data 'octet-vector)
+              (otherwise (if (typep ext-data 'octet-vector)
                      ext-data
                      (make-octet-vector 0))))))
       (concat-octet-vectors
@@ -430,4 +430,4 @@
     (#.+extension-cookie+ "cookie")
     (#.+extension-psk-key-exchange-modes+ "psk_key_exchange_modes")
     (#.+extension-key-share+ "key_share")
-    (t (format nil "unknown(~D)" ext-type))))
+    (otherwise (format nil "unknown(~D)" ext-type))))

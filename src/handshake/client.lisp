@@ -447,13 +447,13 @@
         ((member sig-type '(:rsa-pss-rsae :rsa-pss-pss))
          (verify-rsa-pss-signature public-key-bytes content signature hash-algo))
         ;; RSA PKCS#1 v1.5 signatures
-        ((eq sig-type :rsa-pkcs1)
+        ((eql sig-type :rsa-pkcs1)
          (verify-rsa-pkcs1-signature public-key-bytes content signature hash-algo))
         ;; ECDSA signatures
-        ((eq sig-type :ecdsa)
+        ((eql sig-type :ecdsa)
          (verify-ecdsa-signature public-key-bytes content signature hash-algo key-algorithm))
         ;; Ed25519 (handles its own hashing internally)
-        ((eq sig-type :ed25519)
+        ((eql sig-type :ed25519)
          (verify-ed25519-signature public-key-bytes content signature))
         (t
          (error 'tls-handshake-error
@@ -475,7 +475,7 @@
     (#.+sig-ecdsa-secp384r1-sha384+ (values :sha384 :ecdsa))
     (#.+sig-ecdsa-secp521r1-sha512+ (values :sha512 :ecdsa))
     (#.+sig-ed25519+ (values nil :ed25519))
-    (t (values nil nil))))
+    (otherwise (values nil nil))))
 
 (defun verify-rsa-pss-signature (public-key-der content signature hash-algo)
   "Verify an RSA-PSS signature."
@@ -880,7 +880,7 @@
               ;; Don't update transcript yet - process-server-finished will do it after verification
               (setf (client-handshake-state hs) :wait-finished)
               (process-server-finished hs message raw-bytes))
-             (t (error 'tls-handshake-error
+             (otherwise (error 'tls-handshake-error
                        :message "Expected Certificate or Finished"
                        :state :wait-cert-or-finished)))))
         (:wait-certificate-verify
@@ -903,7 +903,7 @@
          (send-client-finished hs))
         (:connected
          (return hs))
-        (t
+        (otherwise
          (error 'tls-handshake-error
                 :message (format nil "Unknown state: ~A" (client-handshake-state hs))))))))
 
