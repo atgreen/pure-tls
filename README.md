@@ -44,8 +44,9 @@ Or add to your ASDF system:
   (pure-tls:with-tls-client-stream (tls (usocket:socket-stream socket)
                                         :hostname "example.com")
     ;; Send HTTP request
-    (write-sequence (pure-tls:string-to-octets
-                      "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+    (write-sequence (flexi-streams:string-to-octets
+                      "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"
+                      :external-format :utf-8)
                     tls)
     (force-output tls)
     ;; Read response

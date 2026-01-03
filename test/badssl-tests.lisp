@@ -31,9 +31,10 @@
                 (unwind-protect
                     (progn
                       (write-sequence
-                       (pure-tls:string-to-octets
+                       (flexi-streams:string-to-octets
                         (format nil "GET / HTTP/1.1\r\nHost: ~A\r\nConnection: close\r\n\r\n"
-                                hostname))
+                                hostname)
+                        :external-format :utf-8)
                        tls)
                       (force-output tls)
                       (if (read-byte tls nil nil) :success :no-data))

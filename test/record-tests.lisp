@@ -73,7 +73,7 @@
 (test inner-plaintext-format
   "Test TLS 1.3 inner plaintext structure"
   ;; TLSInnerPlaintext = content + ContentType + zeros (padding)
-  (let* ((content (pure-tls:string-to-octets "Hello"))
+  (let* ((content (flexi-streams:string-to-octets "Hello" :external-format :utf-8))
          (content-type 23)  ; application_data
          (padding-length 3)
          (inner-length (+ (length content) 1 padding-length))

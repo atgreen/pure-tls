@@ -56,9 +56,6 @@
    ;; Record padding (traffic analysis mitigation)
    #:*record-padding-policy*
 
-   ;; String utilities
-   #:string-to-octets
-   #:octets-to-string
 
    ;; Conditions
    #:tls-error
