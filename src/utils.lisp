@@ -213,14 +213,40 @@
     result))
 
 ;;;; Constant-Time Comparison
+;;;
+;;; Use Ironclad's constant-time-equal for side-channel resistance.
+;;; This avoids early returns and compares all elements to prevent timing attacks.
 
 (defun constant-time-equal (a b)
-  "Compare two octet vectors in constant time to prevent timing attacks."
-  (if (/= (length a) (length b))
-      nil
-      (zerop (reduce #'logior
-                     (map 'vector #'logxor a b)
-                     :initial-value 0))))
+  "Compare two octet vectors in constant time to prevent timing attacks.
+   Delegates to Ironclad's implementation for proper side-channel resistance."
+  (ironclad:constant-time-equal a b))
+
+;;;; Secret Zeroization
+;;;
+;;; Wipe sensitive data from memory to reduce exposure window.
+;;; Note: In a GC'd runtime, this is best-effort - the GC may have
+;;; already copied the data elsewhere. For highest security, consider
+;;; keeping secrets in foreign memory that can be mlock'd and wiped.
+
+(defun zeroize (vector)
+  "Overwrite VECTOR with zeros to clear sensitive data.
+   Returns VECTOR for convenience in cleanup chains.
+
+   IMPORTANT: This is best-effort in a GC'd runtime. The data may have
+   been copied by the GC before zeroization. For critical secrets,
+   consider using foreign memory."
+  (when vector
+    (fill vector 0))
+  vector)
+
+(defmacro with-zeroized-vector ((var init-form) &body body)
+  "Execute BODY with VAR bound to INIT-FORM, then zeroize VAR.
+   Ensures zeroization even if BODY signals an error."
+  `(let ((,var ,init-form))
+     (unwind-protect
+          (progn ,@body)
+       (zeroize ,var))))
 
 ;;;; String Encoding
 

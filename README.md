@@ -11,8 +11,8 @@ A pure Common Lisp implementation of TLS 1.3 (RFC 8446).
 
 ### Supported Cipher Suites
 
+- `TLS_AES_256_GCM_SHA384` (0x1302)
 - `TLS_AES_128_GCM_SHA256` (0x1301)
-- `TLS_CHACHA20_POLY1305_SHA256` (0x1303)
 
 ### Supported Key Exchange
 
@@ -121,6 +121,64 @@ Create a reusable TLS context for configuration.
 - `+verify-none+` (0) - No certificate verification
 - `+verify-peer+` (1) - Verify peer certificate if provided
 - `+verify-required+` (2) - Require and verify peer certificate
+
+## Side-Channel Hardening
+
+pure-tls implements several measures to mitigate side-channel attacks:
+
+### Constant-Time Operations
+
+All security-sensitive comparisons (MAC verification, key comparison) use Ironclad's constant-time comparison functions to prevent timing attacks. The implementation avoids early-return patterns that could leak information about secret data.
+
+### Uniform Error Handling
+
+All decryption failures produce identical error conditions (`tls-mac-error`) regardless of the failure cause, as required by RFC 8446. This prevents padding oracle attacks by ensuring attackers cannot distinguish between different types of decryption failures.
+
+### Secret Zeroization
+
+Sensitive cryptographic material can be explicitly cleared from memory using the `zeroize` function or the `with-zeroized-vector` macro:
+
+```lisp
+;; Explicit zeroization
+(let ((key (derive-key ...)))
+  (unwind-protect
+      (use-key key)
+    (pure-tls:zeroize key)))
+
+;; RAII-style zeroization
+(pure-tls:with-zeroized-vector (key (derive-key ...))
+  (use-key key))
+;; key is automatically zeroed here, even if an error occurs
+```
+
+Note: In a garbage-collected runtime, zeroization is best-effort as the GC may have already copied the data. For highest security requirements, consider foreign memory that can be mlock'd.
+
+### TLS 1.3 Record Padding
+
+Record padding helps mitigate traffic analysis by hiding the true length of application data. Configure padding via `*record-padding-policy*`:
+
+```lisp
+;; Pad all records to 256-byte boundaries
+(setf pure-tls:*record-padding-policy* :block-256)
+
+;; Pad to 1024-byte boundaries
+(setf pure-tls:*record-padding-policy* :block-1024)
+
+;; Fixed-size records (4096 bytes)
+(setf pure-tls:*record-padding-policy* :fixed-4096)
+
+;; Custom padding function
+(setf pure-tls:*record-padding-policy*
+      (lambda (plaintext-length)
+        (* 128 (ceiling plaintext-length 128))))
+
+;; No padding (default)
+(setf pure-tls:*record-padding-policy* nil)
+```
+
+### Current Limitations
+
+- **ChaCha20-Poly1305**: Not currently supported because Ironclad doesn't provide it as a combined AEAD mode. Only AES-GCM cipher suites are available. Since Ironclad implements AES in pure Common Lisp using table lookups (rather than hardware AES-NI instructions), the implementation may be susceptible to cache-timing attacks. A ChaCha20 implementation would be preferable for side-channel resistance as it uses only ARX (add-rotate-xor) operations.
 
 ## Dependencies
 

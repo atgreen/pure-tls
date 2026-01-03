@@ -204,26 +204,70 @@
     result))
 
 ;;;; TLS 1.3 Record Encryption/Decryption
+;;;
+;;; Record padding support per RFC 8446 Section 5.4:
+;;; "The padding octets all have value zero, and any receiver MAY
+;;;  remove any such trailing zero octets."
+;;;
+;;; Padding policies help mitigate traffic analysis by hiding true message lengths.
 
-(defun tls13-encrypt-record (cipher content-type plaintext)
+(defparameter *record-padding-policy* nil
+  "Record padding policy. Options:
+   NIL - No padding (default)
+   :BLOCK-256 - Pad to next 256-byte boundary
+   :BLOCK-1024 - Pad to next 1024-byte boundary
+   :FIXED-4096 - Pad all records to 4096 bytes (max that fits in typical MTU)
+   (function) - Custom function taking plaintext-length, returns target length")
+
+(defun compute-padded-length (plaintext-length)
+  "Compute the target length for a record based on padding policy.
+   Returns the target length for the inner plaintext (before content type byte)."
+  (let ((policy *record-padding-policy*))
+    (cond
+      ((null policy) plaintext-length)
+      ((eq policy :block-256)
+       (* 256 (ceiling (1+ plaintext-length) 256)))  ; +1 for content type
+      ((eq policy :block-1024)
+       (* 1024 (ceiling (1+ plaintext-length) 1024)))
+      ((eq policy :fixed-4096)
+       (min 4096 (max plaintext-length 4096)))
+      ((functionp policy)
+       (funcall policy plaintext-length))
+      (t plaintext-length))))
+
+(defun tls13-encrypt-record (cipher content-type plaintext &optional (padding-policy *record-padding-policy*))
   "Encrypt a TLS 1.3 record.
 
    The plaintext is padded with the inner content type and optional zeros,
    then encrypted with AAD being the record header.
 
+   PADDING-POLICY overrides *record-padding-policy* for this record.
+
    Returns the encrypted record payload (ciphertext + tag)."
-  ;; Build inner plaintext: content || content_type || zeros
-  (let* ((inner (concat-octet-vectors
-                 plaintext
-                 (octet-vector content-type)))
-         ;; AAD is the record header for the outer record
-         ;; TLSCiphertext header: content_type(1) || legacy_version(2) || length(2)
-         (encrypted-len (+ (length inner) +aead-tag-length+))
-         (aad (octet-vector +content-type-application-data+  ; outer type
-                            #x03 #x03                         ; legacy TLS 1.2 version
-                            (ldb (byte 8 8) encrypted-len)
-                            (ldb (byte 8 0) encrypted-len))))
-    (aead-encrypt cipher inner aad)))
+  (let ((*record-padding-policy* padding-policy))
+    ;; Build inner plaintext: content || content_type || zeros (padding)
+    (let* ((content-len (length plaintext))
+           (target-len (compute-padded-length content-len))
+           (padding-len (max 0 (- target-len content-len)))
+           ;; Ensure we don't exceed max record size
+           (actual-padding (min padding-len
+                                (- +max-record-size+ content-len +aead-tag-length+ 1)))
+           (inner (if (plusp actual-padding)
+                      (concat-octet-vectors
+                       plaintext
+                       (octet-vector content-type)
+                       (make-octet-vector actual-padding))  ; zeros for padding
+                      (concat-octet-vectors
+                       plaintext
+                       (octet-vector content-type))))
+           ;; AAD is the record header for the outer record
+           ;; TLSCiphertext header: content_type(1) || legacy_version(2) || length(2)
+           (encrypted-len (+ (length inner) +aead-tag-length+))
+           (aad (octet-vector +content-type-application-data+  ; outer type
+                              #x03 #x03                         ; legacy TLS 1.2 version
+                              (ldb (byte 8 8) encrypted-len)
+                              (ldb (byte 8 0) encrypted-len))))
+      (aead-encrypt cipher inner aad))))
 
 (defun tls13-decrypt-record (cipher ciphertext record-header)
   "Decrypt a TLS 1.3 record.
@@ -232,11 +276,15 @@
    RECORD-HEADER is the 5-byte TLS record header (used as AAD).
 
    Returns (VALUES plaintext content-type) where content-type is the
-   inner content type extracted from the decrypted data."
+   inner content type extracted from the decrypted data.
+
+   All decryption failures signal TLS-MAC-ERROR to avoid oracles.
+   Per RFC 8446, all failures should appear as 'bad_record_mac'."
   (let* ((inner (aead-decrypt cipher ciphertext record-header))
          ;; Find the content type (last non-zero byte)
          (content-type-pos (position-if-not #'zerop inner :from-end t)))
+    ;; Missing content type is also reported as MAC error to avoid oracle
     (unless content-type-pos
-      (error 'tls-decode-error :message "No content type in decrypted record"))
+      (error 'tls-mac-error))
     (values (subseq inner 0 content-type-pos)
             (aref inner content-type-pos))))

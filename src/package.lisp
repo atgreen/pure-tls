@@ -43,6 +43,12 @@
 
    ;; Crypto utilities
    #:random-bytes
+   #:constant-time-equal
+   #:zeroize
+   #:with-zeroized-vector
+
+   ;; Record padding (traffic analysis mitigation)
+   #:*record-padding-policy*
 
    ;; String utilities
    #:string-to-octets
@@ -85,6 +91,7 @@
 
    ;; Cipher suites
    #:+tls-aes-128-gcm-sha256+
+   #:+tls-aes-256-gcm-sha384+
    #:+tls-chacha20-poly1305-sha256+
 
    ;; Configuration
