@@ -7,8 +7,9 @@ on:
     branches: [master, main]
 
 jobs:
-  test:
+  test-linux:
     runs-on: ubuntu-latest
+    name: Linux (SBCL)
 
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +26,92 @@ jobs:
 
       - name: Install dependencies
         run: ocicl install
+
+      - name: Run offline tests
+        run: |
+          sbcl --non-interactive \
+            --eval '(asdf:load-system :pure-tls/test)' \
+            --eval '(unless (pure-tls/test:run-tests) (uiop:quit 1))'
+
+      - name: Run network tests
+        run: |
+          sbcl --non-interactive \
+            --eval '(asdf:load-system :pure-tls/test)' \
+            --eval '(unless (pure-tls/test:run-network-tests) (uiop:quit 1))'
+
+  test-windows:
+    runs-on: windows-latest
+    name: Windows (SBCL)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SBCL
+        run: |
+          choco install sbcl -y
+        shell: powershell
+
+      - name: Install Quicklisp
+        run: |
+          $ql = "$env:TEMP\quicklisp.lisp"
+          Invoke-WebRequest -Uri "https://beta.quicklisp.org/quicklisp.lisp" -OutFile $ql
+          sbcl --non-interactive --load $ql --eval "(quicklisp-quickstart:install)" --eval "(ql:add-to-init-file)"
+        shell: powershell
+
+      - name: Install dependencies via Quicklisp
+        run: |
+          sbcl --non-interactive `
+            --eval "(ql:quickload '(:ironclad :trivial-gray-streams :flexi-streams :alexandria :cl-base64 :cffi :fiveam :usocket))"
+        shell: powershell
+
+      - name: Register pure-tls with ASDF
+        run: |
+          $asdfRegistry = "$env:USERPROFILE\.config\common-lisp\source-registry.conf.d"
+          New-Item -ItemType Directory -Force -Path $asdfRegistry | Out-Null
+          Set-Content -Path "$asdfRegistry\pure-tls.conf" -Value "(:tree `"$((Get-Location).Path.Replace('\', '/'))`")"
+        shell: powershell
+
+      - name: Run offline tests
+        run: |
+          sbcl --non-interactive `
+            --eval "(asdf:load-system :pure-tls/test)" `
+            --eval "(unless (pure-tls/test:run-tests) (uiop:quit 1))"
+        shell: powershell
+
+      - name: Run network tests (with Windows cert store)
+        run: |
+          sbcl --non-interactive `
+            --eval "(asdf:load-system :pure-tls/test)" `
+            --eval "(format t `"~%Using Windows certificate store: ~A~%`" pure-tls:*use-windows-certificate-store*)" `
+            --eval "(unless (pure-tls/test:run-network-tests) (uiop:quit 1))"
+        shell: powershell
+
+  test-macos:
+    runs-on: macos-latest
+    name: macOS (SBCL)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SBCL
+        run: brew install sbcl
+
+      - name: Install Quicklisp
+        run: |
+          curl -o /tmp/quicklisp.lisp https://beta.quicklisp.org/quicklisp.lisp
+          sbcl --non-interactive --load /tmp/quicklisp.lisp \
+            --eval '(quicklisp-quickstart:install)' \
+            --eval '(ql:add-to-init-file)'
+
+      - name: Install dependencies via Quicklisp
+        run: |
+          sbcl --non-interactive \
+            --eval "(ql:quickload '(:ironclad :trivial-gray-streams :flexi-streams :alexandria :cl-base64 :fiveam :usocket))"
+
+      - name: Register pure-tls with ASDF
+        run: |
+          mkdir -p ~/.config/common-lisp/source-registry.conf.d/
+          echo "(:tree \"$PWD\")" > ~/.config/common-lisp/source-registry.conf.d/pure-tls.conf
 
       - name: Run offline tests
         run: |
