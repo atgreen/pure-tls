@@ -41,9 +41,9 @@
                 :serial t
                 :components ((:file "asn1")
                              (:file "certificate")
-                             (:file "verify")
                              ;; Windows native cert validation via CryptoAPI
-                             (:file "windows-verify" :if-feature :windows)))
+                             (:file "windows-verify" :if-feature :windows)
+                             (:file "verify")))
                (:file "src/context")
                (:file "src/streams")))
 
