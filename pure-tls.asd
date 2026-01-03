@@ -9,6 +9,7 @@
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
   :version "1.0.0"
+  :defsystem-depends-on (#:trivial-features)
   :depends-on (#:ironclad
                #:trivial-gray-streams
                #:flexi-streams
