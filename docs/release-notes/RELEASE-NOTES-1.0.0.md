@@ -46,9 +46,16 @@ Initial release of pure-tls, a pure Common Lisp implementation of TLS 1.3 (RFC 8
 - TLS 1.3 record padding for traffic analysis mitigation
 - SSLKEYLOGFILE support for Wireshark debugging
 
-### Compatibility
-- `pure-tls/cl+ssl-compat` system provides drop-in replacement for cl+ssl
-- Works with libraries expecting cl+ssl (e.g., drakma)
+### cl+ssl Drop-in Replacement
+- **Eliminate OpenSSL dependency** - Use pure-tls with existing cl+ssl-based code
+- `pure-tls/cl+ssl-compat` provides the `CL+SSL` package with compatible API
+- Works with libraries expecting cl+ssl (drakma, dexador, etc.)
+- Use `asdf:register-immutable-system` to prevent loading real cl+ssl:
+  ```lisp
+  (asdf:load-system :pure-tls/cl+ssl-compat)
+  (asdf:register-immutable-system "cl+ssl")
+  ;; Now load your application - cl+ssl calls go to pure-tls
+  ```
 
 ## API Highlights
 
