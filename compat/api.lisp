@@ -145,21 +145,35 @@
                                         close-callback
                                         external-format
                                         certificate key password
+                                        (verify nil)
+                                        alpn-protocols
                                         (cipher-list *default-cipher-list*)
                                         method
                                         (buffer-size *default-buffer-size*)
                                         (input-buffer-size buffer-size)
                                         (output-buffer-size buffer-size))
-  "Create an SSL server stream (wraps pure-tls:make-tls-server-stream)."
+  "Create an SSL server stream (wraps pure-tls:make-tls-server-stream).
+
+   VERIFY controls client certificate requirements:
+     NIL      - No client certificate requested (+verify-none+)
+     :OPTIONAL - Request but don't require client cert (+verify-peer+)
+     :REQUIRED - Require client certificate (+verify-required+)"
   (declare (ignore unwrap-stream-p password cipher-list method
                    input-buffer-size output-buffer-size))
-  (pure-tls:make-tls-server-stream
-   socket
-   :certificate certificate
-   :key key
-   :close-callback close-callback
-   :external-format external-format
-   :buffer-size buffer-size))
+  (let ((tls-verify-mode (cond
+                           ((null verify) pure-tls:+verify-none+)
+                           ((eq verify :optional) pure-tls:+verify-peer+)
+                           ((eq verify :required) pure-tls:+verify-required+)
+                           (t pure-tls:+verify-none+))))
+    (pure-tls:make-tls-server-stream
+     socket
+     :certificate certificate
+     :key key
+     :verify tls-verify-mode
+     :alpn-protocols alpn-protocols
+     :close-callback close-callback
+     :external-format external-format
+     :buffer-size buffer-size)))
 
 ;;;; Stream Accessors
 

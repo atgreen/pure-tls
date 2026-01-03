@@ -113,6 +113,27 @@
      :extensions (when (plusp (buffer-remaining buf))
                    (parse-extensions (buffer-read-vector16 buf))))))
 
+(defun serialize-server-hello (hello)
+  "Serialize a ServerHello to bytes."
+  (let ((buf (make-tls-write-buffer)))
+    ;; ProtocolVersion legacy_version = 0x0303
+    (write-buffer-append-uint16 buf (server-hello-legacy-version hello))
+    ;; Random random (32 bytes)
+    (write-buffer-append buf (server-hello-random hello))
+    ;; opaque legacy_session_id_echo<0..32>
+    (write-buffer-append-vector8 buf (or (server-hello-legacy-session-id-echo hello)
+                                          (make-octet-vector 0)))
+    ;; CipherSuite cipher_suite (2 bytes)
+    (write-buffer-append-uint16 buf (server-hello-cipher-suite hello))
+    ;; uint8 legacy_compression_method = 0
+    (write-buffer-append-octet buf (server-hello-legacy-compression-method hello))
+    ;; Extension extensions<6..2^16-1>
+    (let ((ext-buf (make-tls-write-buffer)))
+      (dolist (ext (server-hello-extensions hello))
+        (write-buffer-append ext-buf (serialize-extension ext)))
+      (write-buffer-append-vector16 buf (write-buffer-contents ext-buf)))
+    (write-buffer-contents buf)))
+
 ;;;; EncryptedExtensions
 
 (defstruct encrypted-extensions
@@ -124,6 +145,42 @@
   (let ((buf (make-tls-buffer data)))
     (make-encrypted-extensions
      :extensions (parse-extensions (buffer-read-vector16 buf)))))
+
+(defun serialize-encrypted-extensions (ee)
+  "Serialize an EncryptedExtensions message to bytes."
+  (let ((ext-buf (make-tls-write-buffer)))
+    (dolist (ext (encrypted-extensions-extensions ee))
+      (write-buffer-append ext-buf (serialize-extension ext)))
+    (let ((buf (make-tls-write-buffer)))
+      (write-buffer-append-vector16 buf (write-buffer-contents ext-buf))
+      (write-buffer-contents buf))))
+
+;;;; CertificateRequest
+
+(defstruct certificate-request
+  "CertificateRequest message (TLS 1.3)."
+  (certificate-request-context nil :type (or null octet-vector))
+  (extensions nil :type list))
+
+(defun parse-certificate-request (data)
+  "Parse a CertificateRequest message from bytes."
+  (let ((buf (make-tls-buffer data)))
+    (make-certificate-request
+     :certificate-request-context (buffer-read-vector8 buf)
+     :extensions (parse-extensions (buffer-read-vector16 buf)))))
+
+(defun serialize-certificate-request (req)
+  "Serialize a CertificateRequest message to bytes."
+  (let ((buf (make-tls-write-buffer)))
+    ;; opaque certificate_request_context<0..2^8-1>
+    (write-buffer-append-vector8 buf (or (certificate-request-certificate-request-context req)
+                                          (make-octet-vector 0)))
+    ;; Extension extensions<2..2^16-1>
+    (let ((ext-buf (make-tls-write-buffer)))
+      (dolist (ext (certificate-request-extensions req))
+        (write-buffer-append ext-buf (serialize-extension ext)))
+      (write-buffer-append-vector16 buf (write-buffer-contents ext-buf)))
+    (write-buffer-contents buf)))
 
 ;;;; Certificate
 
@@ -155,6 +212,25 @@
                           certs))))
        (nreverse certs)))))
 
+(defun serialize-certificate-message (cert-msg)
+  "Serialize a Certificate message to bytes."
+  (let ((buf (make-tls-write-buffer)))
+    ;; opaque certificate_request_context<0..2^8-1>
+    (write-buffer-append-vector8 buf (or (certificate-message-certificate-request-context cert-msg)
+                                          (make-octet-vector 0)))
+    ;; CertificateEntry certificate_list<0..2^24-1>
+    (let ((certs-buf (make-tls-write-buffer)))
+      (dolist (entry (certificate-message-certificate-list cert-msg))
+        ;; opaque cert_data<1..2^24-1>
+        (write-buffer-append-vector24 certs-buf (certificate-entry-cert-data entry))
+        ;; Extension extensions<0..2^16-1>
+        (let ((ext-buf (make-tls-write-buffer)))
+          (dolist (ext (certificate-entry-extensions entry))
+            (write-buffer-append ext-buf (serialize-extension ext)))
+          (write-buffer-append-vector16 certs-buf (write-buffer-contents ext-buf))))
+      (write-buffer-append-vector24 buf (write-buffer-contents certs-buf)))
+    (write-buffer-contents buf)))
+
 ;;;; CertificateVerify
 
 (defstruct certificate-verify
@@ -168,6 +244,15 @@
     (make-certificate-verify
      :algorithm (buffer-read-uint16 buf)
      :signature (buffer-read-vector16 buf))))
+
+(defun serialize-certificate-verify (cv)
+  "Serialize a CertificateVerify message to bytes."
+  (let ((buf (make-tls-write-buffer)))
+    ;; SignatureScheme algorithm (2 bytes)
+    (write-buffer-append-uint16 buf (certificate-verify-algorithm cv))
+    ;; opaque signature<0..2^16-1>
+    (write-buffer-append-vector16 buf (certificate-verify-signature cv))
+    (write-buffer-contents buf)))
 
 ;;;; Finished
 
@@ -253,6 +338,8 @@
                 (parse-server-hello body))
                (#.+handshake-encrypted-extensions+
                 (parse-encrypted-extensions body))
+               (#.+handshake-certificate-request+
+                (parse-certificate-request body))
                (#.+handshake-certificate+
                 (parse-certificate-message body))
                (#.+handshake-certificate-verify+

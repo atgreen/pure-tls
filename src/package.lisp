@@ -30,6 +30,7 @@
    #:tls-selected-alpn
    #:tls-cipher-suite
    #:tls-version
+   #:tls-client-hostname
 
    ;; Certificate handling
    #:parse-certificate

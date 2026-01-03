@@ -33,7 +33,8 @@
                 :components ((:file "messages")
                              (:file "key-schedule")
                              (:file "extensions")
-                             (:file "client")))
+                             (:file "client")
+                             (:file "server")))
                (:module "src/x509"
                 :serial t
                 :components ((:file "asn1")

@@ -231,14 +231,17 @@
 
 ;;;; CertificateVerify Processing
 
-(defun make-certificate-verify-content (transcript-hash)
+(defun make-certificate-verify-content (transcript-hash &optional client-p)
   "Construct the content that is signed in CertificateVerify.
    Per RFC 8446 Section 4.4.3, this is:
    - 64 bytes of 0x20 (space)
-   - The context string 'TLS 1.3, server CertificateVerify'
+   - The context string ('TLS 1.3, server CertificateVerify' or 'TLS 1.3, client CertificateVerify')
    - A single 0 byte
-   - The transcript hash"
-  (let* ((context-string "TLS 1.3, server CertificateVerify")
+   - The transcript hash
+   If CLIENT-P is true, uses the client context string; otherwise uses server."
+  (let* ((context-string (if client-p
+                             "TLS 1.3, client CertificateVerify"
+                             "TLS 1.3, server CertificateVerify"))
          (content-length (+ 64 (length context-string) 1 (length transcript-hash)))
          (content (make-octet-vector content-length))
          (pos 0))
@@ -372,6 +375,105 @@
     ((member key-algorithm '(:ecdsa-p384 :secp384r1)) :secp384r1)
     ((member key-algorithm '(:ecdsa-p521 :secp521r1)) :secp521r1)
     (t :secp256r1)))  ; Default to P-256
+
+;;;; Signature Generation (for server CertificateVerify and client auth)
+
+(defun signature-algorithm-for-key (private-key)
+  "Determine the TLS signature algorithm code for a private key.
+   Returns the signature algorithm ID for TLS."
+  (let ((key-type (type-of private-key)))
+    (cond
+      ;; RSA keys - use RSA-PSS with SHA-256
+      ((subtypep key-type 'ironclad::rsa-private-key)
+       +sig-rsa-pss-rsae-sha256+)
+      ;; ECDSA keys - determine curve
+      ((subtypep key-type 'ironclad::secp256r1-private-key)
+       +sig-ecdsa-secp256r1-sha256+)
+      ((subtypep key-type 'ironclad::secp384r1-private-key)
+       +sig-ecdsa-secp384r1-sha384+)
+      ((subtypep key-type 'ironclad::secp521r1-private-key)
+       +sig-ecdsa-secp521r1-sha512+)
+      ;; Ed25519
+      ((subtypep key-type 'ironclad::ed25519-private-key)
+       +sig-ed25519+)
+      (t
+       (error 'tls-handshake-error
+              :message (format nil "Unsupported private key type: ~A" key-type))))))
+
+(defun sign-data (content private-key)
+  "Sign CONTENT with PRIVATE-KEY.
+   Returns the signature bytes."
+  (let ((key-type (type-of private-key)))
+    (cond
+      ;; RSA keys - use RSA-PSS with SHA-256
+      ((subtypep key-type 'ironclad::rsa-private-key)
+       (ironclad:sign-message private-key content :pss :sha256))
+      ;; ECDSA keys
+      ((or (subtypep key-type 'ironclad::secp256r1-private-key)
+           (subtypep key-type 'ironclad::secp384r1-private-key)
+           (subtypep key-type 'ironclad::secp521r1-private-key))
+       (let* ((hash-algo (cond
+                           ((subtypep key-type 'ironclad::secp256r1-private-key) :sha256)
+                           ((subtypep key-type 'ironclad::secp384r1-private-key) :sha384)
+                           ((subtypep key-type 'ironclad::secp521r1-private-key) :sha512)))
+              (hash (ironclad:digest-sequence hash-algo content))
+              (raw-sig (ironclad:sign-message private-key hash)))
+         ;; ECDSA signatures from Ironclad need to be converted to DER format
+         (encode-ecdsa-signature-der raw-sig)))
+      ;; Ed25519
+      ((subtypep key-type 'ironclad::ed25519-private-key)
+       (ironclad:sign-message private-key content))
+      (t
+       (error 'tls-handshake-error
+              :message (format nil "Unsupported private key type for signing: ~A" key-type))))))
+
+(defun encode-ecdsa-signature-der (raw-sig)
+  "Encode an ECDSA signature (from Ironclad) to DER format.
+   RAW-SIG is an Ironclad signature object containing R and S values."
+  ;; Extract R and S from the signature
+  (let* ((r-bytes (ironclad::signature-element raw-sig :r))
+         (s-bytes (ironclad::signature-element raw-sig :s))
+         (r-int (ironclad:octets-to-integer r-bytes))
+         (s-int (ironclad:octets-to-integer s-bytes)))
+    ;; Encode as DER SEQUENCE { INTEGER r, INTEGER s }
+    (encode-der-sequence
+     (list (encode-der-integer r-int)
+           (encode-der-integer s-int)))))
+
+(defun encode-der-integer (value)
+  "Encode an integer as DER INTEGER."
+  (let* ((bytes (if (zerop value)
+                    (octet-vector 0)
+                    (ironclad:integer-to-octets value)))
+         ;; Add leading zero if high bit is set (to prevent interpretation as negative)
+         (bytes (if (and (plusp (length bytes))
+                         (>= (aref bytes 0) #x80))
+                    (concat-octet-vectors (octet-vector 0) bytes)
+                    bytes))
+         (len (length bytes)))
+    (concat-octet-vectors
+     (octet-vector #x02)  ; INTEGER tag
+     (encode-der-length len)
+     bytes)))
+
+(defun encode-der-length (len)
+  "Encode a DER length."
+  (cond
+    ((< len 128)
+     (octet-vector len))
+    ((< len 256)
+     (octet-vector #x81 len))
+    (t
+     (octet-vector #x82 (ldb (byte 8 8) len) (ldb (byte 8 0) len)))))
+
+(defun encode-der-sequence (elements)
+  "Encode a list of DER elements as a SEQUENCE."
+  (let* ((content (apply #'concat-octet-vectors elements))
+         (len (length content)))
+    (concat-octet-vectors
+     (octet-vector #x30)  ; SEQUENCE tag
+     (encode-der-length len)
+     content)))
 
 (defun make-ecdsa-public-key (curve public-key-bytes)
   "Create an ECDSA public key from raw bytes.

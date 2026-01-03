@@ -164,22 +164,131 @@
     (nreverse certs)))
 
 (defun load-private-key (path)
-  "Load a private key from a PEM file."
+  "Load a private key from a PEM file.
+   Returns an Ironclad private key object."
   (let ((bytes (read-file-bytes path)))
     (if (pem-encoded-p bytes)
         (let ((text (octets-to-string bytes)))
-          ;; Try different PEM labels
+          ;; Try different PEM labels and parse into Ironclad key
           (cond
             ((search "-----BEGIN PRIVATE KEY-----" text)
-             (pem-decode bytes "PRIVATE KEY"))
+             (parse-pkcs8-private-key (pem-decode bytes "PRIVATE KEY")))
             ((search "-----BEGIN RSA PRIVATE KEY-----" text)
-             (pem-decode bytes "RSA PRIVATE KEY"))
+             (parse-rsa-private-key (pem-decode bytes "RSA PRIVATE KEY")))
             ((search "-----BEGIN EC PRIVATE KEY-----" text)
-             (pem-decode bytes "EC PRIVATE KEY"))
+             (parse-ec-private-key (pem-decode bytes "EC PRIVATE KEY")))
             (t
              (error 'tls-error :message "Unknown private key format"))))
-        ;; Assume DER
-        bytes)))
+        ;; Assume DER - try PKCS#8 format first
+        (parse-pkcs8-private-key bytes))))
+
+(defun parse-pkcs8-private-key (der)
+  "Parse a PKCS#8 encoded private key."
+  (let ((parsed (parse-der der)))
+    (when (asn1-sequence-p parsed)
+      (let* ((children (asn1-children parsed))
+             (algorithm-seq (second children))
+             (key-octet-string (third children)))
+        (when (and (asn1-sequence-p algorithm-seq)
+                   (asn1-octet-string-p key-octet-string))
+          (let* ((alg-children (asn1-children algorithm-seq))
+                 (alg-oid (when alg-children (asn1-node-value (first alg-children)))))
+            ;; Dispatch based on algorithm OID
+            (cond
+              ;; RSA: 1.2.840.113549.1.1.1
+              ((equal alg-oid '(1 2 840 113549 1 1 1))
+               (parse-rsa-private-key (asn1-node-value key-octet-string)))
+              ;; EC: 1.2.840.10045.2.1
+              ((equal alg-oid '(1 2 840 10045 2 1))
+               (let ((curve-oid (when (>= (length alg-children) 2)
+                                  (asn1-node-value (second alg-children)))))
+                 (parse-ec-private-key-with-curve
+                  (asn1-node-value key-octet-string)
+                  curve-oid)))
+              ;; Ed25519: 1.3.101.112
+              ((equal alg-oid '(1 3 101 112))
+               (parse-ed25519-private-key (asn1-node-value key-octet-string)))
+              (t
+               (error 'tls-error
+                      :message (format nil "Unsupported private key algorithm: ~A" alg-oid))))))))))
+
+(defun parse-rsa-private-key (der)
+  "Parse an RSA private key from DER."
+  (let ((parsed (parse-der der)))
+    (when (asn1-sequence-p parsed)
+      (let ((children (asn1-children parsed)))
+        ;; RSAPrivateKey ::= SEQUENCE {
+        ;;   version INTEGER,
+        ;;   modulus INTEGER,
+        ;;   publicExponent INTEGER,
+        ;;   privateExponent INTEGER,
+        ;;   prime1 INTEGER,
+        ;;   prime2 INTEGER,
+        ;;   exponent1 INTEGER,
+        ;;   exponent2 INTEGER,
+        ;;   coefficient INTEGER
+        ;; }
+        (when (>= (length children) 9)
+          (let ((n (asn1-node-value (second children)))   ; modulus
+                (e (asn1-node-value (third children)))    ; public exponent
+                (d (asn1-node-value (fourth children)))   ; private exponent
+                (p (asn1-node-value (fifth children)))    ; prime1
+                (q (asn1-node-value (sixth children))))   ; prime2
+            (ironclad:make-private-key :rsa :n n :e e :d d :p p :q q)))))))
+
+(defun parse-ec-private-key (der)
+  "Parse an EC private key from DER (SEC 1 format)."
+  (let ((parsed (parse-der der)))
+    (when (asn1-sequence-p parsed)
+      (let ((children (asn1-children parsed)))
+        ;; ECPrivateKey ::= SEQUENCE {
+        ;;   version INTEGER,
+        ;;   privateKey OCTET STRING,
+        ;;   parameters [0] ECParameters OPTIONAL,
+        ;;   publicKey [1] BIT STRING OPTIONAL
+        ;; }
+        (when (>= (length children) 2)
+          (let* ((private-key-bytes (asn1-node-value (second children)))
+                 ;; Look for curve OID in parameters
+                 (params (find-if (lambda (c)
+                                    (and (listp c)
+                                         (eq (car c) :context)
+                                         (= (second c) 0)))
+                                  children))
+                 (curve-oid (when params
+                              (let ((param-children (asn1-children (third params))))
+                                (when param-children
+                                  (asn1-node-value (first param-children)))))))
+            (parse-ec-private-key-with-curve private-key-bytes curve-oid)))))))
+
+(defun parse-ec-private-key-with-curve (private-key-bytes curve-oid)
+  "Parse an EC private key with a known curve OID."
+  ;; Map curve OIDs to Ironclad curve names
+  (let ((curve (cond
+                 ;; secp256r1 / prime256v1: 1.2.840.10045.3.1.7
+                 ((equal curve-oid '(1 2 840 10045 3 1 7)) :secp256r1)
+                 ;; secp384r1: 1.3.132.0.34
+                 ((equal curve-oid '(1 3 132 0 34)) :secp384r1)
+                 ;; secp521r1: 1.3.132.0.35
+                 ((equal curve-oid '(1 3 132 0 35)) :secp521r1)
+                 ;; Default to secp256r1
+                 (t :secp256r1))))
+    ;; Create the private key from the raw bytes
+    (ironclad:make-private-key curve :x private-key-bytes)))
+
+(defun parse-ed25519-private-key (key-bytes)
+  "Parse an Ed25519 private key."
+  ;; Ed25519 private key is 32 bytes, but may be wrapped in OCTET STRING
+  (let ((key (if (and (> (length key-bytes) 32)
+                      (= (aref key-bytes 0) #x04))  ; OCTET STRING tag
+                 (subseq key-bytes 2)  ; Skip tag and length
+                 key-bytes)))
+    (ironclad:make-private-key :ed25519 :x key)))
+
+(defun asn1-octet-string-p (node)
+  "Check if ASN.1 node is an OCTET STRING."
+  (and (listp node)
+       (eq (first node) :octet-string)))
 
 (defun make-trust-store-from-sources (ca-file ca-directory)
   "Create a trust store from a CA file and/or directory."

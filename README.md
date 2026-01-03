@@ -75,6 +75,36 @@ Or add to your ASDF system:
   (format t "Selected protocol: ~A~%" (pure-tls:tls-selected-alpn tls)))
 ```
 
+### TLS Server
+
+```lisp
+(asdf:load-system :pure-tls)
+(asdf:load-system :usocket)
+
+;; Create a server socket
+(let ((server (usocket:socket-listen "0.0.0.0" 8443)))
+  (loop
+    (let* ((client-socket (usocket:socket-accept server :element-type '(unsigned-byte 8)))
+           (tls (pure-tls:make-tls-server-stream
+                  (usocket:socket-stream client-socket)
+                  :certificate "/path/to/cert.pem"
+                  :key "/path/to/key.pem")))
+      ;; Handle TLS connection
+      (loop for byte = (read-byte tls nil nil)
+            while byte
+            do (write-byte byte tls))
+      (close tls))))
+```
+
+### Server with Client Certificate Authentication (mTLS)
+
+```lisp
+(pure-tls:make-tls-server-stream stream
+  :certificate "/path/to/server-cert.pem"
+  :key "/path/to/server-key.pem"
+  :verify pure-tls:+verify-required+)  ; Require client certificate
+```
+
 ### Using the cl+ssl Compatibility Layer
 
 ```lisp
@@ -103,12 +133,28 @@ Create a TLS client stream over a TCP socket.
 - `external-format` - If specified, wrap in a flexi-stream for character I/O
 - `buffer-size` - Size of I/O buffers (default 16384)
 
+#### `make-tls-server-stream` (socket &key context certificate key verify alpn-protocols close-callback external-format buffer-size)
+
+Create a TLS server stream over a TCP socket.
+
+- `socket` - The underlying TCP stream
+- `context` - TLS context for configuration (optional)
+- `certificate` - Certificate chain (list of certificates or path to PEM file)
+- `key` - Private key (Ironclad key object or path to PEM file)
+- `verify` - Client certificate verification mode: `+verify-none+`, `+verify-peer+`, or `+verify-required+`
+- `alpn-protocols` - List of ALPN protocol names the server supports
+- `close-callback` - Function called when stream is closed
+- `external-format` - If specified, wrap in a flexi-stream for character I/O
+- `buffer-size` - Size of I/O buffers (default 16384)
+
 ### Stream Accessors
 
 - `(tls-peer-certificate stream)` - Returns the peer's X.509 certificate
+- `(tls-peer-certificate-chain stream)` - Returns the peer's full certificate chain
 - `(tls-selected-alpn stream)` - Returns the negotiated ALPN protocol
 - `(tls-cipher-suite stream)` - Returns the negotiated cipher suite
 - `(tls-version stream)` - Returns the TLS version (always 1.3)
+- `(tls-client-hostname stream)` - Returns the client's SNI hostname (server-side only)
 
 ### Context Management
 
@@ -189,10 +235,9 @@ Record padding helps mitigate traffic analysis by hiding the true length of appl
 
 ## Limitations
 
-- Client mode only (server mode not yet implemented)
 - No session resumption (PSK)
 - No 0-RTT early data
-- No client certificates
+- No HelloRetryRequest handling
 
 ## License
 

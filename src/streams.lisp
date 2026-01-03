@@ -214,31 +214,45 @@
    Returns an x509-certificate structure (already parsed)."
   (let ((hs (tls-stream-handshake stream)))
     (when hs
-      (client-handshake-peer-certificate hs))))
+      (typecase hs
+        (client-handshake (client-handshake-peer-certificate hs))
+        (server-handshake (server-handshake-peer-certificate hs))))))
 
 (defun tls-peer-certificate-chain (stream)
   "Return the peer's full certificate chain, if available.
    Returns a list of x509-certificate structures (leaf first)."
   (let ((hs (tls-stream-handshake stream)))
     (when hs
-      (client-handshake-peer-certificate-chain hs))))
+      (typecase hs
+        (client-handshake (client-handshake-peer-certificate-chain hs))
+        (server-handshake (server-handshake-peer-certificate-chain hs))))))
 
 (defun tls-selected-alpn (stream)
   "Return the negotiated ALPN protocol, if any."
   (let ((hs (tls-stream-handshake stream)))
     (when hs
-      (client-handshake-selected-alpn hs))))
+      (typecase hs
+        (client-handshake (client-handshake-selected-alpn hs))
+        (server-handshake (server-handshake-selected-alpn hs))))))
 
 (defun tls-cipher-suite (stream)
   "Return the negotiated cipher suite."
   (let ((hs (tls-stream-handshake stream)))
     (when hs
-      (client-handshake-selected-cipher-suite hs))))
+      (typecase hs
+        (client-handshake (client-handshake-selected-cipher-suite hs))
+        (server-handshake (server-handshake-selected-cipher-suite hs))))))
 
 (defun tls-version (stream)
   "Return the TLS version (always 1.3 for this implementation)."
   (declare (ignore stream))
   +tls-1.3+)
+
+(defun tls-client-hostname (stream)
+  "Return the client's SNI hostname (server-side only)."
+  (let ((hs (tls-stream-handshake stream)))
+    (when (server-handshake-p hs)
+      (server-handshake-client-hostname hs))))
 
 ;;;; Stream Creation
 
@@ -300,6 +314,8 @@
                                         (context (ensure-default-context))
                                         certificate
                                         key
+                                        (verify +verify-none+)
+                                        alpn-protocols
                                         close-callback
                                         external-format
                                         (buffer-size *default-buffer-size*))
@@ -307,20 +323,56 @@
 
    SOCKET - The underlying TCP stream or socket.
    CONTEXT - TLS context for configuration.
-   CERTIFICATE - Path to certificate file (overrides context).
-   KEY - Path to private key file (overrides context).
+   CERTIFICATE - Certificate chain (list of x509-certificate) or path to PEM file.
+   KEY - Private key (Ironclad key object) or path to PEM file.
+   VERIFY - Client certificate verification mode (+verify-none+, +verify-peer+, +verify-required+).
+   ALPN-PROTOCOLS - List of ALPN protocol names the server supports.
    CLOSE-CALLBACK - Function called when stream is closed.
    EXTERNAL-FORMAT - If non-NIL, wrap in a flexi-stream.
    BUFFER-SIZE - Size of I/O buffers.
 
    Returns the TLS stream, or a flexi-stream if EXTERNAL-FORMAT specified."
-  (declare (ignore context certificate key))
-  (let ((stream (make-instance 'tls-server-stream
-                               :stream socket
-                               :close-callback close-callback
-                               :buffer-size buffer-size)))
-    ;; TODO: Implement server handshake
-    (error 'tls-error :message "Server mode not yet implemented")
+  (let* ((stream (make-instance 'tls-server-stream
+                                :stream socket
+                                :close-callback close-callback
+                                :buffer-size buffer-size))
+         (record-layer (make-record-layer socket))
+         ;; Get certificate chain (from parameter, context, or file)
+         (cert-chain (cond
+                       ((listp certificate) certificate)
+                       ((stringp certificate) (load-certificate-chain certificate))
+                       ((pathnamep certificate) (load-certificate-chain certificate))
+                       (t (tls-context-certificate-chain context))))
+         ;; Get private key (from parameter, context, or file)
+         (private-key (cond
+                        ((or (null key) (stringp key) (pathnamep key))
+                         (let ((key-source (or key
+                                               (when (stringp certificate) certificate)
+                                               (when (pathnamep certificate) certificate))))
+                           (if key-source
+                               (load-private-key key-source)
+                               (tls-context-private-key context))))
+                        (t key)))  ; Already an Ironclad key object
+         ;; Get trust store for client certificate verification
+         (trust-store (when (member verify (list +verify-peer+ +verify-required+))
+                        (tls-context-trust-store context)))
+         ;; Get ALPN protocols
+         (alpn (or alpn-protocols (tls-context-alpn-protocols context))))
+    ;; Validate we have certificate and key
+    (unless cert-chain
+      (error 'tls-error :message "Server requires a certificate chain"))
+    (unless private-key
+      (error 'tls-error :message "Server requires a private key"))
+    (setf (tls-stream-record-layer stream) record-layer)
+    ;; Perform server handshake
+    (let ((hs (perform-server-handshake
+               record-layer
+               cert-chain
+               private-key
+               :alpn-protocols alpn
+               :verify-mode verify
+               :trust-store trust-store)))
+      (setf (tls-stream-handshake stream) hs))
     ;; Wrap with flexi-stream if external-format specified
     (if external-format
         (flexi-streams:make-flexi-stream stream :external-format external-format)
