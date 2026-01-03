@@ -14,10 +14,10 @@
    #:run-record-tests
    #:run-handshake-tests
    #:run-certificate-tests
-   #:run-badssl-tests
+   #:run-network-tests
    ;; Test suites
    #:crypto-tests
    #:record-tests
    #:handshake-tests
    #:certificate-tests
-   #:badssl-tests))
+   #:network-tests))
