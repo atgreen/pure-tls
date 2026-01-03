@@ -66,18 +66,25 @@
   (type :uint32)
   (usage (:struct cert-enhkey-usage)))
 
-;; CERT_CHAIN_PARA - must include full CERT_USAGE_MATCH
+;; CERT_CHAIN_PARA (full struct per Microsoft Learn)
 (cffi:defcstruct cert-chain-para
   (size :uint32)
-  (requested-usage (:struct cert-usage-match)))
+  (requested-usage (:struct cert-usage-match))
+  (requested-issuance-policy (:struct cert-usage-match))
+  (url-retrieval-timeout :uint32)
+  (check-revocation-freshness-time :int32)  ; BOOL (32-bit)
+  (revocation-freshness-time :uint32)
+  (cache-resync :pointer)        ; LPFILETIME
+  (strong-sign-para :pointer)    ; PCCERT_STRONG_SIGN_PARA
+  (strong-sign-flags :uint32))
 
-;; SSL_EXTRA_CERT_CHAIN_POLICY_PARA - includes pszUsageIdentifier at end
+;; SSL_EXTRA_CERT_CHAIN_POLICY_PARA / HTTPSPolicyCallbackData
+;; Note: No pszUsageIdentifier for SSL policy (ends at pwszServerName)
 (cffi:defcstruct ssl-extra-cert-chain-policy-para
   (size :uint32)
   (auth-type :uint32)
   (checks :uint32)
-  (server-name :pointer)
-  (usage-identifier :pointer))  ; pszUsageIdentifier - was missing!
+  (server-name :pointer))
 
 (cffi:defcstruct cert-chain-policy-para
   (size :uint32)
@@ -202,15 +209,12 @@ Signals an error with details on verification failure."
                  (%cert-free-context ctx))))
 
            ;; Build the certificate chain
+           ;; CERT_CHAIN_PARA: memset zeros all optional fields, just set cbSize
            (cffi:with-foreign-objects ((chain-para '(:struct cert-chain-para))
                                        (chain-ptr :pointer))
              (%memset chain-para (cffi:foreign-type-size '(:struct cert-chain-para)))
              (setf (cffi:foreign-slot-value chain-para '(:struct cert-chain-para) 'size)
                    (cffi:foreign-type-size '(:struct cert-chain-para)))
-             ;; Zero out the embedded CERT_USAGE_MATCH - no specific usage requested
-             (setf (cffi:foreign-slot-value
-                    (cffi:foreign-slot-pointer chain-para '(:struct cert-chain-para) 'requested-usage)
-                    '(:struct cert-usage-match) 'type) 0)
 
              (unless (%cert-get-chain (cffi:null-pointer)
                                        hcert
@@ -238,9 +242,7 @@ Signals an error with details on verification failure."
                      (cffi:foreign-slot-value ssl-extra '(:struct ssl-extra-cert-chain-policy-para) 'checks)
                      0
                      (cffi:foreign-slot-value ssl-extra '(:struct ssl-extra-cert-chain-policy-para) 'server-name)
-                     whostname
-                     (cffi:foreign-slot-value ssl-extra '(:struct ssl-extra-cert-chain-policy-para) 'usage-identifier)
-                     (cffi:null-pointer))
+                     whostname)
 
                (%memset policy-para (cffi:foreign-type-size '(:struct cert-chain-policy-para)))
                (setf (cffi:foreign-slot-value policy-para '(:struct cert-chain-policy-para) 'size)
