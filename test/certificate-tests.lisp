@@ -204,18 +204,25 @@
         "Certificate should be expired (notAfter in the past)")))
 
 (test parse-self-signed-certificate
-  "Test parsing a self-signed certificate"
-  (let* ((cert-path (test-cert-path "wildcard-self-signed.pem"))
+  "Test parsing a self-signed certificate (valid, not expired)"
+  (let* ((cert-path (test-cert-path "self-signed-valid.pem"))
          (cert (pure-tls:parse-certificate-from-file cert-path)))
     (is (not (null cert))
         "Should successfully parse self-signed certificate")
-    ;; Self-signed: subject CN contains *.badssl.com
+    ;; Self-signed: subject CN is test.example.com
     (let ((cns (pure-tls:certificate-subject-common-names cert)))
-      (is (member "*.badssl.com" cns :test #'string=)
+      (is (member "test.example.com" cns :test #'string=)
           "Self-signed cert should have correct CN"))
-    ;; Also verify it's expired (Aug 2018)
-    (is (< (pure-tls:certificate-not-after cert) (get-universal-time))
-        "Self-signed test cert should be expired")))
+    ;; Verify it's NOT expired (valid until 2036)
+    (is (> (pure-tls:certificate-not-after cert) (get-universal-time))
+        "Self-signed test cert should still be valid")
+    ;; Verify issuer == subject (self-signed property)
+    (let* ((subject-rdns (pure-tls::x509-name-rdns
+                          (pure-tls::x509-certificate-subject cert)))
+           (issuer-rdns (pure-tls::x509-name-rdns
+                         (pure-tls::x509-certificate-issuer cert))))
+      (is (equal subject-rdns issuer-rdns)
+          "Self-signed: issuer should equal subject"))))
 
 (test parse-superfish-ca
   "Test parsing the Superfish malware CA certificate"
