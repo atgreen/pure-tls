@@ -108,4 +108,4 @@
 
    ;; Platform-specific verification
    #:*use-windows-certificate-store*
-   #+windows #:verify-certificate-chain-windows))
+   #+win32 #:verify-certificate-chain-windows))

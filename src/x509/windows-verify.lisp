@@ -11,7 +11,7 @@
 
 (in-package #:pure-tls)
 
-#+windows
+#+win32
 (progn
 
 (cffi:define-foreign-library crypt32
@@ -268,4 +268,4 @@ Signals an error with details on verification failure."
     (#x800B010F "CERT_E_WRONG_USAGE - Certificate wrong usage")
     (otherwise (format nil "Error code: #x~X" code))))
 
-) ; end #+windows progn
+) ; end #+win32 progn

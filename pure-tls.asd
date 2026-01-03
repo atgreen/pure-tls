@@ -15,7 +15,7 @@
                #:alexandria
                #:cl-base64
                ;; CFFI only needed on Windows for native cert validation
-               (:feature :windows #:cffi))
+               (:feature :win32 #:cffi))
   :serial t
   :components ((:file "src/package")
                (:file "src/constants")
@@ -42,7 +42,7 @@
                 :components ((:file "asn1")
                              (:file "certificate")
                              ;; Windows native cert validation via CryptoAPI
-                             (:file "windows-verify" :if-feature :windows)
+                             (:file "windows-verify" :if-feature :win32)
                              (:file "verify")))
                (:file "src/context")
                (:file "src/streams")))
