@@ -102,7 +102,7 @@
     (error 'tls-certificate-error :message "Empty certificate chain"))
 
   ;; Try native verification first (Windows with CryptoAPI)
-  #+win32
+  #+windows
   (when (and hostname *use-windows-certificate-store*)
     (handler-case
         (when (verify-certificate-chain-native chain hostname)
@@ -358,13 +358,13 @@
 
 ;;;; Platform-specific verification
 
-#+win32
+#+windows
 (defvar *use-windows-certificate-store* t
   "When T on Windows, use Windows CryptoAPI for certificate chain verification.
 This uses the system's trusted root certificates and respects enterprise PKI
 policies. Set to NIL to use pure Lisp verification instead.")
 
-#-win32
+#-windows
 (defvar *use-windows-certificate-store* nil
   "Always NIL on non-Windows platforms.")
 
@@ -372,7 +372,7 @@ policies. Set to NIL to use pure Lisp verification instead.")
   "Attempt native certificate chain verification.
 Returns T if verification succeeded, NIL if native verification not available,
 or signals an error on verification failure."
-  #+win32
+  #+windows
   (when *use-windows-certificate-store*
     (verify-certificate-chain-windows
      (mapcar #'x509-certificate-raw-der chain)
