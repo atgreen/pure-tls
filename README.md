@@ -39,62 +39,50 @@ Or add to your ASDF system:
 ### Basic HTTPS Client
 
 ```lisp
-(asdf:load-system :pure-tls)
-(asdf:load-system :usocket)
-
-(let* ((socket (usocket:socket-connect "example.com" 443
-                                        :element-type '(unsigned-byte 8)))
-       (tls (pure-tls:make-tls-client-stream
-              (usocket:socket-stream socket)
-              :hostname "example.com")))
-  ;; Send HTTP request
-  (write-sequence (pure-tls:string-to-octets
-                    "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
-                  tls)
-  (force-output tls)
-  ;; Read response
-  (loop for byte = (read-byte tls nil nil)
-        while byte
-        do (write-char (code-char byte)))
-  (close tls))
+(let ((socket (usocket:socket-connect "example.com" 443
+                                       :element-type '(unsigned-byte 8))))
+  (pure-tls:with-tls-client-stream (tls (usocket:socket-stream socket)
+                                        :hostname "example.com")
+    ;; Send HTTP request
+    (write-sequence (pure-tls:string-to-octets
+                      "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+                    tls)
+    (force-output tls)
+    ;; Read response
+    (loop for byte = (read-byte tls nil nil)
+          while byte
+          do (write-char (code-char byte)))))
+;; Stream automatically closed
 ```
 
 ### With Certificate Verification
 
 ```lisp
-(pure-tls:make-tls-client-stream stream
-  :hostname "example.com"
-  :verify pure-tls:+verify-peer+)  ; Verify server certificate
+(pure-tls:with-tls-client-stream (tls socket
+                                      :hostname "example.com"
+                                      :verify pure-tls:+verify-peer+)
+  (do-something-with tls))
 ```
 
 ### ALPN Protocol Negotiation
 
 ```lisp
-(let ((tls (pure-tls:make-tls-client-stream stream
-             :hostname "example.com"
-             :alpn-protocols '("h2" "http/1.1"))))
+(pure-tls:with-tls-client-stream (tls socket
+                                      :hostname "example.com"
+                                      :alpn-protocols '("h2" "http/1.1"))
   (format t "Selected protocol: ~A~%" (pure-tls:tls-selected-alpn tls)))
 ```
 
 ### TLS Server
 
 ```lisp
-(asdf:load-system :pure-tls)
-(asdf:load-system :usocket)
-
-;; Create a server socket
 (let ((server (usocket:socket-listen "0.0.0.0" 8443)))
   (loop
-    (let* ((client-socket (usocket:socket-accept server :element-type '(unsigned-byte 8)))
-           (tls (pure-tls:make-tls-server-stream
-                  (usocket:socket-stream client-socket)
-                  :certificate "/path/to/cert.pem"
-                  :key "/path/to/key.pem")))
-      ;; Handle TLS connection
-      (loop for byte = (read-byte tls nil nil)
-            while byte
-            do (write-byte byte tls))
-      (close tls))))
+    (let ((client (usocket:socket-accept server :element-type '(unsigned-byte 8))))
+      (pure-tls:with-tls-server-stream (tls (usocket:socket-stream client)
+                                            :certificate "/path/to/cert.pem"
+                                            :key "/path/to/key.pem")
+        (handle-request tls)))))
 ```
 
 ### Server with Client Certificate Authentication (mTLS)
@@ -176,6 +164,22 @@ application fully portable pure Common Lisp for TLS.
 ## API Reference
 
 ### Stream Creation
+
+#### `with-tls-client-stream` ((var stream &rest args) &body body)
+
+Execute BODY with VAR bound to a TLS client stream. The stream is automatically closed when BODY exits (normally or via non-local exit).
+
+```lisp
+(pure-tls:with-tls-client-stream (tls socket :hostname "example.com")
+  (write-sequence data tls)
+  (force-output tls)
+  (read-sequence buffer tls))
+;; tls is automatically closed here
+```
+
+#### `with-tls-server-stream` ((var stream &rest args) &body body)
+
+Execute BODY with VAR bound to a TLS server stream. The stream is automatically closed when BODY exits.
 
 #### `make-tls-client-stream` (socket &key hostname context verify alpn-protocols close-callback external-format buffer-size)
 
@@ -435,7 +439,7 @@ For servers, session tickets are encrypted with a server-side key. You can set a
 ;; Run all offline tests (crypto, record layer, handshake, certificates)
 (pure-tls/test:run-tests)
 
-;; Run network tests against badssl.com
+;; Run network tests against TLS 1.3 servers
 (pure-tls/test:run-badssl-tests)
 ```
 
@@ -447,7 +451,7 @@ The test suite validates:
 - **TLS 1.3 key schedule**: RFC 8448 test vectors for all key derivation steps
 - **Record layer**: Header format, content types, AEAD nonce construction
 - **X.509 certificates**: ASN.1 parsing, hostname verification, OID handling
-- **Live validation**: Certificate error detection using badssl.com test servers
+- **Live validation**: TLS 1.3 connections to major sites (Google, Cloudflare, GitHub, etc.)
 
 ### Individual Test Suites
 

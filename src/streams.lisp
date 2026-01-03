@@ -492,3 +492,34 @@
     (if external-format
         (flexi-streams:make-flexi-stream stream :external-format external-format)
         stream)))
+
+;;;; Convenience Macros
+
+(defmacro with-tls-client-stream ((var socket &rest args) &body body)
+  "Execute BODY with VAR bound to a TLS client stream over SOCKET.
+   The stream is automatically closed when BODY exits (normally or abnormally).
+
+   ARGS are passed to MAKE-TLS-CLIENT-STREAM (e.g., :hostname, :verify).
+
+   Example:
+     (with-tls-client-stream (tls socket :hostname \"example.com\")
+       (write-sequence request tls)
+       (read-response tls))"
+  `(let ((,var (make-tls-client-stream ,socket ,@args)))
+     (unwind-protect
+         (progn ,@body)
+       (close ,var))))
+
+(defmacro with-tls-server-stream ((var socket &rest args) &body body)
+  "Execute BODY with VAR bound to a TLS server stream over SOCKET.
+   The stream is automatically closed when BODY exits (normally or abnormally).
+
+   ARGS are passed to MAKE-TLS-SERVER-STREAM (e.g., :certificate, :key).
+
+   Example:
+     (with-tls-server-stream (tls client-socket :certificate cert :key key)
+       (handle-request tls))"
+  `(let ((,var (make-tls-server-stream ,socket ,@args)))
+     (unwind-protect
+         (progn ,@body)
+       (close ,var))))

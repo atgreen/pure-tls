@@ -12,6 +12,8 @@
    ;; Stream creation
    #:make-tls-client-stream
    #:make-tls-server-stream
+   #:with-tls-client-stream
+   #:with-tls-server-stream
 
    ;; Context management
    #:make-tls-context
