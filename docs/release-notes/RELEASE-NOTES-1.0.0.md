@@ -13,6 +13,7 @@ Initial release of pure-tls, a pure Common Lisp implementation of TLS 1.3 (RFC 8
 - **TLS 1.3 only** - Modern, secure protocol with simplified handshake
 - **Gray streams** - Seamless integration with existing I/O code
 - **Client and server support** - Full bidirectional TLS connections
+- **cl+ssl drop-in replacement** - Use with existing cl+ssl-based libraries (drakma, dexador, etc.)
 
 ### Cipher Suites
 - `TLS_CHACHA20_POLY1305_SHA256` (0x1303) - Preferred for side-channel resistance
