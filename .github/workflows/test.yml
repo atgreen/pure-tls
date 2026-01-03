@@ -7,43 +7,7 @@ on:
     branches: [master, main]
 
 jobs:
-  # ========================================
-  # Fetch dependencies on Linux using ocicl
-  # ========================================
-  fetch-deps:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install ocicl
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y sbcl curl jq
-          OCICL_URL=$(curl -sL -H "Authorization: token $GH_TOKEN" \
-            https://api.github.com/repos/ocicl/ocicl/releases/latest | \
-            jq -r '.assets[] | select(.name | endswith("_amd64.deb")) | .browser_download_url')
-          curl -sL "$OCICL_URL" -o /tmp/ocicl.deb
-          sudo dpkg -i /tmp/ocicl.deb
-          ocicl setup > ~/.sbclrc
-
-      - name: Fetch Lisp dependencies
-        run: ocicl install
-
-      - name: Upload ocicl directory
-        uses: actions/upload-artifact@v4
-        with:
-          name: ocicl-deps
-          path: ocicl
-          retention-days: 1
-
-  # ========================================
-  # Test on all platforms
-  # ========================================
   test:
-    needs: fetch-deps
     strategy:
       fail-fast: false
       matrix:
@@ -66,43 +30,78 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download ocicl dependencies
-        uses: actions/download-artifact@v4
-        with:
-          name: ocicl-deps
-          path: ocicl
-
-      - name: Install SBCL (Linux)
+      - name: Install SBCL and ocicl (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y sbcl
+        run: |
+          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          echo "eval \"\$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)\"" >> ~/.bashrc
+          brew install sbcl ocicl
 
-      - name: Install SBCL (macOS)
+      - name: Install SBCL and ocicl (macOS)
         if: runner.os == 'macOS'
-        run: brew install sbcl
+        run: |
+          brew install sbcl ocicl
 
-      - name: Install SBCL (Windows)
+      - name: Install SBCL and ocicl (Windows)
         if: runner.os == 'Windows'
         shell: powershell
-        run: choco install -y sbcl
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          choco install -y sbcl
+          $headers = @{ Authorization = "token $env:GH_TOKEN" }
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/ocicl/ocicl/releases/latest" -Headers $headers
+          $asset = $release.assets | Where-Object { $_.name -like "*windows*.zip" }
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "$env:TEMP\ocicl.zip"
+          Expand-Archive -Path "$env:TEMP\ocicl.zip" -DestinationPath "$env:TEMP\ocicl"
+          Copy-Item "$env:TEMP\ocicl\ocicl.exe" -Destination "C:\Windows\System32\"
 
-      - name: Setup ocicl runtime
+      - name: Setup ocicl and fetch dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          ocicl setup > ~/.sbclrc
+          ocicl install
+
+      - name: Setup ocicl and fetch dependencies (macOS/Windows)
+        if: runner.os != 'Linux'
+        run: |
+          ocicl setup > ~/.sbclrc
+          ocicl install
+
+      - name: Setup ASDF
         run: |
           mkdir -p ~/.config/common-lisp/source-registry.conf.d/
           echo '(:tree "'"$PWD"'")' > ~/.config/common-lisp/source-registry.conf.d/pure-tls.conf
-          cat > ~/.sbclrc << 'EOF'
-          (require "asdf")
-          (let ((pwd (uiop:getcwd)))
-            (push (merge-pathnames "ocicl/" pwd) asdf:*central-registry*))
-          (load (merge-pathnames "ocicl/ocicl-runtime.lisp" (uiop:getcwd)))
-          EOF
 
-      - name: Run offline tests
+      - name: Run offline tests (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          sbcl --non-interactive \
+            --eval '(asdf:load-system :pure-tls/test)' \
+            --eval '(unless (pure-tls/test:run-tests) (uiop:quit 1))'
+
+      - name: Run offline tests (macOS/Windows)
+        if: runner.os != 'Linux'
         run: |
           sbcl --non-interactive \
             --eval '(asdf:load-system :pure-tls/test)' \
             --eval '(unless (pure-tls/test:run-tests) (uiop:quit 1))'
 
-      - name: Run network tests
+      - name: Run network tests (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          sbcl --non-interactive \
+            --eval '(asdf:load-system :pure-tls/test)' \
+            --eval '(format t "~%Platform: ~A~%" (lisp-implementation-type))' \
+            --eval '(format t "Windows cert store: ~A~%" pure-tls:*use-windows-certificate-store*)' \
+            --eval '(unless (pure-tls/test:run-network-tests) (uiop:quit 1))'
+
+      - name: Run network tests (macOS/Windows)
+        if: runner.os != 'Linux'
         run: |
           sbcl --non-interactive \
             --eval '(asdf:load-system :pure-tls/test)' \
