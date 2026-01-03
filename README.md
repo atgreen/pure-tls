@@ -232,28 +232,48 @@ Create a reusable TLS context for configuration.
 - `+verify-peer+` (1) - Verify peer certificate if provided
 - `+verify-required+` (2) - Require and verify peer certificate
 
-## Certificate Configuration
+## Certificate Verification
 
-### Automatic CA Certificate Discovery
+### Windows
 
-pure-tls automatically searches for system CA certificates in this order:
+On Windows, pure-tls uses the Windows CryptoAPI to validate certificates
+against the system certificate store. This is automatic and requires no
+configuration:
 
-1. **`SSL_CERT_FILE`** environment variable (OpenSSL compatible)
-2. **`SSL_CERT_DIR`** environment variable (OpenSSL compatible)
-3. **Platform-specific locations:**
+- **No CA bundle needed** - Uses Windows trusted root certificates
+- **Enterprise PKI support** - Respects Group Policy certificate deployments
+- **Automatic updates** - Trust store is maintained by Windows Update
 
-   **Unix/Linux:**
+To disable native verification and use pure Lisp verification instead:
+
+```lisp
+(setf pure-tls:*use-windows-certificate-store* nil)
+```
+
+### macOS and Linux
+
+On non-Windows platforms, pure-tls uses pure Lisp certificate verification
+and automatically searches for CA certificates:
+
+1. `SSL_CERT_FILE` environment variable
+2. `SSL_CERT_DIR` environment variable
+3. Platform-specific locations:
    - `/etc/ssl/certs/ca-certificates.crt` (Debian/Ubuntu)
    - `/etc/pki/tls/certs/ca-bundle.crt` (RHEL/CentOS)
    - `/etc/ssl/cert.pem` (macOS)
    - Homebrew OpenSSL paths
 
-   **Windows:**
-   - Git for Windows: `C:/Program Files/Git/mingw64/ssl/certs/ca-bundle.crt`
-   - MSYS2: `C:/msys64/usr/ssl/certs/ca-bundle.crt`
-   - Cygwin, Scoop (curl package)
+If CA certificates are not found automatically:
+
+```sh
+export SSL_CERT_FILE=/path/to/cacert.pem
+```
+
+Or download the Mozilla CA bundle from https://curl.se/ca/cacert.pem
 
 ### Custom CA Certificates
+
+For corporate environments or testing with custom CAs:
 
 ```lisp
 ;; Use a specific CA bundle file
@@ -262,40 +282,14 @@ pure-tls automatically searches for system CA certificates in this order:
 ;; Use a directory of certificates
 (pure-tls:make-tls-context :ca-directory "/path/to/certs/")
 
-;; Combine custom CA with system certificates
+;; Add corporate CA alongside system certificates
 (pure-tls:make-tls-context :ca-file "/path/to/corporate-ca.pem")
 
-;; Skip system CA auto-loading
+;; Use only custom CA (skip system certificates)
 (pure-tls:make-tls-context
   :ca-file "/path/to/custom-ca.pem"
   :auto-load-system-ca nil)
 ```
-
-### Windows Native Certificate Validation
-
-On Windows, pure-tls automatically uses the Windows CryptoAPI to validate
-certificates against the system certificate store. This provides several benefits:
-
-- **No CA bundle needed** - Uses Windows trusted root certificates automatically
-- **Enterprise PKI support** - Respects Group Policy certificate deployments
-- **Automatic updates** - Trust store is maintained by Windows Update
-
-This is enabled by default. To disable it and use pure Lisp verification instead:
-
-```lisp
-(setf pure-tls:*use-windows-certificate-store* nil)
-```
-
-### Non-Windows CA Certificates
-
-On non-Windows platforms, pure-tls searches for CA certificates automatically.
-If they are not found, you can:
-
-1. **Set environment variable:**
-   ```sh
-   export SSL_CERT_FILE=/path/to/cacert.pem
-   ```
-2. **Download Mozilla CA bundle** from https://curl.se/ca/cacert.pem
 
 ## Side-Channel Hardening
 
