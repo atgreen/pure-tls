@@ -109,9 +109,17 @@
     plaintext))
 
 ;;;; ChaCha20-Poly1305 Implementation
+;;;
+;;; Implements AEAD_CHACHA20_POLY1305 per RFC 8439
+;;; Since Ironclad doesn't provide a combined AEAD mode for ChaCha20-Poly1305,
+;;; we implement it using the separate ChaCha and Poly1305 primitives.
+
+(defun chacha20-poly1305-pad16 (len)
+  "Return number of zero padding bytes needed to align LEN to 16 bytes."
+  (mod (- 16 (mod len 16)) 16))
 
 (defun chacha20-poly1305-encrypt (key nonce plaintext aad)
-  "Encrypt using ChaCha20-Poly1305.
+  "Encrypt using ChaCha20-Poly1305 per RFC 8439.
 
    KEY       - 32 byte encryption key.
    NONCE     - 12 byte nonce.
@@ -119,22 +127,45 @@
    AAD       - Additional authenticated data.
 
    Returns ciphertext with 16-byte authentication tag appended."
-  (let* ((mode (ironclad:make-authenticated-encryption-mode
-                :chacha/poly1305 :key key
-                :initialization-vector nonce))
-         (ciphertext (make-octet-vector (length plaintext)))
-         (tag (make-octet-vector 16)))
-    ;; Process AAD
-    (ironclad:process-associated-data mode aad)
-    ;; Encrypt
-    (ironclad:encrypt mode plaintext ciphertext)
-    ;; Get tag
-    (ironclad:produce-tag mode :tag tag)
-    ;; Return ciphertext || tag
-    (concat-octet-vectors ciphertext tag)))
+  ;; Step 1: Generate Poly1305 one-time key using ChaCha20 with counter=0
+  ;; The first 32 bytes of ChaCha20 keystream become the Poly1305 key
+  (let* ((poly-key-block (make-octet-vector 64))
+         (zeros (make-octet-vector 64))
+         ;; ChaCha20 with 12-byte nonce, implicitly counter=0
+         (cipher (ironclad:make-cipher :chacha :key key
+                                       :initialization-vector nonce
+                                       :mode :stream)))
+    (ironclad:encrypt cipher zeros poly-key-block)
+    (let ((poly-key (subseq poly-key-block 0 32)))
+
+      ;; Step 2: Encrypt plaintext using ChaCha20 starting at counter=1
+      ;; We've already consumed one block (64 bytes) for the poly key,
+      ;; so the cipher state is now at counter=1
+      (let ((ciphertext (make-octet-vector (length plaintext))))
+        (ironclad:encrypt cipher plaintext ciphertext)
+
+        ;; Step 3: Construct the Poly1305 input per RFC 8439 Section 2.8
+        ;; AAD || pad16(AAD) || ciphertext || pad16(ciphertext) || len(AAD) || len(ciphertext)
+        (let* ((aad-len (length aad))
+               (ct-len (length ciphertext))
+               (aad-pad (chacha20-poly1305-pad16 aad-len))
+               (ct-pad (chacha20-poly1305-pad16 ct-len))
+               ;; Lengths are 64-bit little-endian
+               (mac-input (concat-octet-vectors
+                           aad
+                           (make-octet-vector aad-pad)
+                           ciphertext
+                           (make-octet-vector ct-pad)
+                           (encode-uint64-le aad-len)
+                           (encode-uint64-le ct-len)))
+               (mac (ironclad:make-mac :poly1305 poly-key)))
+          (ironclad:update-mac mac mac-input)
+          (let ((tag (ironclad:produce-mac mac)))
+            ;; Return ciphertext || tag
+            (concat-octet-vectors ciphertext tag)))))))
 
 (defun chacha20-poly1305-decrypt (key nonce ciphertext-with-tag aad)
-  "Decrypt using ChaCha20-Poly1305.
+  "Decrypt using ChaCha20-Poly1305 per RFC 8439.
 
    KEY               - 32 byte encryption key.
    NONCE             - 12 byte nonce.
@@ -146,22 +177,50 @@
     (error 'tls-mac-error))
   (let* ((ct-len (- (length ciphertext-with-tag) 16))
          (ciphertext (subseq ciphertext-with-tag 0 ct-len))
-         (tag (subseq ciphertext-with-tag ct-len))
-         (mode (ironclad:make-authenticated-encryption-mode
-                :chacha/poly1305 :key key
-                :initialization-vector nonce))
-         (plaintext (make-octet-vector ct-len))
-         (computed-tag (make-octet-vector 16)))
-    ;; Process AAD
-    (ironclad:process-associated-data mode aad)
-    ;; Decrypt
-    (ironclad:decrypt mode ciphertext plaintext)
-    ;; Get computed tag
-    (ironclad:produce-tag mode :tag computed-tag)
-    ;; Verify tag (constant-time comparison)
-    (unless (constant-time-equal tag computed-tag)
-      (error 'tls-mac-error))
-    plaintext))
+         (tag (subseq ciphertext-with-tag ct-len)))
+
+    ;; Step 1: Generate Poly1305 one-time key using ChaCha20 with counter=0
+    (let* ((poly-key-block (make-octet-vector 64))
+           (zeros (make-octet-vector 64))
+           (cipher (ironclad:make-cipher :chacha :key key
+                                         :initialization-vector nonce
+                                         :mode :stream)))
+      (ironclad:encrypt cipher zeros poly-key-block)
+      (let ((poly-key (subseq poly-key-block 0 32)))
+
+        ;; Step 2: Verify the Poly1305 tag before decrypting (verify-then-decrypt)
+        (let* ((aad-len (length aad))
+               (aad-pad (chacha20-poly1305-pad16 aad-len))
+               (ct-pad (chacha20-poly1305-pad16 ct-len))
+               (mac-input (concat-octet-vectors
+                           aad
+                           (make-octet-vector aad-pad)
+                           ciphertext
+                           (make-octet-vector ct-pad)
+                           (encode-uint64-le aad-len)
+                           (encode-uint64-le ct-len)))
+               (mac (ironclad:make-mac :poly1305 poly-key)))
+          (ironclad:update-mac mac mac-input)
+          (let ((computed-tag (ironclad:produce-mac mac)))
+            ;; Constant-time comparison to prevent timing attacks
+            (unless (constant-time-equal tag computed-tag)
+              (error 'tls-mac-error))))
+
+        ;; Step 3: Decrypt the ciphertext using ChaCha20 starting at counter=1
+        (let ((plaintext (make-octet-vector ct-len)))
+          (ironclad:encrypt cipher ciphertext plaintext)  ; XOR-based, same as decrypt
+          plaintext)))))
+
+(defun encode-uint64-le (n)
+  "Encode a 64-bit unsigned integer as 8 bytes in little-endian order."
+  (octet-vector (ldb (byte 8 0) n)
+                (ldb (byte 8 8) n)
+                (ldb (byte 8 16) n)
+                (ldb (byte 8 24) n)
+                (ldb (byte 8 32) n)
+                (ldb (byte 8 40) n)
+                (ldb (byte 8 48) n)
+                (ldb (byte 8 56) n)))
 
 ;;;; Unified AEAD Operations
 

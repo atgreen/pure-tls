@@ -11,6 +11,7 @@ A pure Common Lisp implementation of TLS 1.3 (RFC 8446).
 
 ### Supported Cipher Suites
 
+- `TLS_CHACHA20_POLY1305_SHA256` (0x1303) - Preferred for side-channel resistance
 - `TLS_AES_256_GCM_SHA384` (0x1302)
 - `TLS_AES_128_GCM_SHA256` (0x1301)
 
@@ -294,9 +295,10 @@ Record padding helps mitigate traffic analysis by hiding the true length of appl
 (setf pure-tls:*record-padding-policy* nil)
 ```
 
-### Current Limitations
+### Side-Channel Considerations
 
-- **ChaCha20-Poly1305**: Not currently supported because Ironclad doesn't provide it as a combined AEAD mode. Only AES-GCM cipher suites are available. Since Ironclad implements AES in pure Common Lisp using table lookups (rather than hardware AES-NI instructions), the implementation may be susceptible to cache-timing attacks. A ChaCha20 implementation would be preferable for side-channel resistance as it uses only ARX (add-rotate-xor) operations.
+- **ChaCha20-Poly1305 (Recommended)**: This cipher suite uses only ARX (add-rotate-xor) operations, which are inherently constant-time and resistant to cache-timing attacks. It is the preferred cipher suite for pure software implementations.
+- **AES-GCM**: Since Ironclad implements AES in pure Common Lisp using table lookups (rather than hardware AES-NI instructions), the AES-GCM cipher suites may be susceptible to cache-timing attacks. When possible, prefer ChaCha20-Poly1305 for better side-channel resistance.
 
 ## Debugging with Wireshark
 

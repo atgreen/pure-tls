@@ -22,8 +22,10 @@
   ;; Called with (hostname) after ClientHello, should return
   ;; (values certificate-chain private-key) or NIL to use defaults
   (sni-callback nil)
-  ;; Cipher suites we support
-  (cipher-suites (list +tls-aes-256-gcm-sha384+
+  ;; Cipher suites we support (in preference order)
+  ;; ChaCha20-Poly1305 is preferred for better side-channel resistance
+  (cipher-suites (list +tls-chacha20-poly1305-sha256+
+                       +tls-aes-256-gcm-sha384+
                        +tls-aes-128-gcm-sha256+)
                  :type list)
   ;; Key exchange state
@@ -472,7 +474,8 @@
              :verify-mode (or verify-mode +verify-none+)
              :trust-store trust-store
              :cipher-suites (or cipher-suites
-                                (list +tls-aes-256-gcm-sha384+
+                                (list +tls-chacha20-poly1305-sha256+
+                                      +tls-aes-256-gcm-sha384+
                                       +tls-aes-128-gcm-sha256+))
              :sni-callback sni-callback)))
     ;; State machine loop

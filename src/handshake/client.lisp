@@ -18,11 +18,11 @@
   (verify-mode +verify-required+ :type fixnum)
   ;; Trust store for certificate verification
   (trust-store nil)
-  ;; Cipher suites we support
-  ;; Note: ChaCha20-Poly1305 is not currently supported because Ironclad
-  ;; doesn't provide it as a combined AEAD mode. It would need to be
-  ;; implemented from the separate ChaCha20 cipher and Poly1305 MAC.
-  (cipher-suites (list +tls-aes-256-gcm-sha384+
+  ;; Cipher suites we support (in preference order)
+  ;; ChaCha20-Poly1305 is preferred when available because it provides
+  ;; better side-channel resistance than AES-GCM in pure software implementations.
+  (cipher-suites (list +tls-chacha20-poly1305-sha256+
+                       +tls-aes-256-gcm-sha384+
                        +tls-aes-128-gcm-sha256+)
                  :type list)
   ;; Key exchange state
