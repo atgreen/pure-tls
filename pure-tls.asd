@@ -13,7 +13,6 @@
                #:trivial-gray-streams
                #:flexi-streams
                #:alexandria
-               #:iparse
                #:cl-base64)
   :serial t
   :components ((:file "src/package")
