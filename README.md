@@ -451,6 +451,7 @@ The test suite validates:
 - **TLS 1.3 key schedule**: RFC 8448 test vectors for all key derivation steps
 - **Record layer**: Header format, content types, AEAD nonce construction
 - **X.509 certificates**: ASN.1 parsing, hostname verification, OID handling
+- **Bundled bad certificates**: Offline tests using certificates from [badssl.com](https://github.com/chromium/badssl.com) (expired, self-signed, known malware CAs)
 - **Live validation**: TLS 1.3 connections to major sites (Google, Cloudflare, GitHub, etc.)
 
 ### Individual Test Suites
