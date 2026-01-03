@@ -45,6 +45,10 @@
   (selected-alpn nil :type (or null string))
   ;; Client random (for SSLKEYLOGFILE)
   (client-random nil :type (or null octet-vector))
+  ;; HelloRetryRequest handling
+  (hello-retry-count 0 :type fixnum)  ; Prevent infinite HRR loops
+  (hrr-cookie nil :type (or null octet-vector))  ; Cookie from HRR
+  (hrr-selected-group nil)  ; Group requested by server in HRR
   ;; State
   (state :start))
 
@@ -60,12 +64,15 @@
 
 ;;;; ClientHello Generation
 
-(defun generate-client-hello (hs)
-  "Generate a ClientHello message."
+(defun generate-client-hello (hs &key requested-group)
+  "Generate a ClientHello message.
+   REQUESTED-GROUP, if provided, specifies the key exchange group to use
+   (used when responding to HelloRetryRequest)."
   (let* ((random (random-bytes 32))
          (session-id (random-bytes 32))  ; Legacy, but some servers expect it
-         ;; Generate key share for preferred group
-         (key-exchange (generate-key-exchange *preferred-group*))
+         ;; Generate key share for requested group (from HRR) or preferred group
+         (key-share-group (or requested-group *preferred-group*))
+         (key-exchange (generate-key-exchange key-share-group))
          ;; Build extensions
          (extensions (list
                       ;; supported_versions (required for TLS 1.3)
@@ -103,6 +110,12 @@
              :data (make-alpn-ext
                     :protocol-list (client-handshake-alpn-protocols hs)))
             extensions))
+    ;; Add cookie if responding to HelloRetryRequest
+    (when (client-handshake-hrr-cookie hs)
+      (push (make-tls-extension
+             :type +extension-cookie+
+             :data (client-handshake-hrr-cookie hs))
+            extensions))
     ;; Store key exchange for later
     (setf (client-handshake-key-exchange hs) key-exchange)
     ;; Store client random for SSLKEYLOGFILE
@@ -116,9 +129,10 @@
      :legacy-compression-methods (octet-vector 0)
      :extensions (nreverse extensions))))
 
-(defun send-client-hello (hs)
-  "Send ClientHello message."
-  (let* ((hello (generate-client-hello hs))
+(defun send-client-hello (hs &key requested-group)
+  "Send ClientHello message.
+   REQUESTED-GROUP is used when responding to HelloRetryRequest."
+  (let* ((hello (generate-client-hello hs :requested-group requested-group))
          (hello-bytes (serialize-client-hello hello))
          (message (wrap-handshake-message +handshake-client-hello+ hello-bytes)))
     ;; Update transcript
@@ -127,17 +141,81 @@
     (record-layer-write-handshake (client-handshake-record-layer hs) message)
     (setf (client-handshake-state hs) :wait-server-hello)))
 
+;;;; HelloRetryRequest Processing
+
+(defun make-message-hash (transcript cipher-suite)
+  "Create the message_hash synthetic message per RFC 8446 Section 4.4.1.
+   This replaces ClientHello1 in the transcript when processing HelloRetryRequest."
+  (let* ((digest (cipher-suite-digest cipher-suite))
+         (hash-len (ironclad:digest-length digest))
+         (ch1-hash (ironclad:digest-sequence digest transcript)))
+    ;; message_hash = handshake_type(254) + length(hash-len) + Hash(CH1)
+    (concat-octet-vectors
+     (octet-vector 254)  ; message_hash handshake type
+     (encode-uint24 hash-len)
+     ch1-hash)))
+
+(defun process-hello-retry-request (hs server-hello hrr-raw-bytes)
+  "Process a HelloRetryRequest and send a new ClientHello.
+   Returns T to indicate the handshake should continue waiting for ServerHello."
+  ;; Check for infinite HRR loop
+  (when (>= (client-handshake-hello-retry-count hs) 1)
+    (error 'tls-handshake-error
+           :message "Received multiple HelloRetryRequests"
+           :state :wait-server-hello))
+  (incf (client-handshake-hello-retry-count hs))
+
+  (let ((extensions (server-hello-extensions server-hello)))
+    ;; Get the selected cipher suite (needed for hash algorithm)
+    (let ((cipher-suite (server-hello-cipher-suite server-hello)))
+      (unless (member cipher-suite (client-handshake-cipher-suites hs))
+        (error 'tls-handshake-error
+               :message "Server selected unsupported cipher suite in HRR"
+               :state :wait-server-hello))
+      (setf (client-handshake-selected-cipher-suite hs) cipher-suite))
+
+    ;; Extract requested key share group
+    (let ((ks-ext (find-extension extensions +extension-key-share+)))
+      (when ks-ext
+        (let ((selected-group (key-share-ext-selected-group (tls-extension-data ks-ext))))
+          (when selected-group
+            ;; Verify we support this group
+            (unless (member selected-group *supported-groups*)
+              (error 'tls-handshake-error
+                     :message "Server requested unsupported key exchange group"
+                     :state :wait-server-hello))
+            (setf (client-handshake-hrr-selected-group hs) selected-group)))))
+
+    ;; Extract cookie if present
+    (let ((cookie-ext (find-extension extensions +extension-cookie+)))
+      (when cookie-ext
+        (setf (client-handshake-hrr-cookie hs)
+              (tls-extension-data cookie-ext))))
+
+    ;; Replace transcript with message_hash per RFC 8446 Section 4.4.1
+    ;; The transcript becomes: message_hash || HelloRetryRequest
+    (let ((message-hash (make-message-hash
+                         (client-handshake-transcript hs)
+                         (client-handshake-selected-cipher-suite hs))))
+      (setf (client-handshake-transcript hs)
+            (concat-octet-vectors message-hash hrr-raw-bytes)))
+
+    ;; Send new ClientHello with requested group and cookie
+    (send-client-hello hs :requested-group (client-handshake-hrr-selected-group hs))))
+
 ;;;; ServerHello Processing
 
-(defun process-server-hello (hs message)
-  "Process ServerHello message."
+(defun process-server-hello (hs message raw-bytes)
+  "Process ServerHello message.
+   RAW-BYTES are the raw message bytes (needed for transcript handling)."
   (let* ((server-hello (handshake-message-body message))
          (extensions (server-hello-extensions server-hello)))
     ;; Check for HelloRetryRequest
     (when (hello-retry-request-p server-hello)
-      (error 'tls-handshake-error
-             :message "HelloRetryRequest not yet supported"
-             :state :wait-server-hello))
+      (process-hello-retry-request hs server-hello raw-bytes)
+      (return-from process-server-hello nil))
+    ;; Normal ServerHello - update transcript now
+    (client-handshake-update-transcript hs raw-bytes)
     ;; Verify supported_versions extension
     (let ((sv-ext (find-extension extensions +extension-supported-versions+)))
       (unless sv-ext
@@ -688,10 +766,9 @@
              (error 'tls-handshake-error
                     :message "Expected ServerHello"
                     :state :wait-server-hello))
-           ;; Update transcript with raw bytes
-           (client-handshake-update-transcript hs raw-message)
-           ;; Initialize key schedule now that we know we have TLS 1.3
-           (process-server-hello hs message)))
+           ;; DON'T update transcript here - process-server-hello handles it
+           ;; (transcript handling differs for HRR vs regular ServerHello)
+           (process-server-hello hs message raw-message)))
         (:wait-encrypted-extensions
          (let ((message (read-handshake-message hs)))
            (unless (= (handshake-message-type message) +handshake-encrypted-extensions+)

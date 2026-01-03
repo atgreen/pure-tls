@@ -315,7 +315,6 @@ The following secrets are logged (compatible with Wireshark TLS 1.3 dissector):
 
 - No session resumption (PSK)
 - No 0-RTT early data
-- No HelloRetryRequest handling
 
 ## License
 
