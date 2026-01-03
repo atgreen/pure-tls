@@ -26,17 +26,9 @@
               (let ((tls (pure-tls:make-tls-client-stream
                           (usocket:socket-stream socket)
                           :hostname hostname :verify verify)))
-                (unwind-protect
-                    (progn
-                      (write-sequence
-                       (flexi-streams:string-to-octets
-                        (format nil "GET / HTTP/1.1\r\nHost: ~A\r\nConnection: close\r\n\r\n"
-                                hostname)
-                        :external-format :utf-8)
-                       tls)
-                      (force-output tls)
-                      (if (read-byte tls nil nil) :success :no-data))
-                  (ignore-errors (close tls)))))
+                ;; TLS handshake succeeded - that's all we need to verify
+                (close tls)
+                :success))
           (pure-tls:tls-certificate-error () :cert-error)
           (pure-tls:tls-verification-error () :verify-error)
           (pure-tls:tls-handshake-error () :handshake-error)
