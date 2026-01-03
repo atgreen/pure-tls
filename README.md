@@ -271,16 +271,31 @@ pure-tls automatically searches for system CA certificates in this order:
   :auto-load-system-ca nil)
 ```
 
-### Windows Users
+### Windows Native Certificate Validation
 
-If CA certificates are not found automatically, either:
+On Windows, pure-tls automatically uses the Windows CryptoAPI to validate
+certificates against the system certificate store. This provides several benefits:
 
-1. **Install Git for Windows** (recommended) - includes Mozilla CA bundle
-2. **Set environment variable:**
-   ```powershell
-   $env:SSL_CERT_FILE = "C:\path\to\cacert.pem"
+- **No CA bundle needed** - Uses Windows trusted root certificates automatically
+- **Enterprise PKI support** - Respects Group Policy certificate deployments
+- **Automatic updates** - Trust store is maintained by Windows Update
+
+This is enabled by default. To disable it and use pure Lisp verification instead:
+
+```lisp
+(setf pure-tls:*use-windows-certificate-store* nil)
+```
+
+### Non-Windows CA Certificates
+
+On non-Windows platforms, pure-tls searches for CA certificates automatically.
+If they are not found, you can:
+
+1. **Set environment variable:**
+   ```sh
+   export SSL_CERT_FILE=/path/to/cacert.pem
    ```
-3. **Download Mozilla CA bundle** from https://curl.se/ca/cacert.pem
+2. **Download Mozilla CA bundle** from https://curl.se/ca/cacert.pem
 
 ## Side-Channel Hardening
 
@@ -375,6 +390,8 @@ The following secrets are logged (compatible with Wireshark TLS 1.3 dissector):
 - [trivial-gray-streams](https://github.com/trivial-gray-streams/trivial-gray-streams) - Gray stream support
 - [flexi-streams](https://github.com/edicl/flexi-streams) - Character encoding (optional)
 - [alexandria](https://github.com/keithj/alexandria) - Utilities
+- [trivial-features](https://github.com/trivial-features/trivial-features) - Portable platform detection
+- [cffi](https://github.com/cffi/cffi) - Windows only, for CryptoAPI bindings
 
 ## Session Resumption (PSK)
 
