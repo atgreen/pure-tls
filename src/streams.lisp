@@ -415,6 +415,7 @@
                                         key
                                         (verify +verify-none+)
                                         alpn-protocols
+                                        sni-callback
                                         close-callback
                                         external-format
                                         (buffer-size *default-buffer-size*))
@@ -426,6 +427,9 @@
    KEY - Private key (Ironclad key object) or path to PEM file.
    VERIFY - Client certificate verification mode (+verify-none+, +verify-peer+, +verify-required+).
    ALPN-PROTOCOLS - List of ALPN protocol names the server supports.
+   SNI-CALLBACK - Function called with the client's requested hostname.
+                  Should return (VALUES certificate-chain private-key) for that host,
+                  or NIL to use the default certificate/key.
    CLOSE-CALLBACK - Function called when stream is closed.
    EXTERNAL-FORMAT - If non-NIL, wrap in a flexi-stream.
    BUFFER-SIZE - Size of I/O buffers.
@@ -470,7 +474,8 @@
                private-key
                :alpn-protocols alpn
                :verify-mode verify
-               :trust-store trust-store)))
+               :trust-store trust-store
+               :sni-callback sni-callback)))
       (setf (tls-stream-handshake stream) hs))
     ;; Wrap with flexi-stream if external-format specified
     (if external-format

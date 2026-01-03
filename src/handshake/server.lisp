@@ -18,6 +18,10 @@
   (alpn-protocols nil :type list)        ; Protocols we support
   (verify-mode +verify-none+ :type fixnum) ; Client cert requirement
   (trust-store nil)                      ; For verifying client certs
+  ;; SNI callback for virtual hosting
+  ;; Called with (hostname) after ClientHello, should return
+  ;; (values certificate-chain private-key) or NIL to use defaults
+  (sni-callback nil)
   ;; Cipher suites we support
   (cipher-suites (list +tls-aes-256-gcm-sha384+
                        +tls-aes-128-gcm-sha256+)
@@ -73,6 +77,21 @@
       (when sni-ext
         (setf (server-handshake-client-hostname hs)
               (server-name-ext-host-name (tls-extension-data sni-ext)))))
+    ;; Call SNI callback if provided (for virtual hosting)
+    (when (and (server-handshake-sni-callback hs)
+               (server-handshake-client-hostname hs))
+      (multiple-value-bind (cert-chain priv-key)
+          (funcall (server-handshake-sni-callback hs)
+                   (server-handshake-client-hostname hs))
+        (when cert-chain
+          (setf (server-handshake-certificate-chain hs) cert-chain))
+        (when priv-key
+          (setf (server-handshake-private-key hs) priv-key))))
+    ;; Verify we have a certificate after SNI callback
+    (unless (server-handshake-certificate-chain hs)
+      (error 'tls-handshake-error
+             :message "No certificate available for this hostname"
+             :state :wait-client-hello))
     ;; Select cipher suite (first mutually supported)
     (let ((client-suites (client-hello-cipher-suites client-hello))
           (server-suites (server-handshake-cipher-suites hs)))
@@ -438,9 +457,13 @@
 
 (defun perform-server-handshake (record-layer certificate-chain private-key
                                   &key alpn-protocols verify-mode trust-store
-                                       cipher-suites)
+                                       cipher-suites sni-callback)
   "Perform the TLS 1.3 server handshake.
-   Returns the server-handshake structure on success."
+   Returns the server-handshake structure on success.
+
+   SNI-CALLBACK, if provided, is called with the client's requested hostname.
+   It should return (VALUES certificate-chain private-key) to use for that host,
+   or NIL to use the default certificate/key. This enables virtual hosting."
   (let ((hs (make-server-handshake
              :record-layer record-layer
              :certificate-chain certificate-chain
@@ -450,7 +473,8 @@
              :trust-store trust-store
              :cipher-suites (or cipher-suites
                                 (list +tls-aes-256-gcm-sha384+
-                                      +tls-aes-128-gcm-sha256+)))))
+                                      +tls-aes-128-gcm-sha256+))
+             :sni-callback sni-callback)))
     ;; State machine loop
     (loop
       (case (server-handshake-state hs)

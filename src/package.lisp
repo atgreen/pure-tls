@@ -36,6 +36,8 @@
    ;; Certificate handling
    #:parse-certificate
    #:parse-certificate-from-file
+   #:load-certificate-chain
+   #:load-private-key
    #:certificate-subject-common-names
    #:certificate-fingerprint
    #:certificate-not-before

@@ -105,6 +105,26 @@ Or add to your ASDF system:
   :verify pure-tls:+verify-required+)  ; Require client certificate
 ```
 
+### Server with SNI Callback (Virtual Hosting)
+
+```lisp
+(defun my-sni-callback (hostname)
+  "Return certificate and key based on client-requested hostname."
+  (cond
+    ((string= hostname "site-a.example.com")
+     (values (pure-tls:load-certificate-chain "/certs/site-a.pem")
+             (pure-tls:load-private-key "/certs/site-a-key.pem")))
+    ((string= hostname "site-b.example.com")
+     (values (pure-tls:load-certificate-chain "/certs/site-b.pem")
+             (pure-tls:load-private-key "/certs/site-b-key.pem")))
+    (t nil)))  ; Use default certificate
+
+(pure-tls:make-tls-server-stream stream
+  :certificate "/path/to/default-cert.pem"
+  :key "/path/to/default-key.pem"
+  :sni-callback #'my-sni-callback)
+```
+
 ### Using the cl+ssl Compatibility Layer
 
 ```lisp
@@ -133,7 +153,7 @@ Create a TLS client stream over a TCP socket.
 - `external-format` - If specified, wrap in a flexi-stream for character I/O
 - `buffer-size` - Size of I/O buffers (default 16384)
 
-#### `make-tls-server-stream` (socket &key context certificate key verify alpn-protocols close-callback external-format buffer-size)
+#### `make-tls-server-stream` (socket &key context certificate key verify alpn-protocols sni-callback close-callback external-format buffer-size)
 
 Create a TLS server stream over a TCP socket.
 
@@ -143,6 +163,7 @@ Create a TLS server stream over a TCP socket.
 - `key` - Private key (Ironclad key object or path to PEM file)
 - `verify` - Client certificate verification mode: `+verify-none+`, `+verify-peer+`, or `+verify-required+`
 - `alpn-protocols` - List of ALPN protocol names the server supports
+- `sni-callback` - Function called with client's requested hostname, returns (VALUES cert-chain private-key) or NIL
 - `close-callback` - Function called when stream is closed
 - `external-format` - If specified, wrap in a flexi-stream for character I/O
 - `buffer-size` - Size of I/O buffers (default 16384)
