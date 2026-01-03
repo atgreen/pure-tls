@@ -217,6 +217,9 @@ CHECK-REVOCATION if true, would enable revocation checking (not yet implemented)
 Returns T if the chain is valid and trusted by macOS.
 Signals an error with details on verification failure."
   (declare (ignore check-revocation))  ; TODO: implement revocation checking
+  ;; TODO: Remove this debug logging before release
+  (format *error-output* "~&; pure-tls: Using macOS Security.framework for certificate verification~%")
+  (format *error-output* "; pure-tls: Hostname: ~A, Chain length: ~D~%" hostname (length der-certificates))
   (unless der-certificates
     (error "No certificates provided"))
 
@@ -271,6 +274,8 @@ Signals an error with details on verification failure."
                           :format-arguments (list (or error-desc "unknown error")))))))
 
            ;; Success
+           ;; TODO: Remove this debug logging before release
+           (format *error-output* "; pure-tls: macOS Security.framework verification PASSED~%")
            t)
 
       ;; Cleanup
