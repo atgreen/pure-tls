@@ -203,10 +203,9 @@
                      (parse-integer string :start 10 :end 12)
                      0)))
     ;; UTCTime uses 2-digit year: 00-49 = 2000-2049, 50-99 = 1950-1999
-    (when (< year 50)
-      (incf year 2000))
-    (when (>= year 50)
-      (incf year 1900))
+    (if (< year 50)
+        (incf year 2000)
+        (incf year 1900))
     (encode-universal-time second minute hour day month year 0)))
 
 (defun decode-generalized-time (string)

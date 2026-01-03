@@ -44,8 +44,8 @@
                (:file "src/context")
                (:file "src/streams")))
 
-(asdf:defsystem #:pure-tls/compat
-  :description "cl+ssl compatibility layer for pure-tls"
+(asdf:defsystem #:pure-tls/cl+ssl-compat
+  :description "cl+ssl API compatibility layer for pure-tls"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
   :version "0.1.0"

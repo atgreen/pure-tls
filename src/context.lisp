@@ -300,6 +300,10 @@
     (when ca-directory
       (let ((dir-store (make-trust-store-from-directory ca-directory)))
         (setf certs (append certs (trust-store-certificates dir-store)))))
+    (let ((debug (get-environment-variable "OCICL_TLS_DEBUG")))
+      (when (and debug (string/= debug ""))
+        (format *error-output* "; pure-tls: trust store certs=~D ca-file=~A ca-dir=~A~%"
+                (length certs) ca-file ca-directory)))
     (make-trust-store :certificates certs)))
 
 ;;;; System CA Certificates

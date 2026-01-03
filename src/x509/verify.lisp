@@ -113,24 +113,40 @@
            (unless (verify-certificate-signature cert issuer)
              (error 'tls-certificate-error
                     :message "Certificate signature verification failed in chain")))
-  ;; Check if root is trusted and verify its signature
-  (let ((root (car (last chain))))
-    ;; Try to find matching trusted root
-    (let ((trusted-issuer (or (find-if (lambda (trusted)
-                                         (certificate-equal-p root trusted))
-                                       trusted-roots)
-                              (find-if (lambda (trusted)
-                                         (certificate-issued-by-p root trusted))
-                                       trusted-roots))))
-      (unless trusted-issuer
-        (error 'tls-verification-error
-               :message "Certificate chain not anchored in trusted root"
-               :reason :unknown-ca))
-      ;; If root is not self-signed, verify signature against trusted issuer
-      (unless (certificate-equal-p root trusted-issuer)
-        (unless (verify-certificate-signature root trusted-issuer)
-          (error 'tls-certificate-error
-                 :message "Root certificate signature verification failed")))))
+  ;; Check if chain is anchored in trusted roots.
+  (let* ((root (car (last chain)))
+         (anchored (or (find-if (lambda (trusted)
+                                  (find-if (lambda (cert)
+                                             (or (certificate-equal-p cert trusted)
+                                                 (certificate-issued-by-p cert trusted)))
+                                           chain))
+                                trusted-roots)
+                       (find-if (lambda (trusted)
+                                  (or (certificate-equal-p root trusted)
+                                      (certificate-issued-by-p root trusted)))
+                                trusted-roots))))
+    (unless anchored
+      (let ((debug (get-environment-variable "OCICL_TLS_DEBUG")))
+        (when (and debug (string/= debug ""))
+          (format *error-output* "; pure-tls: chain length=~D trusted-roots=~D~%"
+                  (length chain) (length trusted-roots))
+          (loop for cert in chain
+                for idx from 0
+                do (format *error-output*
+                           "; pure-tls: chain[~D] subject-cns=~A issuer-cns=~A~%"
+                           idx
+                           (certificate-subject-common-names cert)
+                           (certificate-issuer-common-names cert)))))
+      (error 'tls-verification-error
+             :message "Certificate chain not anchored in trusted root"
+             :reason :unknown-ca))
+    ;; If root is not self-signed and directly matches a trusted issuer, verify it.
+    (when (and anchored
+               (certificate-issued-by-p root anchored)
+               (not (certificate-equal-p root anchored)))
+      (unless (verify-certificate-signature root anchored)
+        (error 'tls-certificate-error
+               :message "Root certificate signature verification failed"))))
   t)
 
 (defun certificate-issued-by-p (cert issuer-cert)
@@ -145,6 +161,58 @@
 
 ;;;; Signature Verification
 
+;; DigestInfo prefixes for PKCS#1 v1.5 (DER-encoded AlgorithmIdentifier + NULL params)
+(defparameter *digest-info-prefixes*
+  '((:sha256 . #(#x30 #x31 #x30 #x0d #x06 #x09 #x60 #x86 #x48 #x01 #x65 #x03 #x04 #x02 #x01 #x05 #x00 #x04 #x20))
+    (:sha384 . #(#x30 #x41 #x30 #x0d #x06 #x09 #x60 #x86 #x48 #x01 #x65 #x03 #x04 #x02 #x02 #x05 #x00 #x04 #x30))
+    (:sha512 . #(#x30 #x51 #x30 #x0d #x06 #x09 #x60 #x86 #x48 #x01 #x65 #x03 #x04 #x02 #x03 #x05 #x00 #x04 #x40))
+    (:sha1   . #(#x30 #x21 #x30 #x09 #x06 #x05 #x2b #x0e #x03 #x02 #x1a #x05 #x00 #x04 #x14))))
+
+(defun verify-rsa-pkcs1v15-signature (public-key tbs signature hash-algo)
+  "Verify an RSA PKCS#1 v1.5 signature.
+   PUBLIC-KEY is an Ironclad RSA public key.
+   TBS is the to-be-signed data (raw bytes).
+   SIGNATURE is the signature bytes.
+   HASH-ALGO is the hash algorithm keyword (:sha256, :sha384, :sha512)."
+  (let* ((n (ironclad:rsa-key-modulus public-key))
+         (e (ironclad:rsa-key-exponent public-key))
+         (k (ceiling (integer-length n) 8))  ; Key length in bytes
+         (s (ironclad:octets-to-integer signature))
+         ;; RSA public operation: m = s^e mod n
+         (m (ironclad:expt-mod s e n))
+         (em (ironclad:integer-to-octets m :n-bits (* 8 k))))
+    ;; Check PKCS#1 v1.5 padding: 0x00 0x01 [0xFF padding] 0x00 [DigestInfo]
+    (when (< (length em) 11)
+      (return-from verify-rsa-pkcs1v15-signature nil))
+    (unless (and (zerop (aref em 0))
+                 (= 1 (aref em 1)))
+      (return-from verify-rsa-pkcs1v15-signature nil))
+    ;; Find the 0x00 separator after padding
+    (let ((separator-pos nil))
+      (loop for i from 2 below (length em)
+            do (cond
+                 ((= (aref em i) #xff)) ; Padding byte, continue
+                 ((zerop (aref em i))
+                  (setf separator-pos i)
+                  (return))
+                 (t (return-from verify-rsa-pkcs1v15-signature nil))))
+      (unless separator-pos
+        (return-from verify-rsa-pkcs1v15-signature nil))
+      ;; Extract DigestInfo (everything after the 0x00 separator)
+      (let* ((digest-info (subseq em (1+ separator-pos)))
+             (prefix (cdr (assoc hash-algo *digest-info-prefixes*)))
+             (hash-len (ironclad:digest-length hash-algo)))
+        (unless prefix
+          (error "Unknown hash algorithm: ~A" hash-algo))
+        ;; Check DigestInfo has correct prefix and length
+        (unless (and (>= (length digest-info) (+ (length prefix) hash-len))
+                     (equalp (subseq digest-info 0 (length prefix)) prefix))
+          (return-from verify-rsa-pkcs1v15-signature nil))
+        ;; Extract the hash from DigestInfo and compare with our computed hash
+        (let ((embedded-hash (subseq digest-info (length prefix)))
+              (computed-hash (ironclad:digest-sequence hash-algo tbs)))
+          (equalp embedded-hash computed-hash))))))
+
 (defun verify-certificate-signature (cert issuer-cert)
   "Verify that CERT's signature was made by ISSUER-CERT's key.
    Returns T on success, signals TLS-CERTIFICATE-ERROR on failure."
@@ -156,20 +224,21 @@
          (public-key-bytes (getf public-key-info :public-key)))
     (handler-case
         (cond
-          ;; RSA signatures (various algorithms)
+          ;; RSA PKCS#1 v1.5 signatures
           ((member algorithm '(:sha256-with-rsa-encryption
                                :sha256WithRSAEncryption
                                :sha384-with-rsa-encryption
                                :sha384WithRSAEncryption
                                :sha512-with-rsa-encryption
                                :sha512WithRSAEncryption
+                               :sha1-with-rsa-encryption
+                               :sha1WithRSAEncryption
                                :rsa-pkcs1-sha256
                                :rsa-pkcs1-sha384
                                :rsa-pkcs1-sha512))
            (let* ((hash-algo (cert-sig-algorithm-to-hash algorithm))
                   (public-key (parse-rsa-public-key public-key-bytes)))
-             (ironclad:verify-signature public-key tbs signature
-                                        :pkcs1v15 hash-algo)))
+             (verify-rsa-pkcs1v15-signature public-key tbs signature hash-algo)))
           ;; RSA-PSS
           ((member algorithm '(:rsa-pss :rsassa-pss))
            ;; RSA-PSS needs to extract hash from signature parameters
@@ -220,6 +289,8 @@
 (defun cert-sig-algorithm-to-hash (algorithm)
   "Map certificate signature algorithm to hash algorithm keyword."
   (cond
+    ((member algorithm '(:sha1-with-rsa-encryption
+                         :sha1WithRSAEncryption)) :sha1)
     ((member algorithm '(:sha256-with-rsa-encryption
                          :sha256WithRSAEncryption
                          :rsa-pkcs1-sha256

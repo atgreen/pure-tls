@@ -19,6 +19,7 @@
    #:make-context
    #:ssl-ctx-free
    #:with-global-context
+   #:call-with-global-context
    #:*ssl-global-context*
 
    ;; Stream accessors

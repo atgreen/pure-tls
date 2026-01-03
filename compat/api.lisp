@@ -83,32 +83,82 @@
                    session-cache-mode verify-callback cipher-list
                    pem-password-callback private-key-password
                    private-key-file-type))
-  (let ((tls-verify-mode (cond
-                           ((zerop verify-mode) pure-tls:+verify-none+)
-                           ((logtest verify-mode +ssl-verify-fail-if-no-peer-cert+)
-                            pure-tls:+verify-required+)
-                           (t pure-tls:+verify-peer+))))
+  (let* ((tls-verify-mode (cond
+                            ((zerop verify-mode) pure-tls:+verify-none+)
+                            ((logtest verify-mode +ssl-verify-fail-if-no-peer-cert+)
+                             pure-tls:+verify-required+)
+                            (t pure-tls:+verify-peer+)))
+         (verify-location-list (and (listp verify-location) verify-location))
+         (dir-path-p (lambda (p)
+                       (let ((pp (ignore-errors (probe-file p))))
+                         (and pp (null (pathname-name pp)) (null (pathname-type pp))))))
+         (file-path-p (lambda (p)
+                        (let ((pp (ignore-errors (probe-file p))))
+                          (and pp (or (pathname-name pp) (pathname-type pp))))))
+         (verify-location-dir (cond
+                                ((pathnamep verify-location)
+                                 (and (cl:directory verify-location) verify-location))
+                                ((and (stringp verify-location)
+                                      (funcall dir-path-p verify-location))
+                                 verify-location)
+                                (t nil)))
+         (verify-location-file (and (stringp verify-location)
+                                    (funcall file-path-p verify-location)
+                                    verify-location))
+         (list-file (when verify-location-list
+                      (find-if (lambda (item)
+                                 (and (stringp item) (funcall file-path-p item)))
+                               verify-location-list)))
+         (list-dir (when verify-location-list
+                     (find-if (lambda (item)
+                                (or (and (pathnamep item)
+                                         (cl:directory item))
+                                    (and (stringp item)
+                                         (funcall dir-path-p item))))
+                              verify-location-list))))
     (pure-tls:make-tls-context
      :verify-mode tls-verify-mode
      :verify-depth verify-depth
      :certificate-chain-file certificate-chain-file
      :private-key-file private-key-file
-     :ca-file (when (stringp verify-location) verify-location)
-     :ca-directory (when (and (pathnamep verify-location)
-                              (cl:directory verify-location))
-                     verify-location))))
+     :ca-file (or list-file verify-location-file)
+     :ca-directory (or list-dir verify-location-dir))))
 
 (defun ssl-ctx-free (context)
   "Free an SSL context."
   (pure-tls:tls-context-free context))
 
+(defun call-with-global-context (ssl-ctx auto-free-p body-fn)
+  "Call BODY-FN with *SSL-GLOBAL-CONTEXT* bound to SSL-CTX.
+If AUTO-FREE-P is true, the context is freed after BODY-FN returns."
+  (ensure-initialized)
+  (let ((*ssl-global-context* ssl-ctx))
+    (unwind-protect (funcall body-fn)
+      (when auto-free-p
+        (ssl-ctx-free ssl-ctx)))))
+
 (defmacro with-global-context ((ssl-ctx &key auto-free-p) &body body)
-  "Execute BODY with *SSL-GLOBAL-CONTEXT* bound to SSL-CTX."
-  `(let ((*ssl-global-context* ,ssl-ctx))
-     (pure-tls:with-tls-context (,ssl-ctx :auto-free-p ,auto-free-p)
-       ,@body)))
+  "Execute BODY with *SSL-GLOBAL-CONTEXT* bound to SSL-CTX.
+If AUTO-FREE-P is true, the context is freed before exit."
+  `(call-with-global-context ,ssl-ctx ,auto-free-p (lambda () ,@body)))
 
 ;;;; Stream Creation
+
+(defun %ensure-stream (socket-or-fd)
+  "Ensure we have a stream. If SOCKET-OR-FD is an integer (file descriptor),
+wrap it in a stream. Otherwise return it as-is."
+  (etypecase socket-or-fd
+    (stream socket-or-fd)
+    (integer
+     #+sbcl
+     (sb-sys:make-fd-stream socket-or-fd
+                            :input t
+                            :output t
+                            :element-type '(unsigned-byte 8)
+                            :buffering :full
+                            :auto-close nil)
+     #-sbcl
+     (error "File descriptor to stream conversion not implemented for this Lisp"))))
 
 (defun make-ssl-client-stream (socket &key
                                         (unwrap-stream-p *default-unwrap-stream-p*)
@@ -130,9 +180,12 @@
                            ((null verify) pure-tls:+verify-none+)
                            ((eq verify :optional) pure-tls:+verify-peer+)
                            ((eq verify :required) pure-tls:+verify-required+)
-                           (t pure-tls:+verify-required+))))
+                           (t pure-tls:+verify-required+)))
+        (actual-stream (%ensure-stream socket)))
+    (ensure-initialized)
     (pure-tls:make-tls-client-stream
-     socket
+     actual-stream
+     :context *ssl-global-context*
      :hostname hostname
      :verify tls-verify-mode
      :alpn-protocols alpn-protocols
@@ -149,9 +202,9 @@
                                         alpn-protocols
                                         (cipher-list *default-cipher-list*)
                                         method
-                                        (buffer-size *default-buffer-size*)
-                                        (input-buffer-size buffer-size)
-                                        (output-buffer-size buffer-size))
+                                         (buffer-size *default-buffer-size*)
+                                         (input-buffer-size buffer-size)
+                                         (output-buffer-size buffer-size))
   "Create an SSL server stream (wraps pure-tls:make-tls-server-stream).
 
    VERIFY controls client certificate requirements:
@@ -165,8 +218,10 @@
                            ((eq verify :optional) pure-tls:+verify-peer+)
                            ((eq verify :required) pure-tls:+verify-required+)
                            (t pure-tls:+verify-none+))))
+    (ensure-initialized)
     (pure-tls:make-tls-server-stream
      socket
+     :context *ssl-global-context*
      :certificate certificate
      :key key
      :verify tls-verify-mode
