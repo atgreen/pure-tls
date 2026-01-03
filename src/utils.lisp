@@ -258,6 +258,23 @@
   "Convert an octet vector to a string using UTF-8 encoding."
   (flexi-streams:octets-to-string octets :external-format :utf-8))
 
+;;;; Environment Variables
+
+(defun get-environment-variable (name)
+  "Get an environment variable value, or NIL if not set.
+   Portable across multiple Common Lisp implementations."
+  #+sbcl (sb-ext:posix-getenv name)
+  #+ccl (ccl:getenv name)
+  #+ecl (ext:getenv name)
+  #+clisp (ext:getenv name)
+  #+allegro (sys:getenv name)
+  #+lispworks (lispworks:environment-variable name)
+  #+abcl (ext:getenv name)
+  #+cmucl (cdr (assoc name ext:*environment-list* :test #'string=))
+  #+clasp (ext:getenv name)
+  #-(or sbcl ccl ecl clisp allegro lispworks abcl cmucl clasp)
+  (error "get-environment-variable not implemented for this Lisp"))
+
 ;;;; XOR Operations
 
 (defun xor-octets (a b)

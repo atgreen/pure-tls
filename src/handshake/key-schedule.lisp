@@ -46,6 +46,8 @@
   "TLS 1.3 key schedule state."
   ;; Cipher suite determines hash algorithm
   (cipher-suite 0 :type fixnum)
+  ;; Client random (for SSLKEYLOGFILE)
+  (client-random nil :type (or null octet-vector))
   ;; Secrets at various stages
   (early-secret nil :type (or null octet-vector))
   (handshake-secret nil :type (or null octet-vector))
@@ -60,6 +62,56 @@
   (resumption-master-secret nil :type (or null octet-vector))
   ;; Transcript hash accumulator
   (transcript-hash nil))
+
+;;;; SSLKEYLOGFILE Support
+;;;
+;;; When the SSLKEYLOGFILE environment variable is set, TLS secrets are
+;;; logged to that file in NSS keylog format for Wireshark debugging.
+;;;
+;;; To use with Wireshark:
+;;; 1. Set SSLKEYLOGFILE=/path/to/keylog.txt before starting your Lisp
+;;; 2. In Wireshark: Edit -> Preferences -> Protocols -> TLS
+;;; 3. Set "(Pre)-Master-Secret log filename" to the same path
+
+(defun keylog-write-secret (label client-random secret)
+  "Write a secret to the keylog file if SSLKEYLOGFILE is set.
+   LABEL is the secret type (e.g., 'CLIENT_HANDSHAKE_TRAFFIC_SECRET').
+   CLIENT-RANDOM is the 32-byte client random value.
+   SECRET is the secret bytes."
+  (when (and client-random secret)
+    (let ((filename (get-environment-variable "SSLKEYLOGFILE")))
+      (when (and filename (plusp (length filename)))
+        (with-open-file (stream filename
+                                :direction :output
+                                :if-exists :append
+                                :if-does-not-exist :create)
+          (format stream "~A ~A ~A~%"
+                  label
+                  (octets-to-hex client-random)
+                  (octets-to-hex secret)))))))
+
+(defun keylog-write-handshake-secrets (ks)
+  "Write handshake traffic secrets to keylog."
+  (let ((client-random (key-schedule-client-random ks)))
+    (keylog-write-secret "CLIENT_HANDSHAKE_TRAFFIC_SECRET"
+                         client-random
+                         (key-schedule-client-handshake-traffic-secret ks))
+    (keylog-write-secret "SERVER_HANDSHAKE_TRAFFIC_SECRET"
+                         client-random
+                         (key-schedule-server-handshake-traffic-secret ks))))
+
+(defun keylog-write-application-secrets (ks)
+  "Write application traffic secrets to keylog."
+  (let ((client-random (key-schedule-client-random ks)))
+    (keylog-write-secret "CLIENT_TRAFFIC_SECRET_0"
+                         client-random
+                         (key-schedule-client-application-traffic-secret ks))
+    (keylog-write-secret "SERVER_TRAFFIC_SECRET_0"
+                         client-random
+                         (key-schedule-server-application-traffic-secret ks))
+    (keylog-write-secret "EXPORTER_SECRET"
+                         client-random
+                         (key-schedule-exporter-master-secret ks))))
 
 (defun make-key-schedule-state (cipher-suite)
   "Create a new key schedule state for the given cipher suite."

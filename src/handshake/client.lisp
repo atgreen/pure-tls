@@ -43,6 +43,8 @@
   (peer-certificate-chain nil :type list)
   ;; Selected ALPN protocol
   (selected-alpn nil :type (or null string))
+  ;; Client random (for SSLKEYLOGFILE)
+  (client-random nil :type (or null octet-vector))
   ;; State
   (state :start))
 
@@ -103,6 +105,8 @@
             extensions))
     ;; Store key exchange for later
     (setf (client-handshake-key-exchange hs) key-exchange)
+    ;; Store client random for SSLKEYLOGFILE
+    (setf (client-handshake-client-random hs) random)
     ;; Build ClientHello
     (make-client-hello
      :legacy-version +tls-1.2+
@@ -179,6 +183,9 @@
             (key-schedule-derive-handshake-traffic-secrets
              ks (client-handshake-transcript hs))
             (setf (client-handshake-key-schedule hs) ks)
+            ;; Store client random in key schedule and log secrets for Wireshark
+            (setf (key-schedule-client-random ks) (client-handshake-client-random hs))
+            (keylog-write-handshake-secrets ks)
             ;; Feed existing transcript (ClientHello + ServerHello) into the key schedule's
             ;; incremental transcript hash for later use in Finished verification
             (key-schedule-update-transcript ks (client-handshake-transcript hs))
@@ -553,6 +560,8 @@
     ;; Need transcript including server Finished for app secrets
     (key-schedule-derive-application-traffic-secrets
      ks (client-handshake-transcript hs))
+    ;; Log application secrets for Wireshark
+    (keylog-write-application-secrets ks)
     ;; Install server application keys for reading
     (multiple-value-bind (key iv)
         (key-schedule-derive-read-keys ks :application)

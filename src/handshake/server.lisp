@@ -40,6 +40,8 @@
   (selected-alpn nil :type (or null string))
   ;; Client's offered SNI hostname
   (client-hostname nil :type (or null string))
+  ;; Client random (for SSLKEYLOGFILE)
+  (client-random nil :type (or null octet-vector))
   ;; Whether we requested a client certificate
   (certificate-requested nil :type boolean)
   ;; State machine state
@@ -63,6 +65,9 @@
     ;; Store session ID for echo
     (setf (server-handshake-client-session-id hs)
           (client-hello-legacy-session-id client-hello))
+    ;; Store client random for SSLKEYLOGFILE
+    (setf (server-handshake-client-random hs)
+          (client-hello-random client-hello))
     ;; Extract SNI hostname
     (let ((sni-ext (find-extension extensions +extension-server-name+)))
       (when sni-ext
@@ -168,6 +173,9 @@
     (let ((ks (server-handshake-key-schedule hs)))
       (key-schedule-derive-handshake-traffic-secrets
        ks (server-handshake-transcript hs))
+      ;; Store client random in key schedule and log secrets for Wireshark
+      (setf (key-schedule-client-random ks) (server-handshake-client-random hs))
+      (keylog-write-handshake-secrets ks)
       ;; Feed transcript into key schedule for Finished verification
       (key-schedule-update-transcript ks (server-handshake-transcript hs))
       ;; Install server handshake write keys
@@ -307,6 +315,8 @@
     ;; Derive master secret and application secrets
     (key-schedule-derive-master-secret ks)
     (key-schedule-derive-application-traffic-secrets ks (server-handshake-transcript hs))
+    ;; Log application secrets for Wireshark
+    (keylog-write-application-secrets ks)
     ;; Install server application write keys
     (multiple-value-bind (key iv)
         (key-schedule-derive-write-keys ks :application)

@@ -276,6 +276,34 @@ Record padding helps mitigate traffic analysis by hiding the true length of appl
 
 - **ChaCha20-Poly1305**: Not currently supported because Ironclad doesn't provide it as a combined AEAD mode. Only AES-GCM cipher suites are available. Since Ironclad implements AES in pure Common Lisp using table lookups (rather than hardware AES-NI instructions), the implementation may be susceptible to cache-timing attacks. A ChaCha20 implementation would be preferable for side-channel resistance as it uses only ARX (add-rotate-xor) operations.
 
+## Debugging with Wireshark
+
+pure-tls supports the NSS Key Log format via the `SSLKEYLOGFILE` environment variable. This allows you to decrypt TLS traffic in Wireshark for debugging purposes.
+
+### Setup
+
+1. Set the `SSLKEYLOGFILE` environment variable to a writable file path:
+   ```sh
+   export SSLKEYLOGFILE=/tmp/tls-keys.log
+   ```
+
+2. Start your Lisp application that uses pure-tls
+
+3. In Wireshark:
+   - Go to **Edit > Preferences > Protocols > TLS**
+   - Set **(Pre)-Master-Secret log filename** to the same path (`/tmp/tls-keys.log`)
+   - Capture traffic and Wireshark will automatically decrypt TLS 1.3 sessions
+
+### Logged Secrets
+
+The following secrets are logged (compatible with Wireshark TLS 1.3 dissector):
+
+- `CLIENT_HANDSHAKE_TRAFFIC_SECRET` - Client handshake traffic key
+- `SERVER_HANDSHAKE_TRAFFIC_SECRET` - Server handshake traffic key
+- `CLIENT_TRAFFIC_SECRET_0` - Client application traffic key
+- `SERVER_TRAFFIC_SECRET_0` - Server application traffic key
+- `EXPORTER_SECRET` - Exporter master secret
+
 ## Dependencies
 
 - [ironclad](https://github.com/sharplispers/ironclad) - Cryptographic primitives

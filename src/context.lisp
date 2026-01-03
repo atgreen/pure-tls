@@ -304,20 +304,6 @@
 
 ;;;; System CA Certificates
 
-(defun get-environment-variable (name)
-  "Get an environment variable value, or NIL if not set."
-  #+sbcl (sb-ext:posix-getenv name)
-  #+ccl (ccl:getenv name)
-  #+ecl (ext:getenv name)
-  #+clisp (ext:getenv name)
-  #+allegro (sys:getenv name)
-  #+lispworks (lispworks:environment-variable name)
-  #+abcl (ext:getenv name)
-  #-(or sbcl ccl ecl clisp allegro lispworks abcl)
-  (declare (ignore name))
-  #-(or sbcl ccl ecl clisp allegro lispworks abcl)
-  nil)
-
 (defun windows-p ()
   "Check if running on Windows."
   (member :windows *features*))
