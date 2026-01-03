@@ -32,8 +32,8 @@ jobs:
             --eval '(asdf:load-system :pure-tls/test)' \
             --eval '(unless (pure-tls/test:run-tests) (uiop:quit 1))'
 
-      - name: Run network tests (badssl.com)
+      - name: Run network tests
         run: |
           sbcl --non-interactive \
             --eval '(asdf:load-system :pure-tls/test)' \
-            --eval '(unless (pure-tls/test:run-badssl-tests) (uiop:quit 1))'
+            --eval '(unless (pure-tls/test:run-network-tests) (uiop:quit 1))'

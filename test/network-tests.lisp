@@ -1,19 +1,17 @@
-;;; test/badssl-tests.lisp --- Live network validation tests
+;;; test/network-tests.lisp --- Live network validation tests
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 ;;;
-;;; Network tests for TLS 1.3 connections.
-;;; NOTE: badssl.com only supports TLS 1.2, so those tests are not usable
-;;; for a TLS 1.3-only library.
+;;; Network tests for TLS 1.3 connections against major sites.
 
 (in-package #:pure-tls/test)
 
-(def-suite badssl-tests
+(def-suite network-tests
   :description "Live TLS 1.3 connection tests")
 
-(in-suite badssl-tests)
+(in-suite network-tests)
 
 ;;;; Connection Helper
 
@@ -70,8 +68,7 @@
 
 ;;;; Test Runner
 
-(defun run-badssl-tests ()
-  "Run network validation tests (requires network)."
-  (format t "~&Running TLS 1.3 network tests...~%")
-  (format t "Note: badssl.com tests removed (only supports TLS 1.2)~%~%")
-  (run! 'badssl-tests))
+(defun run-network-tests ()
+  "Run network validation tests (requires internet)."
+  (format t "~&Running TLS 1.3 network tests...~%~%")
+  (run! 'network-tests))

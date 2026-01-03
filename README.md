@@ -440,8 +440,8 @@ For servers, session tickets are encrypted with a server-side key. You can set a
 ;; Run all offline tests (crypto, record layer, handshake, certificates)
 (pure-tls/test:run-tests)
 
-;; Run network tests against TLS 1.3 servers
-(pure-tls/test:run-badssl-tests)
+;; Run network tests (requires internet)
+(pure-tls/test:run-network-tests)
 ```
 
 ### Test Coverage
@@ -462,7 +462,7 @@ The test suite validates:
 (pure-tls/test:run-record-tests)       ; Record layer
 (pure-tls/test:run-handshake-tests)    ; Key schedule, extensions
 (pure-tls/test:run-certificate-tests)  ; X.509 parsing
-(pure-tls/test:run-badssl-tests)       ; Network tests (requires internet)
+(pure-tls/test:run-network-tests)      ; Network tests (requires internet)
 ```
 
 ## Limitations

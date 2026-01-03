@@ -70,5 +70,5 @@
                              (:file "record-tests")
                              (:file "handshake-tests")
                              (:file "certificate-tests")
-                             (:file "badssl-tests")
+                             (:file "network-tests")
                              (:file "runner")))))
