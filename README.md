@@ -425,6 +425,40 @@ For servers, session tickets are encrypted with a server-side key. You can set a
 - Only PSK with (EC)DHE key exchange is supported (provides forward secrecy)
 - PSK-only mode (without (EC)DHE) is not supported
 
+## Testing
+
+### Running the Test Suite
+
+```lisp
+(asdf:load-system :pure-tls/test)
+
+;; Run all offline tests (crypto, record layer, handshake, certificates)
+(pure-tls/test:run-tests)
+
+;; Run network tests against badssl.com
+(pure-tls/test:run-badssl-tests)
+```
+
+### Test Coverage
+
+The test suite validates:
+
+- **Cryptographic primitives**: HKDF (RFC 5869), AES-GCM, ChaCha20-Poly1305 (RFC 8439)
+- **TLS 1.3 key schedule**: RFC 8448 test vectors for all key derivation steps
+- **Record layer**: Header format, content types, AEAD nonce construction
+- **X.509 certificates**: ASN.1 parsing, hostname verification, OID handling
+- **Live validation**: Certificate error detection using badssl.com test servers
+
+### Individual Test Suites
+
+```lisp
+(pure-tls/test:run-crypto-tests)       ; Cryptographic primitives
+(pure-tls/test:run-record-tests)       ; Record layer
+(pure-tls/test:run-handshake-tests)    ; Key schedule, extensions
+(pure-tls/test:run-certificate-tests)  ; X.509 parsing
+(pure-tls/test:run-badssl-tests)       ; Network tests (requires internet)
+```
+
 ## Limitations
 
 - No 0-RTT early data

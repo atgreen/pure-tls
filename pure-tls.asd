@@ -60,11 +60,15 @@
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
   :depends-on (#:pure-tls
-               #:fiveam)
+               #:fiveam
+               #:usocket)
   :serial t
   :components ((:module "test"
                 :serial t
                 :components ((:file "package")
                              (:file "crypto-tests")
                              (:file "record-tests")
-                             (:file "handshake-tests")))))
+                             (:file "handshake-tests")
+                             (:file "certificate-tests")
+                             (:file "badssl-tests")
+                             (:file "runner")))))

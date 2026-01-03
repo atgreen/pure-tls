@@ -1,0 +1,39 @@
+name: Tests
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SBCL
+        run: sudo apt-get update && sudo apt-get install -y sbcl
+
+      - name: Install ocicl
+        run: |
+          DEB_URL=$(curl -s https://api.github.com/repos/ocicl/ocicl/releases/latest | grep -o 'https://github.com/ocicl/ocicl/releases/download/[^"]*amd64\.deb')
+          curl -sLO "$DEB_URL"
+          sudo dpkg -i ocicl_*_amd64.deb
+          ocicl setup > ~/.sbclrc
+
+      - name: Install dependencies
+        run: ocicl install
+
+      - name: Run offline tests
+        run: |
+          sbcl --non-interactive \
+            --eval '(asdf:load-system :pure-tls/test)' \
+            --eval '(unless (pure-tls/test:run-tests) (uiop:quit 1))'
+
+      - name: Run network tests (badssl.com)
+        run: |
+          sbcl --non-interactive \
+            --eval '(asdf:load-system :pure-tls/test)' \
+            --eval '(unless (pure-tls/test:run-badssl-tests) (uiop:quit 1))'
