@@ -111,6 +111,17 @@
   "Check if this is a client stream."
   (client-handshake-p (tls-stream-handshake stream)))
 
+(defun tls-stream-process-new-session-ticket (stream nst)
+  "Process a NewSessionTicket message, caching it for session resumption."
+  (let ((hs (tls-stream-handshake stream)))
+    ;; Only process on client side
+    (when (client-handshake-p hs)
+      (let ((resumption-secret (client-handshake-resumption-master-secret hs))
+            (cipher-suite (client-handshake-selected-cipher-suite hs))
+            (hostname (client-handshake-hostname hs)))
+        (when (and resumption-secret hostname)
+          (process-new-session-ticket nst resumption-secret cipher-suite hostname))))))
+
 (defun tls-stream-process-key-update (stream key-update)
   "Process a KeyUpdate message, updating read keys and responding if requested."
   (let* ((ks (tls-stream-get-key-schedule stream))
@@ -191,8 +202,8 @@
            (#.+handshake-key-update+
             (tls-stream-process-key-update stream (handshake-message-body msg)))
            (#.+handshake-new-session-ticket+
-            ;; NewSessionTicket - ignore for now (session resumption not implemented)
-            nil)
+            ;; NewSessionTicket - cache for session resumption
+            (tls-stream-process-new-session-ticket stream (handshake-message-body msg)))
            (t
             ;; Unknown post-handshake message - ignore
             nil)))

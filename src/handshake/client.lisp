@@ -49,6 +49,10 @@
   (hello-retry-count 0 :type fixnum)  ; Prevent infinite HRR loops
   (hrr-cookie nil :type (or null octet-vector))  ; Cookie from HRR
   (hrr-selected-group nil)  ; Group requested by server in HRR
+  ;; Session resumption (PSK)
+  (offered-psk nil)  ; session-ticket if we offered a PSK
+  (psk-accepted nil :type boolean)  ; T if server accepted our PSK
+  (resumption-master-secret nil :type (or null octet-vector))  ; For ticket derivation
   ;; State
   (state :start))
 
@@ -116,18 +120,77 @@
              :type +extension-cookie+
              :data (client-handshake-hrr-cookie hs))
             extensions))
+    ;; Check for cached session ticket for resumption
+    (let ((ticket (and (client-handshake-hostname hs)
+                       (session-ticket-cache-get (client-handshake-hostname hs)))))
+      (when ticket
+        ;; Add psk_key_exchange_modes extension (required when offering PSK)
+        (push (make-tls-extension
+               :type +extension-psk-key-exchange-modes+
+               :data (make-psk-key-exchange-modes-ext
+                      :modes (list +psk-dhe-ke+)))  ; We require DHE with PSK
+              extensions)
+        ;; Store that we're offering this ticket
+        (setf (client-handshake-offered-psk hs) ticket)))
     ;; Store key exchange for later
     (setf (client-handshake-key-exchange hs) key-exchange)
     ;; Store client random for SSLKEYLOGFILE
     (setf (client-handshake-client-random hs) random)
-    ;; Build ClientHello
-    (make-client-hello
-     :legacy-version +tls-1.2+
-     :random random
-     :legacy-session-id session-id
-     :cipher-suites (client-handshake-cipher-suites hs)
-     :legacy-compression-methods (octet-vector 0)
-     :extensions (nreverse extensions))))
+    ;; Build ClientHello (extensions in reverse order, PSK will be added separately)
+    (let ((hello (make-client-hello
+                  :legacy-version +tls-1.2+
+                  :random random
+                  :legacy-session-id session-id
+                  :cipher-suites (client-handshake-cipher-suites hs)
+                  :legacy-compression-methods (octet-vector 0)
+                  :extensions (nreverse extensions))))
+      ;; If offering PSK, add pre_shared_key extension with binder
+      (when (client-handshake-offered-psk hs)
+        (setf hello (add-psk-extension-to-client-hello hs hello)))
+      hello)))
+
+(defun add-psk-extension-to-client-hello (hs hello)
+  "Add pre_shared_key extension with binder to ClientHello.
+   The binder is computed over the partial ClientHello message.
+   Returns a new ClientHello with the PSK extension added."
+  (let* ((ticket (client-handshake-offered-psk hs))
+         (cipher-suite (session-ticket-cipher-suite ticket))
+         ;; Derive PSK from resumption master secret
+         (psk (derive-resumption-psk (session-ticket-resumption-master-secret ticket)
+                                     (session-ticket-nonce ticket)
+                                     cipher-suite))
+         ;; Build PSK identity
+         (obfuscated-age (compute-obfuscated-ticket-age ticket))
+         (identity (make-psk-identity
+                    :identity (session-ticket-identity ticket)
+                    :obfuscated-ticket-age obfuscated-age))
+         ;; Create pre_shared_key extension with placeholder binder
+         (hash-len (ironclad:digest-length (cipher-suite-digest cipher-suite)))
+         (placeholder-binder (make-octet-vector hash-len))
+         (psk-ext (make-tls-extension
+                   :type +extension-pre-shared-key+
+                   :data (make-pre-shared-key-ext
+                          :identities (list identity)
+                          :binders (list placeholder-binder)))))
+    ;; Add PSK extension to ClientHello (must be last)
+    (setf (client-hello-extensions hello)
+          (append (client-hello-extensions hello) (list psk-ext)))
+    ;; Serialize to compute partial transcript
+    (let* ((hello-bytes (serialize-client-hello hello))
+           (binders-len (pre-shared-key-ext-binders-length
+                         (tls-extension-data psk-ext)))
+           ;; Transcript for binder = CH without binders
+           (partial-hello (subseq hello-bytes 0 (- (length hello-bytes) binders-len)))
+           (partial-message (wrap-handshake-message +handshake-client-hello+ partial-hello))
+           (transcript-hash (ironclad:digest-sequence
+                             (cipher-suite-digest cipher-suite)
+                             partial-message))
+           ;; Compute actual binder
+           (binder (compute-binder psk transcript-hash cipher-suite)))
+      ;; Update the binder in the extension
+      (setf (pre-shared-key-ext-binders (tls-extension-data psk-ext))
+            (list binder))
+      hello)))
 
 (defun send-client-hello (hs &key requested-group)
   "Send ClientHello message.
@@ -249,13 +312,33 @@
           (error 'tls-handshake-error
                  :message "Server used different key exchange group"
                  :state :wait-server-hello))
+        ;; Check for PSK acceptance
+        (let ((psk-ext (find-extension extensions +extension-pre-shared-key+)))
+          (when (and psk-ext (client-handshake-offered-psk hs))
+            ;; Server accepted our PSK - parse the extension
+            (let* ((psk-data (parse-pre-shared-key-extension
+                              (tls-extension-data psk-ext)
+                              :server-hello-p t))
+                   (selected-id (pre-shared-key-ext-selected-identity psk-data)))
+              ;; We only offered one PSK, so selected must be 0
+              (unless (zerop selected-id)
+                (error 'tls-handshake-error
+                       :message "Server selected invalid PSK identity"
+                       :state :wait-server-hello))
+              (setf (client-handshake-psk-accepted hs) t))))
         ;; Compute shared secret
         (let ((shared-secret (compute-shared-secret
                               (client-handshake-key-exchange hs)
                               server-public)))
-          ;; Initialize key schedule
-          (let ((ks (make-key-schedule-state (client-handshake-selected-cipher-suite hs))))
-            (key-schedule-init ks nil)
+          ;; Initialize key schedule (with PSK if accepted)
+          (let* ((ks (make-key-schedule-state (client-handshake-selected-cipher-suite hs)))
+                 (psk (when (client-handshake-psk-accepted hs)
+                        (let ((ticket (client-handshake-offered-psk hs)))
+                          (derive-resumption-psk
+                           (session-ticket-resumption-master-secret ticket)
+                           (session-ticket-nonce ticket)
+                           (session-ticket-cipher-suite ticket))))))
+            (key-schedule-init ks psk)
             (key-schedule-derive-handshake-secret ks shared-secret)
             ;; Derive handshake traffic secrets from transcript so far
             (key-schedule-derive-handshake-traffic-secrets
@@ -289,7 +372,8 @@
                (protocols (alpn-ext-protocol-list alpn-data)))
           (when protocols
             (setf (client-handshake-selected-alpn hs) (first protocols))))))
-    ;; TODO: Process other extensions
+    ;; In PSK mode with resumption, server skips Certificate/CertificateVerify
+    ;; Otherwise, expect Certificate next
     (setf (client-handshake-state hs) :wait-cert-or-finished)))
 
 ;;;; Certificate Processing
@@ -674,8 +758,10 @@
     (client-handshake-update-transcript hs message)
     ;; Send
     (record-layer-write-handshake (client-handshake-record-layer hs) message)
-    ;; Derive resumption master secret
+    ;; Derive resumption master secret (for session tickets)
     (key-schedule-derive-resumption-master-secret ks (client-handshake-transcript hs))
+    (setf (client-handshake-resumption-master-secret hs)
+          (key-schedule-resumption-master-secret ks))
     ;; Install client application keys for writing
     (multiple-value-bind (key iv)
         (key-schedule-derive-write-keys ks :application)

@@ -50,6 +50,12 @@
   (client-random nil :type (or null octet-vector))
   ;; Whether we requested a client certificate
   (certificate-requested nil :type boolean)
+  ;; Session resumption (PSK)
+  (psk-accepted nil :type boolean)  ; T if we accepted client's PSK
+  (accepted-psk nil :type (or null octet-vector))  ; The PSK we accepted
+  (selected-psk-index nil)  ; Index of selected PSK identity
+  (resumption-master-secret nil :type (or null octet-vector))  ; For ticket generation
+  (ticket-nonce-counter 0 :type fixnum)  ; Counter for ticket nonces
   ;; State machine state
   (state :start))
 
@@ -59,6 +65,60 @@
         (if (server-handshake-transcript hs)
             (concat-octet-vectors (server-handshake-transcript hs) message-bytes)
             (copy-seq message-bytes))))
+
+;;;; PSK Verification
+
+(defun try-accept-psk (hs psk-ext raw-client-hello cipher-suite)
+  "Try to accept a PSK from the client's pre_shared_key extension.
+   Returns (VALUES psk selected-index) if a valid PSK is found, NIL otherwise.
+   RAW-CLIENT-HELLO must be the complete ClientHello message bytes."
+  (declare (ignore hs))  ; HS reserved for future use (e.g., custom ticket decryption)
+  (let* ((identities (pre-shared-key-ext-identities psk-ext))
+         (binders (pre-shared-key-ext-binders psk-ext)))
+    ;; Iterate through offered identities
+    (loop for identity in identities
+          for binder in binders
+          for index from 0
+          do
+             (let ((ticket-data (psk-identity-identity identity))
+                   (obfuscated-age (psk-identity-obfuscated-ticket-age identity)))
+               ;; Try to decrypt the ticket
+               ;; Ticket format: age-add (4) || lifetime (4) || encrypted-data
+               (when (>= (length ticket-data) 8)
+                 (let* ((stored-age-add (decode-uint32-be ticket-data 0))
+                        (stored-lifetime (decode-uint32-be ticket-data 4))
+                        (encrypted-data (subseq ticket-data 8)))
+                   (multiple-value-bind (resumption-master-secret ticket-cipher-suite
+                                         nonce creation-time)
+                       (decrypt-session-ticket encrypted-data)
+                     (when (and resumption-master-secret
+                                ;; Must match the cipher suite we selected
+                                (= ticket-cipher-suite cipher-suite)
+                                ;; Validate ticket age
+                                (validate-ticket-age creation-time stored-lifetime
+                                                     obfuscated-age stored-age-add))
+                       ;; Derive the PSK
+                       (let ((psk (derive-resumption-psk resumption-master-secret
+                                                          nonce cipher-suite)))
+                         ;; Compute transcript hash up to but not including binders
+                         ;; The binders list length is encoded as 2 bytes before the binders
+                         ;; We need to find where the binders start in the ClientHello
+                         (let* (;; Total binders length (1 byte per binder length + binder data)
+                                (total-binders-len
+                                  (loop for b in binders
+                                        sum (+ 1 (length b))))
+                                ;; Truncated hello is everything except the binders
+                                ;; The extension ends with: 2 bytes binders length + binders data
+                                (truncated-len (- (length raw-client-hello)
+                                                  total-binders-len))
+                                (truncated-hello (subseq raw-client-hello 0 truncated-len))
+                                (digest (cipher-suite-digest cipher-suite))
+                                (transcript-hash (ironclad:digest-sequence digest truncated-hello)))
+                           ;; Verify the binder
+                           (when (verify-binder psk transcript-hash binder cipher-suite)
+                             (return-from try-accept-psk
+                               (values psk index)))))))))))
+    nil))
 
 ;;;; ClientHello Processing
 
@@ -114,35 +174,55 @@
         (error 'tls-handshake-error
                :message "Client does not support TLS 1.3"
                :state :wait-client-hello)))
-    ;; Process key_share extension
-    (let ((ks-ext (find-extension extensions +extension-key-share+)))
-      (unless ks-ext
-        (error 'tls-handshake-error
-               :message "Missing key_share extension"
-               :state :wait-client-hello))
-      (let* ((ks-data (tls-extension-data ks-ext))
-             (client-shares (key-share-ext-client-shares ks-data))
-             ;; Find first share for a group we support
-             (our-groups '(#.+group-x25519+ #.+group-secp256r1+))
-             (selected-share (find-if (lambda (share)
-                                        (member (key-share-entry-group share) our-groups))
-                                      client-shares)))
-        (unless selected-share
+    ;; Check for PSK (session resumption) before key exchange
+    ;; We need the psk_key_exchange_modes and pre_shared_key extensions
+    (let ((psk-modes-ext (find-extension extensions +extension-psk-key-exchange-modes+))
+          (psk-ext (find-extension extensions +extension-pre-shared-key+))
+          (accepted-psk nil)
+          (selected-psk-index nil))
+      ;; Try to accept PSK if client offers one with psk_dhe_ke mode
+      (when (and psk-modes-ext psk-ext)
+        (let* ((modes-data (tls-extension-data psk-modes-ext))
+               (modes (psk-key-exchange-modes-ext-modes modes-data)))
+          ;; We only support psk_dhe_ke (PSK with (EC)DHE key exchange)
+          (when (member +psk-ke-mode-dhe+ modes)
+            (multiple-value-setq (accepted-psk selected-psk-index)
+              (try-accept-psk hs (tls-extension-data psk-ext) raw-bytes
+                              (server-handshake-selected-cipher-suite hs)))
+            (when accepted-psk
+              (setf (server-handshake-psk-accepted hs) t)
+              (setf (server-handshake-accepted-psk hs) accepted-psk)
+              (setf (server-handshake-selected-psk-index hs) selected-psk-index)))))
+      ;; Process key_share extension
+      (let ((ks-ext (find-extension extensions +extension-key-share+)))
+        (unless ks-ext
           (error 'tls-handshake-error
-                 :message "No common key exchange group"
+                 :message "Missing key_share extension"
                  :state :wait-client-hello))
-        ;; Generate our key pair and compute shared secret
-        (let* ((group (key-share-entry-group selected-share))
-               (client-public (key-share-entry-key-exchange selected-share))
-               (key-exchange (generate-key-exchange group)))
-          (setf (server-handshake-key-exchange hs) key-exchange)
-          ;; Compute shared secret
-          (let ((shared-secret (compute-shared-secret key-exchange client-public)))
-            ;; Initialize key schedule
-            (let ((ks (make-key-schedule-state (server-handshake-selected-cipher-suite hs))))
-              (key-schedule-init ks nil)
-              (key-schedule-derive-handshake-secret ks shared-secret)
-              (setf (server-handshake-key-schedule hs) ks))))))
+        (let* ((ks-data (tls-extension-data ks-ext))
+               (client-shares (key-share-ext-client-shares ks-data))
+               ;; Find first share for a group we support
+               (our-groups '(#.+group-x25519+ #.+group-secp256r1+))
+               (selected-share (find-if (lambda (share)
+                                          (member (key-share-entry-group share) our-groups))
+                                        client-shares)))
+          (unless selected-share
+            (error 'tls-handshake-error
+                   :message "No common key exchange group"
+                   :state :wait-client-hello))
+          ;; Generate our key pair and compute shared secret
+          (let* ((group (key-share-entry-group selected-share))
+                 (client-public (key-share-entry-key-exchange selected-share))
+                 (key-exchange (generate-key-exchange group)))
+            (setf (server-handshake-key-exchange hs) key-exchange)
+            ;; Compute shared secret
+            (let ((shared-secret (compute-shared-secret key-exchange client-public)))
+              ;; Initialize key schedule
+              (let ((ks (make-key-schedule-state (server-handshake-selected-cipher-suite hs))))
+                ;; Use PSK if accepted, otherwise nil (for regular handshake)
+                (key-schedule-init ks accepted-psk)
+                (key-schedule-derive-handshake-secret ks shared-secret)
+                (setf (server-handshake-key-schedule hs) ks)))))))
     ;; Handle ALPN
     (let ((alpn-ext (find-extension extensions +extension-application-layer-protocol-negotiation+)))
       (when (and alpn-ext (server-handshake-alpn-protocols hs))
@@ -172,6 +252,13 @@
                     :server-share (make-key-share-entry
                                    :group (key-exchange-group key-exchange)
                                    :key-exchange (key-exchange-public-key key-exchange)))))))
+    ;; Add pre_shared_key extension if PSK was accepted
+    (when (server-handshake-psk-accepted hs)
+      (push (make-tls-extension
+             :type +extension-pre-shared-key+
+             :data (make-pre-shared-key-ext
+                    :selected-identity (server-handshake-selected-psk-index hs)))
+            extensions))
     (make-server-hello
      :legacy-version +tls-1.2+
      :random random
@@ -419,8 +506,10 @@
     ;; Update transcript AFTER verification
     (server-handshake-update-transcript hs raw-bytes)
     (key-schedule-update-transcript ks raw-bytes)
-    ;; Derive resumption master secret
+    ;; Derive resumption master secret (for session tickets)
     (key-schedule-derive-resumption-master-secret ks (server-handshake-transcript hs))
+    (setf (server-handshake-resumption-master-secret hs)
+          (key-schedule-resumption-master-secret ks))
     ;; Install client application read keys
     (multiple-value-bind (key iv)
         (key-schedule-derive-read-keys ks :application)
@@ -429,6 +518,53 @@
        :read key iv
        cipher-suite))
     (setf (server-handshake-state hs) :connected)))
+
+;;;; Session Resumption (NewSessionTicket)
+
+(defconstant +default-ticket-lifetime+ 86400
+  "Default ticket lifetime: 24 hours in seconds.")
+
+(defun generate-new-session-ticket (hs)
+  "Generate a NewSessionTicket message for session resumption."
+  (let* ((cipher-suite (server-handshake-selected-cipher-suite hs))
+         (resumption-master-secret (server-handshake-resumption-master-secret hs))
+         (ticket-lifetime +default-ticket-lifetime+)
+         (age-add (random (expt 2 32)))  ; Random 32-bit value for obfuscation
+         ;; Generate unique nonce for this ticket
+         (nonce-counter (server-handshake-ticket-nonce-counter hs))
+         (nonce (octet-vector (ldb (byte 8 0) nonce-counter)))
+         (creation-time (get-internal-real-time))
+         ;; Encrypt session state into ticket
+         (ticket-data (encrypt-session-ticket
+                       resumption-master-secret
+                       cipher-suite
+                       nonce
+                       creation-time)))
+    ;; Increment nonce counter for next ticket
+    (incf (server-handshake-ticket-nonce-counter hs))
+    ;; Create the NewSessionTicket structure
+    ;; We also include the age-add in the ticket for later validation
+    ;; by prepending it to the encrypted ticket data
+    (let ((full-ticket (concat-octet-vectors
+                        (encode-uint32-be age-add)
+                        (encode-uint32-be ticket-lifetime)
+                        ticket-data)))
+      (make-new-session-ticket
+       :ticket-lifetime ticket-lifetime
+       :ticket-age-add age-add
+       :ticket-nonce nonce
+       :ticket full-ticket
+       :extensions nil))))
+
+(defun send-new-session-ticket (hs)
+  "Send a NewSessionTicket message to enable session resumption.
+   This should be called after the handshake completes."
+  (when (server-handshake-resumption-master-secret hs)
+    (let* ((nst (generate-new-session-ticket hs))
+           (nst-bytes (serialize-new-session-ticket nst))
+           (message (wrap-handshake-message +handshake-new-session-ticket+ nst-bytes)))
+      ;; Send (encrypted with server application keys)
+      (record-layer-write-handshake (server-handshake-record-layer hs) message))))
 
 ;;;; Handshake Message Reading
 
@@ -539,6 +675,8 @@
            (process-client-finished hs message raw-bytes)))
 
         (:connected
+         ;; Send NewSessionTicket for session resumption
+         (send-new-session-ticket hs)
          (return hs))
 
         (t

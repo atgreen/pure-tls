@@ -134,6 +134,13 @@
 (defconstant +tls-aes-128-ccm-sha256+ #x1304)
 (defconstant +tls-aes-128-ccm-8-sha256+ #x1305)
 
+;;;; PSK Key Exchange Modes (RFC 8446 Section 4.2.9)
+
+(defconstant +psk-ke-mode-psk+ 0
+  "PSK-only key exchange mode")
+(defconstant +psk-ke-mode-dhe+ 1
+  "PSK with (EC)DHE key exchange mode")
+
 ;;;; Verification Modes
 
 (defconstant +verify-none+ 0

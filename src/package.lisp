@@ -100,4 +100,9 @@
 
    ;; Configuration
    #:*default-buffer-size*
-   #:*default-verify-mode*))
+   #:*default-verify-mode*
+
+   ;; Session resumption
+   #:*session-ticket-cache*
+   #:*server-ticket-key*
+   #:session-ticket-cache-clear))

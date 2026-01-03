@@ -49,6 +49,12 @@
             (parse-server-name-extension data))
            (#.+extension-application-layer-protocol-negotiation+
             (parse-alpn-extension data))
+           (#.+extension-psk-key-exchange-modes+
+            (parse-psk-key-exchange-modes-extension data))
+           (#.+extension-pre-shared-key+
+            ;; Note: PSK needs context (client vs server hello)
+            ;; For now, return raw bytes - caller will parse appropriately
+            data)
            (t data))))  ; Return raw bytes for unknown extensions
 
 (defun serialize-extension (ext)
@@ -70,6 +76,10 @@
                (serialize-server-name-extension ext-data))
               (#.+extension-application-layer-protocol-negotiation+
                (serialize-alpn-extension ext-data))
+              (#.+extension-psk-key-exchange-modes+
+               (serialize-psk-key-exchange-modes-extension ext-data))
+              (#.+extension-pre-shared-key+
+               (serialize-pre-shared-key-extension ext-data))
               (t (if (typep ext-data 'octet-vector)
                      ext-data
                      (make-octet-vector 0))))))
@@ -297,6 +307,107 @@
         (write-buffer-append-vector8 list-buf (string-to-octets proto)))
       (write-buffer-append-vector16 buf (write-buffer-contents list-buf)))
     (write-buffer-contents buf)))
+
+;;;; PSK Key Exchange Modes Extension
+
+(defconstant +psk-ke+ 0
+  "PSK-only key establishment.")
+(defconstant +psk-dhe-ke+ 1
+  "PSK with (EC)DHE key establishment.")
+
+(defstruct psk-key-exchange-modes-ext
+  "psk_key_exchange_modes extension data."
+  (modes nil :type list))
+
+(defun parse-psk-key-exchange-modes-extension (data)
+  "Parse psk_key_exchange_modes extension."
+  (let ((buf (make-tls-buffer data))
+        (modes nil))
+    (let ((modes-data (buffer-read-vector8 buf)))
+      (loop for i from 0 below (length modes-data)
+            do (push (aref modes-data i) modes)))
+    (make-psk-key-exchange-modes-ext :modes (nreverse modes))))
+
+(defun serialize-psk-key-exchange-modes-extension (ext)
+  "Serialize psk_key_exchange_modes extension."
+  (let ((buf (make-tls-write-buffer))
+        (modes (psk-key-exchange-modes-ext-modes ext)))
+    (write-buffer-append-vector8 buf (coerce modes 'octet-vector))
+    (write-buffer-contents buf)))
+
+;;;; Pre-Shared Key Extension
+
+(defstruct psk-identity
+  "A PSK identity offered by the client."
+  (identity nil :type (or null octet-vector))
+  (obfuscated-ticket-age 0 :type (unsigned-byte 32)))
+
+(defstruct pre-shared-key-ext
+  "pre_shared_key extension data."
+  ;; ClientHello: list of identities and binders
+  (identities nil :type list)
+  (binders nil :type list)
+  ;; ServerHello: selected identity index
+  (selected-identity nil))
+
+(defun parse-pre-shared-key-extension (data &key server-hello-p)
+  "Parse pre_shared_key extension.
+   SERVER-HELLO-P indicates if this is from ServerHello (just an index)."
+  (let ((buf (make-tls-buffer data)))
+    (if server-hello-p
+        ;; ServerHello: uint16 selected_identity
+        (make-pre-shared-key-ext
+         :selected-identity (buffer-read-uint16 buf))
+        ;; ClientHello: identities and binders
+        (let ((identities nil)
+              (binders nil))
+          ;; Parse identities
+          (let ((id-data (buffer-read-vector16 buf)))
+            (let ((id-buf (make-tls-buffer id-data)))
+              (loop while (plusp (buffer-remaining id-buf))
+                    do (let ((identity (buffer-read-vector16 id-buf))
+                             (age (buffer-read-uint32 id-buf)))
+                         (push (make-psk-identity :identity identity
+                                                  :obfuscated-ticket-age age)
+                               identities)))))
+          ;; Parse binders
+          (let ((binder-data (buffer-read-vector16 buf)))
+            (let ((binder-buf (make-tls-buffer binder-data)))
+              (loop while (plusp (buffer-remaining binder-buf))
+                    do (push (buffer-read-vector8 binder-buf) binders))))
+          (make-pre-shared-key-ext
+           :identities (nreverse identities)
+           :binders (nreverse binders))))))
+
+(defun serialize-pre-shared-key-extension (ext)
+  "Serialize pre_shared_key extension."
+  (let ((buf (make-tls-write-buffer)))
+    (cond
+      ;; ServerHello: just the selected identity
+      ((pre-shared-key-ext-selected-identity ext)
+       (write-buffer-append-uint16 buf (pre-shared-key-ext-selected-identity ext)))
+      ;; ClientHello: identities and binders
+      (t
+       ;; Identities
+       (let ((id-buf (make-tls-write-buffer)))
+         (dolist (id (pre-shared-key-ext-identities ext))
+           (write-buffer-append-vector16 id-buf (psk-identity-identity id))
+           (write-buffer-append-uint32 id-buf (psk-identity-obfuscated-ticket-age id)))
+         (write-buffer-append-vector16 buf (write-buffer-contents id-buf)))
+       ;; Binders
+       (let ((binder-buf (make-tls-write-buffer)))
+         (dolist (binder (pre-shared-key-ext-binders ext))
+           (write-buffer-append-vector8 binder-buf binder))
+         (write-buffer-append-vector16 buf (write-buffer-contents binder-buf)))))
+    (write-buffer-contents buf)))
+
+(defun pre-shared-key-ext-binders-length (ext)
+  "Calculate the length of the binders portion of a pre_shared_key extension.
+   This is needed for binder calculation (transcript up to but not including binders)."
+  (let ((total 2)) ; 2 bytes for binders length prefix
+    (dolist (binder (pre-shared-key-ext-binders ext))
+      (incf total (1+ (length binder)))) ; 1 byte length + binder data
+    total))
 
 ;;;; Extension Lookup Utilities
 

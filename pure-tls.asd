@@ -33,6 +33,7 @@
                 :components ((:file "messages")
                              (:file "key-schedule")
                              (:file "extensions")
+                             (:file "resumption")
                              (:file "client")
                              (:file "server")))
                (:module "src/x509"

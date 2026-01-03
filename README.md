@@ -335,9 +335,62 @@ The following secrets are logged (compatible with Wireshark TLS 1.3 dissector):
 - [flexi-streams](https://github.com/edicl/flexi-streams) - Character encoding (optional)
 - [alexandria](https://github.com/keithj/alexandria) - Utilities
 
+## Session Resumption (PSK)
+
+pure-tls supports TLS 1.3 session resumption using Pre-Shared Keys (PSK) derived from NewSessionTicket messages. This allows clients to reconnect to servers more quickly by skipping the certificate exchange.
+
+### How It Works
+
+1. After a successful handshake, the server sends a NewSessionTicket message
+2. The client caches the ticket (keyed by hostname)
+3. On subsequent connections, the client offers the cached PSK
+4. If the server accepts, the handshake completes without certificate exchange
+
+### Client Usage
+
+Session resumption is automatic. The client caches session tickets and offers them on subsequent connections:
+
+```lisp
+;; First connection - full handshake
+(let ((tls (pure-tls:make-tls-client-stream stream :hostname "example.com")))
+  ;; ... use connection ...
+  (close tls))
+
+;; Second connection - resumed session (faster)
+(let ((tls (pure-tls:make-tls-client-stream stream :hostname "example.com")))
+  ;; ... uses cached PSK if available ...
+  (close tls))
+```
+
+### Managing the Session Cache
+
+```lisp
+;; Clear all cached session tickets
+(pure-tls:session-ticket-cache-clear)
+
+;; Clear ticket for a specific hostname
+(pure-tls:session-ticket-cache-clear "example.com")
+```
+
+### Server Configuration
+
+For servers, session tickets are encrypted with a server-side key. You can set a persistent key for session tickets to survive server restarts:
+
+```lisp
+;; Set a 32-byte key for ticket encryption
+;; (If not set, a random key is generated on first use)
+(setf pure-tls:*server-ticket-key* (pure-tls:random-bytes 32))
+```
+
+### Security Considerations
+
+- Session tickets are encrypted with AES-256-GCM
+- Ticket lifetime is 24 hours by default
+- Only PSK with (EC)DHE key exchange is supported (provides forward secrecy)
+- PSK-only mode (without (EC)DHE) is not supported
+
 ## Limitations
 
-- No session resumption (PSK)
 - No 0-RTT early data
 
 ## License
