@@ -21,3 +21,4 @@ systems.csv
 # Test files
 test-connect.lisp
 test-load.lisp
+ocicl.csv
