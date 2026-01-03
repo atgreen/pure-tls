@@ -304,26 +304,103 @@
 
 ;;;; System CA Certificates
 
+(defun get-environment-variable (name)
+  "Get an environment variable value, or NIL if not set."
+  #+sbcl (sb-ext:posix-getenv name)
+  #+ccl (ccl:getenv name)
+  #+ecl (ext:getenv name)
+  #+clisp (ext:getenv name)
+  #+allegro (sys:getenv name)
+  #+lispworks (lispworks:environment-variable name)
+  #+abcl (ext:getenv name)
+  #-(or sbcl ccl ecl clisp allegro lispworks abcl)
+  (declare (ignore name))
+  #-(or sbcl ccl ecl clisp allegro lispworks abcl)
+  nil)
+
+(defun windows-p ()
+  "Check if running on Windows."
+  (member :windows *features*))
+
 (defun load-system-trust-store ()
-  "Load the system's default trusted CA certificates."
+  "Load the system's default trusted CA certificates.
+
+   Checks in order:
+   1. SSL_CERT_FILE environment variable (OpenSSL compatible)
+   2. SSL_CERT_DIR environment variable (OpenSSL compatible)
+   3. Platform-specific default locations"
+  ;; 1. Check SSL_CERT_FILE environment variable
+  (let ((cert-file (get-environment-variable "SSL_CERT_FILE")))
+    (when (and cert-file (probe-file cert-file))
+      (return-from load-system-trust-store
+        (make-trust-store-from-sources cert-file nil))))
+  ;; 2. Check SSL_CERT_DIR environment variable
+  (let ((cert-dir (get-environment-variable "SSL_CERT_DIR")))
+    (when (and cert-dir (probe-file cert-dir))
+      (return-from load-system-trust-store
+        (make-trust-store-from-directory cert-dir))))
+  ;; 3. Platform-specific paths
+  (if (windows-p)
+      (load-windows-trust-store)
+      (load-unix-trust-store)))
+
+(defun load-unix-trust-store ()
+  "Load trust store from Unix/macOS default locations."
+  ;; Try bundle files first
   (let ((paths '("/etc/ssl/certs/ca-certificates.crt"      ; Debian/Ubuntu
                  "/etc/pki/tls/certs/ca-bundle.crt"        ; RHEL/CentOS
                  "/etc/ssl/ca-bundle.pem"                   ; OpenSUSE
                  "/usr/local/share/certs/ca-root-nss.crt"  ; FreeBSD
-                 "/etc/ssl/cert.pem")))                    ; macOS
+                 "/etc/ssl/cert.pem"                        ; macOS
+                 "/usr/local/etc/openssl/cert.pem"          ; Homebrew OpenSSL
+                 "/usr/local/etc/openssl@1.1/cert.pem"      ; Homebrew OpenSSL 1.1
+                 "/opt/homebrew/etc/openssl/cert.pem")))    ; Homebrew on Apple Silicon
     (dolist (path paths)
       (when (probe-file path)
-        (return-from load-system-trust-store
+        (return-from load-unix-trust-store
           (make-trust-store-from-sources path nil)))))
   ;; Try directory-based stores
   (let ((dirs '("/etc/ssl/certs"
                 "/etc/pki/tls/certs")))
     (dolist (dir dirs)
       (when (probe-file dir)
-        (return-from load-system-trust-store
+        (return-from load-unix-trust-store
           (make-trust-store-from-directory dir)))))
   ;; No system store found
-  (warn "Could not find system CA certificates")
+  (warn "Could not find system CA certificates. Set SSL_CERT_FILE environment variable or use :ca-file parameter.")
+  (make-trust-store))
+
+(defun load-windows-trust-store ()
+  "Load trust store from common Windows CA bundle locations.
+   Note: OpenSSL itself does not ship CA certificates. These paths are for
+   tools that bundle Mozilla's CA certificates (Git, MSYS2, Cygwin)."
+  (let ((paths '(;; Git for Windows (very common, includes Mozilla CA bundle)
+                 "C:/Program Files/Git/mingw64/ssl/certs/ca-bundle.crt"
+                 "C:/Program Files/Git/usr/ssl/certs/ca-bundle.crt"
+                 "C:/Program Files (x86)/Git/mingw64/ssl/certs/ca-bundle.crt"
+                 "C:/Program Files (x86)/Git/mingw32/ssl/certs/ca-bundle.crt"
+                 ;; MSYS2 (includes ca-certificates package)
+                 "C:/msys64/usr/ssl/certs/ca-bundle.crt"
+                 "C:/msys64/mingw64/ssl/certs/ca-bundle.crt"
+                 "C:/msys32/usr/ssl/certs/ca-bundle.crt"
+                 ;; Cygwin (includes ca-certificates package)
+                 "C:/cygwin64/usr/ssl/certs/ca-bundle.crt"
+                 "C:/cygwin/usr/ssl/certs/ca-bundle.crt"
+                 ;; Scoop curl package includes certs
+                 "~/scoop/apps/curl/current/bin/curl-ca-bundle.crt"
+                 "~/scoop/persist/curl/bin/curl-ca-bundle.crt")))
+    (dolist (path paths)
+      (let ((expanded-path (if (and (> (length path) 0)
+                                    (char= (char path 0) #\~))
+                               (merge-pathnames (subseq path 2)
+                                                (user-homedir-pathname))
+                               path)))
+        (when (probe-file expanded-path)
+          (return-from load-windows-trust-store
+            (make-trust-store-from-sources (namestring expanded-path) nil))))))
+  ;; No Windows CA bundle found
+  (warn "Could not find CA certificates on Windows. ~
+         Install Git for Windows or set SSL_CERT_FILE environment variable.")
   (make-trust-store))
 
 (defun context-with-system-trust (context)

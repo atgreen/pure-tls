@@ -168,6 +168,56 @@ Create a reusable TLS context for configuration.
 - `+verify-peer+` (1) - Verify peer certificate if provided
 - `+verify-required+` (2) - Require and verify peer certificate
 
+## Certificate Configuration
+
+### Automatic CA Certificate Discovery
+
+pure-tls automatically searches for system CA certificates in this order:
+
+1. **`SSL_CERT_FILE`** environment variable (OpenSSL compatible)
+2. **`SSL_CERT_DIR`** environment variable (OpenSSL compatible)
+3. **Platform-specific locations:**
+
+   **Unix/Linux:**
+   - `/etc/ssl/certs/ca-certificates.crt` (Debian/Ubuntu)
+   - `/etc/pki/tls/certs/ca-bundle.crt` (RHEL/CentOS)
+   - `/etc/ssl/cert.pem` (macOS)
+   - Homebrew OpenSSL paths
+
+   **Windows:**
+   - Git for Windows: `C:/Program Files/Git/mingw64/ssl/certs/ca-bundle.crt`
+   - MSYS2: `C:/msys64/usr/ssl/certs/ca-bundle.crt`
+   - Cygwin, Scoop (curl package)
+
+### Custom CA Certificates
+
+```lisp
+;; Use a specific CA bundle file
+(pure-tls:make-tls-context :ca-file "/path/to/ca-bundle.crt")
+
+;; Use a directory of certificates
+(pure-tls:make-tls-context :ca-directory "/path/to/certs/")
+
+;; Combine custom CA with system certificates
+(pure-tls:make-tls-context :ca-file "/path/to/corporate-ca.pem")
+
+;; Skip system CA auto-loading
+(pure-tls:make-tls-context
+  :ca-file "/path/to/custom-ca.pem"
+  :auto-load-system-ca nil)
+```
+
+### Windows Users
+
+If CA certificates are not found automatically, either:
+
+1. **Install Git for Windows** (recommended) - includes Mozilla CA bundle
+2. **Set environment variable:**
+   ```powershell
+   $env:SSL_CERT_FILE = "C:\path\to\cacert.pem"
+   ```
+3. **Download Mozilla CA bundle** from https://curl.se/ca/cacert.pem
+
 ## Side-Channel Hardening
 
 pure-tls implements several measures to mitigate side-channel attacks:
