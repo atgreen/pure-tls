@@ -1,4 +1,4 @@
-# pure-tls 0.1.0 Release Notes
+# pure-tls 1.0.0 Release Notes
 
 **Release Date:** January 2026
 

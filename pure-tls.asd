@@ -8,7 +8,7 @@
   :description "Pure Common Lisp TLS 1.3 implementation"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
-  :version "0.1.0"
+  :version "1.0.0"
   :depends-on (#:ironclad
                #:trivial-gray-streams
                #:flexi-streams
@@ -47,7 +47,7 @@
   :description "cl+ssl API compatibility layer for pure-tls"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
-  :version "0.1.0"
+  :version "1.0.0"
   :depends-on (#:pure-tls
                #:usocket)
   :serial t
