@@ -187,53 +187,109 @@ CHECK-REVOCATION if true, enables CRL/OCSP revocation checking (slower).
 
 Returns T if the chain is valid and trusted by Windows.
 Signals an error with details on verification failure."
+  (format t "~&;; [WIN-VERIFY] Starting Windows CryptoAPI verification~%")
+  (format t ";;   Hostname: ~A~%" hostname)
+  (format t ";;   Certificate count: ~D~%" (length der-certificates))
+  (format t ";;   Check revocation: ~A~%" check-revocation)
+  (force-output)
+
   (unless der-certificates
+    (format t ";;   ERROR: No certificates provided~%")
+    (force-output)
     (error "No certificates provided"))
 
   (let ((hstore (%open-memory-store))
         (hcert nil)
         (chain-context nil))
+    (format t ";;   Memory store opened: ~A~%" hstore)
+    (force-output)
     (unwind-protect
          (progn
            ;; Add all certificates to the memory store
-           (dolist (der der-certificates)
-             (let ((ctx (%create-cert-context der)))
-               (unless hcert
-                 (setf hcert ctx))  ; Keep first cert for chain building
-               (unless (%cert-add-to-store hstore ctx +cert-store-add-replace-existing+
-                                            (cffi:null-pointer))
+           (format t ";;   Adding certificates to memory store...~%")
+           (force-output)
+           (let ((cert-idx 0))
+             (dolist (der der-certificates)
+               (format t ";;     Cert[~D]: ~D bytes~%" cert-idx (length der))
+               (force-output)
+               (let ((ctx (%create-cert-context der)))
+                 (format t ";;     Cert[~D]: context created: ~A~%" cert-idx ctx)
+                 (force-output)
+                 (unless hcert
+                   (setf hcert ctx)
+                   (format t ";;     Cert[~D]: set as end-entity cert~%" cert-idx)
+                   (force-output))
+                 (let ((added (%cert-add-to-store hstore ctx +cert-store-add-replace-existing+
+                                                  (cffi:null-pointer))))
+                   (format t ";;     Cert[~D]: added to store: ~A~%" cert-idx added)
+                   (force-output)
+                   (unless added
+                     (unless (cffi:pointer-eq ctx hcert)
+                       (%cert-free-context ctx))
+                     (error "Failed to add certificate to store")))
                  (unless (cffi:pointer-eq ctx hcert)
-                   (%cert-free-context ctx))
-                 (error "Failed to add certificate to store"))
-               (unless (cffi:pointer-eq ctx hcert)
-                 (%cert-free-context ctx))))
+                   (%cert-free-context ctx)))
+               (incf cert-idx)))
 
            ;; Build the certificate chain
-           ;; CERT_CHAIN_PARA: memset zeros all optional fields, just set cbSize
+           (format t ";;   Building certificate chain...~%")
+           (format t ";;     CERT_CHAIN_PARA size: ~D~%"
+                   (cffi:foreign-type-size '(:struct cert-chain-para)))
+           (force-output)
            (cffi:with-foreign-objects ((chain-para '(:struct cert-chain-para))
                                        (chain-ptr :pointer))
              (%memset chain-para (cffi:foreign-type-size '(:struct cert-chain-para)))
              (setf (cffi:foreign-slot-value chain-para '(:struct cert-chain-para) 'size)
                    (cffi:foreign-type-size '(:struct cert-chain-para)))
 
-             (unless (%cert-get-chain (cffi:null-pointer)
-                                       hcert
-                                       (cffi:null-pointer)
-                                       hstore
-                                       chain-para
-                                       (if check-revocation
-                                           +cert-chain-revocation-check-chain-exclude-root+
-                                           0)
-                                       (cffi:null-pointer)
-                                       chain-ptr)
-               (error "Failed to build certificate chain"))
-             (setf chain-context (cffi:mem-aref chain-ptr :pointer)))
+             (let ((chain-result (%cert-get-chain (cffi:null-pointer)
+                                                   hcert
+                                                   (cffi:null-pointer)
+                                                   hstore
+                                                   chain-para
+                                                   (if check-revocation
+                                                       +cert-chain-revocation-check-chain-exclude-root+
+                                                       0)
+                                                   (cffi:null-pointer)
+                                                   chain-ptr)))
+               (format t ";;     CertGetCertificateChain result: ~A~%" chain-result)
+               (force-output)
+               (unless chain-result
+                 (error "Failed to build certificate chain"))
+               (setf chain-context (cffi:mem-aref chain-ptr :pointer))
+               (format t ";;     Chain context: ~A~%" chain-context)
+               (force-output)
+
+               ;; Log chain trust status
+               (let ((error-status (cffi:foreign-slot-value
+                                    (cffi:foreign-slot-pointer chain-context
+                                                               '(:struct cert-chain-context)
+                                                               'trust-status)
+                                    '(:struct cert-trust-status) 'error-status))
+                     (info-status (cffi:foreign-slot-value
+                                   (cffi:foreign-slot-pointer chain-context
+                                                              '(:struct cert-chain-context)
+                                                              'trust-status)
+                                   '(:struct cert-trust-status) 'info-status)))
+                 (format t ";;     Chain trust error-status: #x~X~%" error-status)
+                 (format t ";;     Chain trust info-status: #x~X~%" info-status)
+                 (force-output))))
 
            ;; Verify against SSL policy with hostname check
+           (format t ";;   Verifying SSL policy...~%")
+           (format t ";;     SSL_EXTRA size: ~D~%"
+                   (cffi:foreign-type-size '(:struct ssl-extra-cert-chain-policy-para)))
+           (format t ";;     POLICY_PARA size: ~D~%"
+                   (cffi:foreign-type-size '(:struct cert-chain-policy-para)))
+           (format t ";;     POLICY_STATUS size: ~D~%"
+                   (cffi:foreign-type-size '(:struct cert-chain-policy-status)))
+           (force-output)
            (cffi:with-foreign-objects ((ssl-extra '(:struct ssl-extra-cert-chain-policy-para))
                                        (policy-para '(:struct cert-chain-policy-para))
                                        (policy-status '(:struct cert-chain-policy-status)))
              (cffi:with-foreign-string (whostname hostname :encoding :utf-16le)
+               (format t ";;     Hostname (UTF-16LE): ~A~%" whostname)
+               (force-output)
                (%memset ssl-extra (cffi:foreign-type-size '(:struct ssl-extra-cert-chain-policy-para)))
                (setf (cffi:foreign-slot-value ssl-extra '(:struct ssl-extra-cert-chain-policy-para) 'size)
                      (cffi:foreign-type-size '(:struct ssl-extra-cert-chain-policy-para))
@@ -254,25 +310,44 @@ Signals an error with details on verification failure."
                (setf (cffi:foreign-slot-value policy-status '(:struct cert-chain-policy-status) 'size)
                      (cffi:foreign-type-size '(:struct cert-chain-policy-status)))
 
-               (unless (%cert-verify-policy (cffi:make-pointer +cert-chain-policy-ssl+)
-                                             chain-context
-                                             policy-para
-                                             policy-status)
-                 (error "CertVerifyCertificateChainPolicy call failed"))
+               (format t ";;     Calling CertVerifyCertificateChainPolicy...~%")
+               (force-output)
+               (let ((verify-result (%cert-verify-policy (cffi:make-pointer +cert-chain-policy-ssl+)
+                                                          chain-context
+                                                          policy-para
+                                                          policy-status)))
+                 (format t ";;     CertVerifyCertificateChainPolicy result: ~A~%" verify-result)
+                 (force-output)
+                 (unless verify-result
+                   (error "CertVerifyCertificateChainPolicy call failed"))
 
-               (let ((err (cffi:foreign-slot-value policy-status '(:struct cert-chain-policy-status) 'error)))
-                 (unless (zerop err)
-                   (error 'tls-certificate-error
-                          :format-control "Windows certificate verification failed: ~A"
-                          :format-arguments (list (%decode-cert-error err))))
-                 t))))
+                 (let ((err (cffi:foreign-slot-value policy-status '(:struct cert-chain-policy-status) 'error))
+                       (chain-idx (cffi:foreign-slot-value policy-status '(:struct cert-chain-policy-status) 'chain-index))
+                       (elem-idx (cffi:foreign-slot-value policy-status '(:struct cert-chain-policy-status) 'element-index)))
+                   (format t ";;     Policy status error: #x~X~%" err)
+                   (format t ";;     Policy status chain-index: ~D~%" chain-idx)
+                   (format t ";;     Policy status element-index: ~D~%" elem-idx)
+                   (force-output)
+                   (unless (zerop err)
+                     (format t ";;   VERIFICATION FAILED: ~A~%" (%decode-cert-error err))
+                     (force-output)
+                     (error 'tls-certificate-error
+                            :format-control "Windows certificate verification failed: ~A"
+                            :format-arguments (list (%decode-cert-error err))))
+                   (format t ";;   VERIFICATION SUCCEEDED~%")
+                   (force-output)
+                   t)))))
 
       ;; Cleanup
+      (format t ";;   Cleanup...~%")
+      (force-output)
       (when chain-context
         (%cert-free-chain chain-context))
       (when hcert
         (%cert-free-context hcert))
-      (%cert-close-store hstore 0))))
+      (%cert-close-store hstore 0)
+      (format t ";; [WIN-VERIFY] Done~%")
+      (force-output))))
 
 (defun %decode-cert-error (code)
   "Decode Windows certificate error code to human-readable string."
