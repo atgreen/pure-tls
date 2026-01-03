@@ -128,14 +128,50 @@ Or add to your ASDF system:
 
 ### Using the cl+ssl Compatibility Layer
 
+The `pure-tls/cl+ssl-compat` system provides a drop-in replacement for cl+ssl,
+allowing existing code using cl+ssl to work with pure-tls without modification.
+
 ```lisp
-(asdf:load-system :pure-tls/compat)
+(asdf:load-system :pure-tls/cl+ssl-compat)
 
 ;; Use familiar cl+ssl API
 (cl+ssl:make-ssl-client-stream stream
   :hostname "example.com"
   :verify :optional)
 ```
+
+The compatibility layer supports:
+- `cl+ssl:make-ssl-client-stream` / `cl+ssl:make-ssl-server-stream`
+- `cl+ssl:make-context` / `cl+ssl:with-global-context` / `cl+ssl:call-with-global-context`
+- `cl+ssl:stream-fd` (converts file descriptors back to streams)
+- Certificate functions and verification constants
+
+### Replacing cl+ssl in Existing Applications
+
+To use pure-tls instead of cl+ssl in an application that depends on libraries
+requiring cl+ssl (such as drakma), use `asdf:register-immutable-system` to
+prevent ASDF from loading the real cl+ssl:
+
+```lisp
+;;; In your .asd file, before the defsystem:
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  ;; Load pure-tls compatibility layer first
+  (asdf:load-system :pure-tls/cl+ssl-compat)
+  ;; Tell ASDF that "cl+ssl" is already satisfied - never load the real one
+  (asdf:register-immutable-system "cl+ssl"))
+
+(asdf:defsystem "my-application"
+  :depends-on (:drakma ...)  ; drakma depends on cl+ssl, but won't load it
+  ...)
+```
+
+This technique:
+1. Loads the pure-tls compatibility layer, which defines the `CL+SSL` package
+2. Registers "cl+ssl" as an immutable system, so ASDF treats it as already loaded
+3. When drakma (or any library) requests `:cl+ssl`, ASDF skips loading it
+
+This allows you to eliminate OpenSSL as a dependency entirely, making your
+application fully portable pure Common Lisp for TLS.
 
 ## API Reference
 
