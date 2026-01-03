@@ -19,5 +19,5 @@
         (format t "~%--- Certificate Tests ---~%")
         (let ((cert-ok (run! 'certificate-tests)))
           (format t "~%=== Summary ===~%")
-          (format t "Note: Run (run-badssl-tests) separately for network tests.~%")
+          (format t "Note: Run (run-network-tests) separately for network tests.~%")
           (and crypto-ok record-ok handshake-ok cert-ok))))))
