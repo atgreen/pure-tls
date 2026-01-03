@@ -28,8 +28,10 @@
 (defconstant +cert-chain-revocation-check-chain-exclude-root+ #x40000000)
 (defconstant +cert-store-prov-memory+ 2)
 (defconstant +cert-store-add-replace-existing+ 3)
+(defconstant +cert-store-create-new-flag+ #x2000)
 
 ;;; Structures
+;;; Note: Windows BOOL is 32-bit, not 8-bit boolean
 
 (cffi:defcstruct cert-context
   (encoding-type :uint32)
@@ -49,22 +51,33 @@
   (chains :pointer)
   (num-lower-quality :uint32)
   (lower-quality-chains :pointer)
-  (has-revocation-freshness-time :boolean)
+  (has-revocation-freshness-time :int32)  ; Windows BOOL is 32-bit
   (revocation-freshness-time :uint32)
   (create-flags :uint32)
   (chain-id :uint8 :count 16))
 
+;; CERT_ENHKEY_USAGE / CTL_USAGE
+(cffi:defcstruct cert-enhkey-usage
+  (usage-identifier-count :uint32)
+  (usage-identifiers :pointer))
+
+;; CERT_USAGE_MATCH embeds CERT_ENHKEY_USAGE
+(cffi:defcstruct cert-usage-match
+  (type :uint32)
+  (usage (:struct cert-enhkey-usage)))
+
+;; CERT_CHAIN_PARA - must include full CERT_USAGE_MATCH
 (cffi:defcstruct cert-chain-para
   (size :uint32)
-  (requested-usage-type :uint32)
-  (requested-usage-count :uint32)
-  (requested-usage-oids :pointer))
+  (requested-usage (:struct cert-usage-match)))
 
+;; SSL_EXTRA_CERT_CHAIN_POLICY_PARA - includes pszUsageIdentifier at end
 (cffi:defcstruct ssl-extra-cert-chain-policy-para
   (size :uint32)
   (auth-type :uint32)
   (checks :uint32)
-  (server-name :pointer))
+  (server-name :pointer)
+  (usage-identifier :pointer))  ; pszUsageIdentifier - was missing!
 
 (cffi:defcstruct cert-chain-policy-para
   (size :uint32)
@@ -136,7 +149,7 @@
   (let ((hstore (%cert-open-store (cffi:make-pointer +cert-store-prov-memory+)
                                    0
                                    (cffi:null-pointer)
-                                   0
+                                   +cert-store-create-new-flag+
                                    (cffi:null-pointer))))
     (when (cffi:null-pointer-p hstore)
       (error "Failed to open memory certificate store"))
@@ -180,8 +193,11 @@ Signals an error with details on verification failure."
              (let ((ctx (%create-cert-context der)))
                (unless hcert
                  (setf hcert ctx))  ; Keep first cert for chain building
-               (%cert-add-to-store hstore ctx +cert-store-add-replace-existing+
-                                   (cffi:null-pointer))
+               (unless (%cert-add-to-store hstore ctx +cert-store-add-replace-existing+
+                                            (cffi:null-pointer))
+                 (unless (cffi:pointer-eq ctx hcert)
+                   (%cert-free-context ctx))
+                 (error "Failed to add certificate to store"))
                (unless (cffi:pointer-eq ctx hcert)
                  (%cert-free-context ctx))))
 
@@ -191,6 +207,10 @@ Signals an error with details on verification failure."
              (%memset chain-para (cffi:foreign-type-size '(:struct cert-chain-para)))
              (setf (cffi:foreign-slot-value chain-para '(:struct cert-chain-para) 'size)
                    (cffi:foreign-type-size '(:struct cert-chain-para)))
+             ;; Zero out the embedded CERT_USAGE_MATCH - no specific usage requested
+             (setf (cffi:foreign-slot-value
+                    (cffi:foreign-slot-pointer chain-para '(:struct cert-chain-para) 'requested-usage)
+                    '(:struct cert-usage-match) 'type) 0)
 
              (unless (%cert-get-chain (cffi:null-pointer)
                                        hcert
@@ -215,8 +235,12 @@ Signals an error with details on verification failure."
                      (cffi:foreign-type-size '(:struct ssl-extra-cert-chain-policy-para))
                      (cffi:foreign-slot-value ssl-extra '(:struct ssl-extra-cert-chain-policy-para) 'auth-type)
                      +authtype-server+
+                     (cffi:foreign-slot-value ssl-extra '(:struct ssl-extra-cert-chain-policy-para) 'checks)
+                     0
                      (cffi:foreign-slot-value ssl-extra '(:struct ssl-extra-cert-chain-policy-para) 'server-name)
-                     whostname)
+                     whostname
+                     (cffi:foreign-slot-value ssl-extra '(:struct ssl-extra-cert-chain-policy-para) 'usage-identifier)
+                     (cffi:null-pointer))
 
                (%memset policy-para (cffi:foreign-type-size '(:struct cert-chain-policy-para)))
                (setf (cffi:foreign-slot-value policy-para '(:struct cert-chain-policy-para) 'size)
