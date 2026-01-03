@@ -95,23 +95,25 @@
 (defun verify-certificate-chain (chain trusted-roots &optional (now (get-universal-time)) hostname)
   "Verify a certificate chain against trusted roots.
    CHAIN is a list of certificates, leaf first.
-   TRUSTED-ROOTS is a list of trusted CA certificates.
+   TRUSTED-ROOTS is a list of trusted CA certificates (may be NIL on Windows with CryptoAPI).
    HOSTNAME is optional; if provided on Windows, enables native verification.
    Returns T if verification succeeds, signals an error otherwise."
+  (declare (ignorable hostname))  ; Only used on Windows with CryptoAPI
   (when (null chain)
     (error 'tls-certificate-error :message "Empty certificate chain"))
 
-  ;; Try native verification first (Windows with CryptoAPI)
+  ;; On Windows with CryptoAPI enabled and hostname provided, use Windows verification
   #+windows
   (when (and hostname *use-windows-certificate-store*)
-    (handler-case
-        (when (verify-certificate-chain-native chain hostname)
-          (return-from verify-certificate-chain t))
-      ;; If native verification fails, fall through to pure Lisp verification
-      ;; only if we have trusted-roots to verify against
-      (error (e)
-        (unless trusted-roots
-          (error e)))))
+    ;; Windows CryptoAPI verification is authoritative when enabled
+    (verify-certificate-chain-native chain hostname)
+    (return-from verify-certificate-chain t))
+
+  ;; Pure Lisp verification requires trusted-roots
+  (unless trusted-roots
+    (error 'tls-verification-error
+           :message "No trusted root certificates available for verification"
+           :reason :unknown-ca))
   ;; Verify each certificate's dates
   (dolist (cert chain)
     (verify-certificate-dates cert now))
@@ -372,6 +374,7 @@ policies. Set to NIL to use pure Lisp verification instead.")
   "Attempt native certificate chain verification.
 Returns T if verification succeeded, NIL if native verification not available,
 or signals an error on verification failure."
+  (declare (ignorable chain hostname))  ; Only used on Windows
   #+windows
   (when *use-windows-certificate-store*
     (verify-certificate-chain-windows

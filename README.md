@@ -237,14 +237,16 @@ Create a reusable TLS context for configuration.
 ### Windows
 
 On Windows, pure-tls uses the Windows CryptoAPI to validate certificates
-against the system certificate store. This is automatic and requires no
-configuration:
+against the system certificate store. This is the authoritative verification
+method on Windows - there is no fallback to pure Lisp verification:
 
 - **No CA bundle needed** - Uses Windows trusted root certificates
 - **Enterprise PKI support** - Respects Group Policy certificate deployments
 - **Automatic updates** - Trust store is maintained by Windows Update
+- **Authoritative** - CryptoAPI verdict is final; if it rejects a certificate, the connection fails
 
-To disable native verification and use pure Lisp verification instead:
+To disable native verification and use pure Lisp verification instead
+(requires providing CA certificates manually):
 
 ```lisp
 (setf pure-tls:*use-windows-certificate-store* nil)
