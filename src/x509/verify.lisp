@@ -189,10 +189,22 @@
                   (parsed-sig (parse-ecdsa-cert-signature signature))
                   (r (getf parsed-sig :r))
                   (s (getf parsed-sig :s))
+                  (curve (cond
+                           ((member key-algorithm '(:ecdsa-p256 :secp256r1 :prime256v1
+                                                    :ec-public-key)) :secp256r1)
+                           ((member key-algorithm '(:ecdsa-p384 :secp384r1)) :secp384r1)
+                           ((member key-algorithm '(:ecdsa-p521 :secp521r1)) :secp521r1)
+                           (t :secp256r1)))
+                  (coord-size (ecase curve
+                                (:secp256r1 32)
+                                (:secp384r1 48)
+                                (:secp521r1 66)))
+                  (r-bytes (ironclad:integer-to-octets r :n-bits (* 8 coord-size)))
+                  (s-bytes (ironclad:integer-to-octets s :n-bits (* 8 coord-size)))
                   (public-key (make-ecdsa-public-key-from-der key-algorithm public-key-bytes)))
              (when public-key
                (ironclad:verify-signature public-key hash
-                                          (ironclad:make-signature :ecdsa :r r :s s)))))
+                                          (ironclad:make-signature curve :r r-bytes :s s-bytes)))))
           ;; Ed25519
           ((member algorithm '(:ed25519))
            (let ((public-key (ironclad:make-public-key :ed25519 :y public-key-bytes)))
@@ -245,7 +257,8 @@
                 :s (asn1-node-value (second children))))))))
 
 (defun make-ecdsa-public-key-from-der (key-algorithm public-key-bytes)
-  "Create an ECDSA public key from DER-encoded bytes."
+  "Create an ECDSA public key from DER-encoded bytes.
+   PUBLIC-KEY-BYTES should be the full encoded point (04 || X || Y)."
   ;; Determine curve from algorithm
   (let ((curve (cond
                  ((member key-algorithm '(:ecdsa-p256 :secp256r1 :prime256v1
@@ -253,15 +266,11 @@
                  ((member key-algorithm '(:ecdsa-p384 :secp384r1)) :secp384r1)
                  ((member key-algorithm '(:ecdsa-p521 :secp521r1)) :secp521r1)
                  (t :secp256r1))))
-    ;; Public key bytes should be uncompressed point (04 || X || Y)
+    ;; Ironclad's secp256r1/secp384r1/secp521r1 make-public-key expects :y to be
+    ;; the full encoded public key bytes (04 || X || Y), not separate coordinates.
     (when (and (plusp (length public-key-bytes))
-               (= (aref public-key-bytes 0) 4))
-      (let* ((coord-len (floor (1- (length public-key-bytes)) 2))
-             (x (subseq public-key-bytes 1 (1+ coord-len)))
-             (y (subseq public-key-bytes (1+ coord-len))))
-        (ironclad:make-public-key curve
-                                  :x (octets-to-integer x)
-                                  :y (octets-to-integer y))))))
+               (= (aref public-key-bytes 0) 4))  ; Uncompressed point format
+      (ironclad:make-public-key curve :y public-key-bytes))))
 
 ;;;; Trust Store
 

@@ -334,21 +334,21 @@
              (parsed-sig (parse-ecdsa-signature signature))
              (r (getf parsed-sig :r))
              (s (getf parsed-sig :s))
-             ;; Hash the content
-             (hash (ironclad:digest-sequence hash-algo content))
-             ;; Make the public key
-             (public-key (make-ecdsa-public-key curve public-key-der))
              ;; Get coordinate size for the curve
              (coord-size (ecase curve
                            (:secp256r1 32)
                            (:secp384r1 48)
                            (:secp521r1 66)))
-             ;; Convert r and s to fixed-size byte arrays and concatenate
-             (r-bytes (integer-to-octets r coord-size))
-             (s-bytes (integer-to-octets s coord-size))
-             (raw-sig (concatenate '(vector (unsigned-byte 8)) r-bytes s-bytes)))
-        ;; Ironclad ECDSA verify-signature expects raw r||s signature
-        (ironclad:verify-signature public-key hash raw-sig))
+             ;; Convert r and s to byte arrays for ironclad:make-signature
+             (r-bytes (ironclad:integer-to-octets r :n-bits (* 8 coord-size)))
+             (s-bytes (ironclad:integer-to-octets s :n-bits (* 8 coord-size)))
+             ;; Hash the content
+             (hash (ironclad:digest-sequence hash-algo content))
+             ;; Make the public key
+             (public-key (make-ecdsa-public-key curve public-key-der)))
+        ;; Use ironclad:make-signature with the curve name and byte arrays
+        (ironclad:verify-signature public-key hash
+                                   (ironclad:make-signature curve :r r-bytes :s s-bytes)))
     (error (e)
       (error 'tls-handshake-error
              :message (format nil "ECDSA signature verification failed: ~A" e)))))
@@ -371,19 +371,14 @@
     (t :secp256r1)))  ; Default to P-256
 
 (defun make-ecdsa-public-key (curve public-key-bytes)
-  "Create an ECDSA public key from raw bytes."
-  ;; Public key bytes should be uncompressed point (04 || X || Y)
+  "Create an ECDSA public key from raw bytes.
+   PUBLIC-KEY-BYTES should be the full encoded point (04 || X || Y)."
+  ;; Ironclad's secp256r1/secp384r1/secp521r1 make-public-key expects :y to be
+  ;; the full encoded public key bytes (04 || X || Y), not separate coordinates.
+  ;; It will decode internally using ec-decode-point.
   (when (and (plusp (length public-key-bytes))
-             (= (aref public-key-bytes 0) 4))
-    (let* ((coord-len (floor (1- (length public-key-bytes)) 2))
-           (x (subseq public-key-bytes 1 (1+ coord-len)))
-           (y (subseq public-key-bytes (1+ coord-len))))
-      (ironclad:make-public-key (ecase curve
-                                  (:secp256r1 :secp256r1)
-                                  (:secp384r1 :secp384r1)
-                                  (:secp521r1 :secp521r1))
-                                :x (octets-to-integer x)
-                                :y (octets-to-integer y)))))
+             (= (aref public-key-bytes 0) 4))  ; Uncompressed point format
+    (ironclad:make-public-key curve :y public-key-bytes)))
 
 (defun parse-ecdsa-signature (signature)
   "Parse a DER-encoded ECDSA signature into r and s values."
