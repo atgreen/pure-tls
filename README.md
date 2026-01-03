@@ -8,6 +8,7 @@ A pure Common Lisp implementation of TLS 1.3 (RFC 8446).
 - **TLS 1.3 only** - Modern, secure protocol with simplified handshake
 - **Gray streams** - Seamless integration with existing I/O code
 - **cl+ssl compatible** - Drop-in replacement API available
+- **Native Windows trust store** - Uses Windows CryptoAPI for certificate validation
 
 ### Supported Cipher Suites
 
