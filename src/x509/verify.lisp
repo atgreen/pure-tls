@@ -104,16 +104,10 @@
 
   ;; On Windows with CryptoAPI enabled and hostname provided, use Windows verification
   #+windows
-  (progn
-    (format t "~&;; [VERIFY-CHAIN] Windows path check: hostname=~A, *use-windows-certificate-store*=~A~%"
-            hostname *use-windows-certificate-store*)
-    (force-output)
-    (when (and hostname *use-windows-certificate-store*)
-      (format t ";; [VERIFY-CHAIN] Taking Windows CryptoAPI path~%")
-      (force-output)
-      ;; Windows CryptoAPI verification is authoritative when enabled
-      (verify-certificate-chain-native chain hostname)
-      (return-from verify-certificate-chain t)))
+  (when (and hostname *use-windows-certificate-store*)
+    ;; Windows CryptoAPI verification is authoritative when enabled
+    (verify-certificate-chain-native chain hostname)
+    (return-from verify-certificate-chain t))
 
   ;; Pure Lisp verification requires trusted-roots
   (unless trusted-roots
@@ -383,15 +377,9 @@ or signals an error on verification failure."
   (declare (ignorable chain hostname))  ; Only used on Windows
   #+windows
   (when *use-windows-certificate-store*
-    (format t "~&;; [NATIVE-VERIFY] Calling Windows CryptoAPI verification~%")
-    (format t ";;   Chain length: ~D~%" (length chain))
-    (format t ";;   Hostname: ~A~%" hostname)
-    (force-output)
     (verify-certificate-chain-windows
      (mapcar #'x509-certificate-raw-der chain)
      hostname)
-    (format t ";; [NATIVE-VERIFY] Windows verification succeeded~%")
-    (force-output)
     (return-from verify-certificate-chain-native t))
   ;; Not available on this platform or disabled
   nil)

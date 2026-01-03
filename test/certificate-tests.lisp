@@ -287,8 +287,6 @@
   (let* ((cert-path (test-cert-path "wildcard-expired.pem"))
          (cert (pure-tls:parse-certificate-from-file cert-path))
          (der-list (list (pure-tls::x509-certificate-raw-der cert))))
-    (format t "~&;; Testing Windows native rejection of expired cert...~%")
-    (force-output)
     (signals pure-tls:tls-certificate-error
       (pure-tls::verify-certificate-chain-windows der-list "expired.badssl.com"))))
 
@@ -298,8 +296,6 @@
   (let* ((cert-path (test-cert-path "self-signed-valid.pem"))
          (cert (pure-tls:parse-certificate-from-file cert-path))
          (der-list (list (pure-tls::x509-certificate-raw-der cert))))
-    (format t "~&;; Testing Windows native rejection of self-signed cert...~%")
-    (force-output)
     (signals pure-tls:tls-certificate-error
       (pure-tls::verify-certificate-chain-windows der-list "test.example.com"))))
 
@@ -309,8 +305,6 @@
   (let* ((cert-path (test-cert-path "ca-superfish.crt"))
          (cert (pure-tls:parse-certificate-from-file cert-path))
          (der-list (list (pure-tls::x509-certificate-raw-der cert))))
-    (format t "~&;; Testing Windows native rejection of Superfish CA...~%")
-    (force-output)
     (signals pure-tls:tls-certificate-error
       (pure-tls::verify-certificate-chain-windows der-list "superfish.com"))))
 
@@ -320,8 +314,6 @@
   (let* ((cert-path (test-cert-path "ca-edellroot.crt"))
          (cert (pure-tls:parse-certificate-from-file cert-path))
          (der-list (list (pure-tls::x509-certificate-raw-der cert))))
-    (format t "~&;; Testing Windows native rejection of eDellRoot CA...~%")
-    (force-output)
     (signals pure-tls:tls-certificate-error
       (pure-tls::verify-certificate-chain-windows der-list "dell.com"))))
 
