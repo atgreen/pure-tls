@@ -269,6 +269,16 @@
             when (eql type :dns)
               collect value))))
 
+(defun certificate-ip-addresses (cert)
+  "Get all IP addresses from Subject Alternative Name extension.
+   Returns a list of octet vectors (4 bytes for IPv4, 16 bytes for IPv6)."
+  (let ((san-ext (find :subject-alt-name (x509-certificate-extensions cert)
+                       :key #'x509-extension-oid)))
+    (when san-ext
+      (loop for (type value) in (x509-extension-value san-ext)
+            when (eql type :ip)
+              collect value))))
+
 (defun certificate-not-before (cert)
   "Get the notBefore validity time as a universal-time."
   (x509-certificate-validity-not-before cert))

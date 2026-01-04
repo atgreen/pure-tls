@@ -8,15 +8,28 @@
 
 (in-package #:pure-tls)
 
-;;;; Hostname Verification (RFC 6125)
+;;;; Hostname Verification (RFC 6125 / RFC 2818)
 
 (defun verify-hostname (cert hostname)
   "Verify that HOSTNAME matches the certificate.
+   Supports both DNS hostnames and IP address literals.
    Returns T if verification succeeds, signals TLS-VERIFICATION-ERROR otherwise."
-  ;; First check Subject Alternative Name extension
-  (let ((san-names (certificate-dns-names cert)))
-    (when san-names
-      ;; If SAN is present, only use SAN (ignore CN)
+  ;; Check if hostname is an IP address literal
+  (let ((ip-bytes (parse-ip-address hostname)))
+    (when ip-bytes
+      ;; IP address connection - must match IP SAN, never match DNS names or CN
+      (let ((cert-ips (certificate-ip-addresses cert)))
+        (if (some (lambda (cert-ip) (equalp cert-ip ip-bytes)) cert-ips)
+            (return-from verify-hostname t)
+            (error 'tls-verification-error
+                   :hostname hostname
+                   :message "IP address does not match any IP SAN entry")))))
+
+  ;; DNS hostname - check Subject Alternative Name extension first
+  (let ((san-names (certificate-dns-names cert))
+        (san-ips (certificate-ip-addresses cert)))
+    (when (or san-names san-ips)
+      ;; If SAN is present, only use SAN (ignore CN per RFC 6125)
       (if (some (lambda (san-name)
                   (hostname-matches-p san-name hostname))
                 san-names)
@@ -24,7 +37,8 @@
           (error 'tls-verification-error
                  :hostname hostname
                  :message "Hostname does not match any SAN entry"))))
-  ;; Fall back to Common Name if no SAN
+
+  ;; Fall back to Common Name if no SAN (deprecated but still supported)
   (let ((cns (certificate-subject-common-names cert)))
     (when cns
       (if (some (lambda (cn)
@@ -34,10 +48,88 @@
           (error 'tls-verification-error
                  :hostname hostname
                  :message "Hostname does not match certificate CN"))))
+
   ;; No SAN or CN to check
   (error 'tls-verification-error
          :hostname hostname
          :message "Certificate has no DNS names to verify"))
+
+;;;; IP Address Parsing
+
+(defun parse-ip-address (string)
+  "Parse an IP address string to octet vector.
+   Returns 4-byte vector for IPv4, 16-byte vector for IPv6, or NIL if not an IP."
+  (or (parse-ipv4-address string)
+      (parse-ipv6-address string)))
+
+(defun parse-ipv4-address (string)
+  "Parse an IPv4 address string (e.g., '192.168.1.1') to 4-byte octet vector.
+   Returns NIL if not a valid IPv4 address."
+  (let ((parts (split-ip-string string #\.)))
+    (when (= (length parts) 4)
+      (let ((bytes (mapcar #'parse-integer-or-nil parts)))
+        (when (and (every #'identity bytes)
+                   (every (lambda (b) (and (>= b 0) (<= b 255))) bytes))
+          (make-array 4 :element-type '(unsigned-byte 8)
+                        :initial-contents bytes))))))
+
+(defun parse-ipv6-address (string)
+  "Parse an IPv6 address string to 16-byte octet vector.
+   Handles full form and :: compression. Returns NIL if not valid IPv6."
+  ;; Strip brackets if present (for URL-style [::1])
+  (let ((s (if (and (> (length string) 2)
+                    (char= (char string 0) #\[)
+                    (char= (char string (1- (length string))) #\]))
+               (subseq string 1 (1- (length string)))
+               string)))
+    ;; Quick check: must contain at least one colon
+    (unless (find #\: s)
+      (return-from parse-ipv6-address nil))
+    ;; Handle :: expansion
+    (let* ((double-colon-pos (search "::" s))
+           (parts (if double-colon-pos
+                      (expand-ipv6-double-colon s double-colon-pos)
+                      (split-ip-string s #\:))))
+      (when (and parts (= (length parts) 8))
+        (let ((words (mapcar #'parse-hex-word parts)))
+          (when (every #'identity words)
+            (let ((result (make-array 16 :element-type '(unsigned-byte 8))))
+              (loop for i from 0 below 8
+                    for word = (nth i words)
+                    do (setf (aref result (* i 2)) (ldb (byte 8 8) word))
+                       (setf (aref result (1+ (* i 2))) (ldb (byte 8 0) word)))
+              result)))))))
+
+(defun expand-ipv6-double-colon (string pos)
+  "Expand :: in IPv6 address to the right number of zero groups."
+  (let* ((before (if (zerop pos) nil (split-ip-string (subseq string 0 pos) #\:)))
+         (after-start (+ pos 2))
+         (after (if (>= after-start (length string))
+                    nil
+                    (split-ip-string (subseq string after-start) #\:)))
+         (zeros-needed (- 8 (length before) (length after))))
+    (when (and (>= zeros-needed 1) (<= zeros-needed 7))
+      (append before (make-list zeros-needed :initial-element "0") after))))
+
+(defun split-ip-string (string delimiter)
+  "Split STRING by DELIMITER character for IP address parsing."
+  (loop for start = 0 then (1+ end)
+        for end = (position delimiter string :start start)
+        collect (subseq string start (or end (length string)))
+        while end))
+
+(defun parse-integer-or-nil (string)
+  "Parse STRING as integer, returning NIL on failure."
+  (handler-case (parse-integer string :junk-allowed nil)
+    (error () nil)))
+
+(defun parse-hex-word (string)
+  "Parse STRING as 16-bit hex value, returning NIL on failure."
+  (when (and (> (length string) 0) (<= (length string) 4))
+    (handler-case (parse-integer string :radix 16 :junk-allowed nil)
+      (error () nil))))
+
+;;;; DNS Hostname Matching
 
 (defun hostname-matches-p (pattern hostname)
   "Check if HOSTNAME matches PATTERN, supporting wildcards.
@@ -54,15 +146,23 @@
 
 (defun wildcard-hostname-matches-p (pattern hostname)
   "Check if HOSTNAME matches wildcard PATTERN (e.g., *.example.com).
-   Per RFC 6125, wildcard only matches a single label."
-  ;; Pattern is *.suffix
+   Per RFC 6125:
+   - Wildcard only matches a single label
+   - Wildcard must not match public suffixes (e.g., *.com is rejected)
+   - Suffix must have at least 2 labels (e.g., *.example.com is OK)"
+  ;; Pattern is *.suffix (e.g., *.example.com)
   (let* ((suffix (subseq pattern 1))  ; .example.com
          (suffix-len (length suffix)))
-    ;; Hostname must end with suffix
-    (and (> (length hostname) suffix-len)
-         (string= suffix (subseq hostname (- (length hostname) suffix-len)))
-         ;; The part before suffix must be a single label (no dots)
-         (not (find #\. hostname :end (- (length hostname) suffix-len))))))
+    (and
+     ;; Suffix must have at least 2 labels (reject *.com, *.co.uk patterns)
+     ;; Count dots in suffix - need at least 2 (e.g., .example.com has 2 dots)
+     (>= (count #\. suffix) 2)
+     ;; Hostname must be longer than suffix
+     (> (length hostname) suffix-len)
+     ;; Hostname must end with suffix
+     (string= suffix (subseq hostname (- (length hostname) suffix-len)))
+     ;; The part before suffix must be a single label (no dots)
+     (not (find #\. hostname :end (- (length hostname) suffix-len))))))
 
 ;;;; Certificate Validity
 
