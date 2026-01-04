@@ -174,8 +174,10 @@
                              (get-section sections client-extra-name))))
         (make-openssl-test
          :name test-name
-         :category (categorize-test server-section client-section result-section ssl-conf)
-         :skip-reason (get-skip-reason server-section client-section result-section ssl-conf)
+         :category (categorize-test server-section client-section result-section ssl-conf
+                                    server-extra client-extra)
+         :skip-reason (get-skip-reason server-section client-section result-section ssl-conf
+                                       server-extra client-extra)
          ;; Server config
          :server-certificate (resolve-cert-path
                               (get-value server-section "Certificate"))
@@ -230,7 +232,8 @@
                         (mapcar (lambda (s) (string-trim " " s))
                                 (cl-ppcre:split ":" client-curves))))))))
 
-(defun categorize-test (server-section client-section result-section ssl-conf)
+(defun categorize-test (server-section client-section result-section ssl-conf
+                        &optional server-extra client-extra)
   "Categorize a test as :pass, :skip, :xfail, or :interop."
   (let ((server-min (get-value server-section "MinProtocol"))
         (server-max (get-value server-section "MaxProtocol"))
@@ -240,13 +243,38 @@
         (server-verify (get-value server-section "VerifyMode"))
         (handshake-mode (get-value result-section "HandshakeMode"))
         (expected-protocol (get-value result-section "ExpectedProtocol"))
-        (server2 (when ssl-conf (get-value ssl-conf "server2"))))
+        (server2 (when ssl-conf (get-value ssl-conf "server2")))
+        ;; Features from extra sections
+        (verify-callback (or (and server-extra (get-value server-extra "VerifyCallback"))
+                             (and client-extra (get-value client-extra "VerifyCallback"))))
+        (ct-validation (or (and server-extra (get-value server-extra "CTValidation"))
+                           (and client-extra (get-value client-extra "CTValidation"))))
+        (cert-status (or (and server-section (get-value server-section "CertStatus"))
+                         (and server-extra (get-value server-extra "CertStatus"))))
+        (seclevel-in-cipher (or (and server-section
+                                     (let ((cs (get-value server-section "CipherString")))
+                                       (and cs (search "@SECLEVEL" cs))))
+                                (and client-section
+                                     (let ((cs (get-value client-section "CipherString")))
+                                       (and cs (search "@SECLEVEL" cs)))))))
     (cond
       ;; Skip tests that require session resumption
       ((and handshake-mode (string-equal handshake-mode "Resume"))
        :skip)
       ;; Skip tests that require server2 context switching (SNI virtual hosting)
       (server2
+       :skip)
+      ;; Skip tests that require custom verification callbacks
+      (verify-callback
+       :skip)
+      ;; Skip tests that require Certificate Transparency (CT) validation
+      ((and ct-validation (string-equal ct-validation "Strict"))
+       :skip)
+      ;; Skip tests that require OCSP stapling (CertStatus)
+      (cert-status
+       :skip)
+      ;; Skip tests that require security levels
+      (seclevel-in-cipher
        :skip)
       ;; Skip tests that expect a specific protocol that is not TLS 1.3
       ((and expected-protocol (not (string-equal expected-protocol "TLSv1.3")))
@@ -267,14 +295,18 @@
       ;; Skip tests that require client certificates (mTLS not yet implemented)
       ((and client-cert (not (string= client-cert "")))
        :skip)
-      ;; Skip tests where server requires client certificate
-      ((and server-verify (or (string-equal server-verify "Require")
+      ;; Skip tests where server requests or requires client certificate
+      ;; (CertificateRequest handling not yet implemented)
+      ((and server-verify (or (string-equal server-verify "Request")
+                              (string-equal server-verify "Require")
+                              (string-equal server-verify "RequestPostHandshake")
                               (string-equal server-verify "RequirePostHandshake")))
        :skip)
       ;; Default to pass
       (t :pass))))
 
-(defun get-skip-reason (server-section client-section result-section ssl-conf)
+(defun get-skip-reason (server-section client-section result-section ssl-conf
+                        &optional server-extra client-extra)
   "Get the reason for skipping a test, if applicable."
   (let ((server-min (get-value server-section "MinProtocol"))
         (server-max (get-value server-section "MaxProtocol"))
@@ -286,12 +318,33 @@
         (expected-protocol (get-value result-section "ExpectedProtocol"))
         (server-curves (get-value server-section "Curves"))
         (client-curves (get-value client-section "Curves"))
-        (server2 (when ssl-conf (get-value ssl-conf "server2"))))
+        (server2 (when ssl-conf (get-value ssl-conf "server2")))
+        ;; Features from extra sections
+        (verify-callback (or (and server-extra (get-value server-extra "VerifyCallback"))
+                             (and client-extra (get-value client-extra "VerifyCallback"))))
+        (ct-validation (or (and server-extra (get-value server-extra "CTValidation"))
+                           (and client-extra (get-value client-extra "CTValidation"))))
+        (cert-status (or (and server-section (get-value server-section "CertStatus"))
+                         (and server-extra (get-value server-extra "CertStatus"))))
+        (seclevel-in-cipher (or (and server-section
+                                     (let ((cs (get-value server-section "CipherString")))
+                                       (and cs (search "@SECLEVEL" cs))))
+                                (and client-section
+                                     (let ((cs (get-value client-section "CipherString")))
+                                       (and cs (search "@SECLEVEL" cs)))))))
     (cond
       ((and handshake-mode (string-equal handshake-mode "Resume"))
        "Requires session resumption (not yet implemented in test framework)")
       (server2
        "Requires server2 context switching (SNI virtual hosting not yet implemented)")
+      (verify-callback
+       "Requires custom verification callback (not implemented)")
+      ((and ct-validation (string-equal ct-validation "Strict"))
+       "Requires Certificate Transparency (CT) validation (not implemented)")
+      (cert-status
+       "Requires OCSP stapling (not implemented)")
+      (seclevel-in-cipher
+       "Requires security levels (not implemented)")
       ((and expected-protocol (not (string-equal expected-protocol "TLSv1.3")))
        (format nil "Expects ~A (pure-tls is TLS 1.3 only)" expected-protocol))
       ((and server-max (not (string= server-max "TLSv1.3")))
@@ -307,9 +360,11 @@
                (or server-curves client-curves)))
       ((and client-cert (not (string= client-cert "")))
        "Requires client certificate (mTLS not yet implemented)")
-      ((and server-verify (or (string-equal server-verify "Require")
+      ((and server-verify (or (string-equal server-verify "Request")
+                              (string-equal server-verify "Require")
+                              (string-equal server-verify "RequestPostHandshake")
                               (string-equal server-verify "RequirePostHandshake")))
-       "Requires client certificate (mTLS not yet implemented)")
+       "Server requests client certificate (CertificateRequest handling not yet implemented)")
       (t nil))))
 
 (defun load-openssl-tests (cnf-file)
