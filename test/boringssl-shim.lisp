@@ -227,22 +227,20 @@
 ;;;; Socket Operations
 (defun connect-to-runner (config)
   "Connect to the BoringSSL runner on the specified port.
-   Returns the socket or signals an error."
+   Returns the usocket. The runner acts as a TCP server that the shim
+   connects to, even for TLS server tests."
   (let* ((host (if (shim-config-ipv6 config) "::1" "127.0.0.1"))
          (socket (usocket:socket-connect host (shim-config-port config)
                                          :element-type '(unsigned-byte 8))))
     socket))
 
-(defun accept-from-runner (config)
-  "Listen for a connection from the BoringSSL runner.
-   Returns the connected socket."
-  (let* ((host (if (shim-config-ipv6 config) "::1" "127.0.0.1"))
-         (listener (usocket:socket-listen host (shim-config-port config)
-                                          :reuse-address t
-                                          :element-type '(unsigned-byte 8))))
-    (unwind-protect
-        (usocket:socket-accept listener)
-      (usocket:socket-close listener))))
+(defun send-shim-id (stream shim-id)
+  "Send the shim ID as a 64-bit little-endian integer."
+  (let ((buf (make-array 8 :element-type '(unsigned-byte 8))))
+    (loop for i from 0 below 8
+          do (setf (aref buf i) (ldb (byte 8 (* i 8)) shim-id)))
+    (write-sequence buf stream)
+    (force-output stream)))
 
 ;;;; TLS Operations
 (defun load-credentials (config)
@@ -251,21 +249,19 @@
   (when (and (shim-config-cert-file config)
              (shim-config-key-file config))
     (handler-case
-        (values (pure-tls:load-certificates (shim-config-cert-file config))
+        (values (pure-tls:load-certificate-chain (shim-config-cert-file config))
                 (pure-tls:load-private-key (shim-config-key-file config)))
       (error (e)
         (format *error-output* "Failed to load credentials: ~A~%" e)
         (values nil nil)))))
 
 (defun load-trust-store (config)
-  "Load trust store from config."
-  (when (shim-config-trust-cert config)
-    (handler-case
-        (pure-tls:make-trust-store
-         :certificates (pure-tls:load-certificates (shim-config-trust-cert config)))
-      (error (e)
-        (format *error-output* "Failed to load trust store: ~A~%" e)
-        nil))))
+  "Load trust store from config.
+   NOTE: Trust store loading is simplified - uses verification mode instead."
+  (declare (ignore config))
+  ;; For now, we don't load a custom trust store
+  ;; The shim uses verify-none mode for testing
+  nil)
 
 (defun parse-alpn-protocols (alpn-string)
   "Parse ALPN protocol list from wire format or comma-separated string."
@@ -279,14 +275,15 @@
                          (subseq bytes (1+ i) (+ 1 i len)))
             do (incf i (1+ len))))))
 
-(defun run-client-test (config socket)
-  "Run TLS client test against the runner."
+(defun run-client-test (config stream)
+  "Run TLS client test against the runner.
+   STREAM is the raw TCP stream from usocket:socket-stream."
   (let* ((trust-store (load-trust-store config))
          (alpn (parse-alpn-protocols (shim-config-advertise-alpn config)))
          (hostname (or (shim-config-host-name config) "localhost"))
          (tls-stream
            (pure-tls:make-tls-client-stream
-            socket
+            stream
             :hostname hostname
             :alpn-protocols alpn
             :verify (if (shim-config-verify-peer config)
@@ -295,7 +292,7 @@
 
     ;; Check ALPN result if expected
     (when (shim-config-expect-alpn config)
-      (let ((negotiated (pure-tls:tls-stream-alpn-protocol tls-stream)))
+      (let ((negotiated (pure-tls:tls-selected-alpn tls-stream)))
         (unless (string= negotiated (shim-config-expect-alpn config))
           (error "ALPN mismatch: expected ~S, got ~S"
                  (shim-config-expect-alpn config) negotiated))))
@@ -318,18 +315,14 @@
     (close tls-stream)
     +exit-success+))
 
-(defun run-server-test (config socket)
-  "Run TLS server test against the runner."
+(defun run-server-test (config stream)
+  "Run TLS server test against the runner.
+   STREAM is the raw TCP stream from usocket:socket-stream."
   (multiple-value-bind (cert-chain private-key) (load-credentials config)
     (unless (and cert-chain private-key)
       (error "Server test requires certificate and key"))
 
-    (let* ((alpn-callback
-             (when (shim-config-select-alpn config)
-               (lambda (protos)
-                 (declare (ignore protos))
-                 (shim-config-select-alpn config))))
-           (sni-callback
+    (let* ((sni-callback
              (when (shim-config-expect-server-name config)
                (lambda (hostname)
                  (unless (string= hostname (shim-config-expect-server-name config))
@@ -338,10 +331,9 @@
                  nil)))
            (tls-stream
              (pure-tls:make-tls-server-stream
-              socket
-              :certificate-chain cert-chain
-              :private-key private-key
-              :alpn-callback alpn-callback
+              stream
+              :certificate cert-chain
+              :key private-key
               :sni-callback sni-callback)))
 
       ;; Exchange test data
@@ -366,6 +358,12 @@
 (defun main (&optional (args (uiop:command-line-arguments)))
   "Main entry point for the BoringSSL shim.
    Parses arguments, checks for unimplemented features, and runs the test."
+  ;; Handle special query flags before normal processing
+  (when (member "-is-handshaker-supported" args :test #'string=)
+    ;; Split handshake mode is not supported
+    (format t "No~%")
+    (return-from main +exit-success+))
+
   (handler-case
       (let ((config (parse-args args)))
         ;; Check for unimplemented features first
@@ -380,13 +378,16 @@
           (return-from main +exit-failure+))
 
         ;; Run the appropriate test
-        (let ((socket (if (shim-config-is-server config)
-                          (accept-from-runner config)
-                          (connect-to-runner config))))
+        ;; Note: The shim always connects TO the runner as a TCP client,
+        ;; even when acting as a TLS server. The runner is the TCP server.
+        (let* ((socket (connect-to-runner config))
+               (stream (usocket:socket-stream socket)))
+          ;; Send shim-id as 64-bit little-endian before proceeding
+          (send-shim-id stream (shim-config-shim-id config))
           (unwind-protect
               (if (shim-config-is-server config)
-                  (run-server-test config socket)
-                  (run-client-test config socket))
+                  (run-server-test config stream)
+                  (run-client-test config stream))
             (usocket:socket-close socket))))
 
     ;; Handle TLS errors
@@ -401,9 +402,14 @@
 
 ;;; Build script helper
 #+sbcl
+(defun shim-toplevel ()
+  "Toplevel function that runs main and exits with proper code."
+  (sb-ext:exit :code (main)))
+
+#+sbcl
 (defun build-shim ()
   "Build the shim as a standalone executable."
   (sb-ext:save-lisp-and-die
    "pure-tls-shim"
-   :toplevel #'main
+   :toplevel #'shim-toplevel
    :executable t))

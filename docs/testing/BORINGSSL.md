@@ -140,23 +140,50 @@ Implement a pure-tls shim following `PORTING.md`:
 - [x] Document ProtocolBugs coverage in test comments
 - [x] Verify key files load correctly (RSA-2048, ECDSA P-256, P-384)
 
-### Phase 2: Shim Binary (PREPARED)
+### Phase 2: Shim Binary ✅ COMPLETE
 - [x] Create `test/boringssl-shim.lisp` with command-line parsing
 - [x] Implement core configuration structure
 - [x] Document exit codes (0=success, 89=unimplemented, 90=expected-failure)
-- [ ] Build and test against BoringSSL runner (future work)
+- [x] Build shim executable with SBCL (53MB standalone binary)
+- [x] Implement `-is-handshaker-supported` query (returns "No")
+- [x] Implement shim-id protocol (64-bit little-endian)
+- [x] Proper exit code handling via sb-ext:exit
 
-### Phase 3: Test Coverage
-Current tests validate:
-- Key file loading from BoringSSL test suite
-- TLS 1.3 cipher suite definitions
-- Alert code definitions
-- ProtocolBugs checklist documentation
+### Phase 3: Runner Integration (IN PROGRESS)
+The shim can be built and run against the BoringSSL test runner:
+
+```bash
+# Build the shim
+sbcl --load ~/quicklisp/setup.lisp \
+     --eval '(ql:quickload (list :pure-tls :usocket :babel))' \
+     --eval '(load "test/boringssl-shim.lisp")' \
+     --eval '(pure-tls/boringssl-shim::build-shim)'
+
+# Run tests
+cd ~/git/boringssl
+go test -v ./ssl/test/runner \
+    -shim-path ~/git/pure-tls/pure-tls-shim \
+    -allow-unimplemented \
+    -loose-errors
+```
+
+**Current Status:**
+- Shim connects to runner and sends shim-id ✅
+- Exit code 89 properly returned for unimplemented features ✅
+- DTLS and session resumption tests correctly skipped ✅
+- TLS 1.2 tests correctly rejected (pure-tls is TLS 1.3 only) ✅
+- TLS 1.3 handshakes need further debugging ⚠️
+
+**Known Issues:**
+- Some TLS 1.3 tests fail with handshake state errors
+- Runner reports "invalid TLS 1.3 ChangeCipherSpec" for some tests
+- Needs investigation of middlebox compatibility CCS handling
 
 ### Future Work
-- [ ] Implement full shim binary for running against BoringSSL runner
+- [ ] Debug TLS 1.3 handshake issues with runner
 - [ ] Add PKI test data from `pki/testdata/`
 - [ ] Integrate with CI/CD pipeline
+- [ ] Create shim config JSON for error mapping
 
 ## Key Files Reference
 
