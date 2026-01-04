@@ -203,6 +203,29 @@
          :expected-client-alert (get-value result-section "ExpectedClientAlert")
          :expected-server-alert (get-value result-section "ExpectedServerAlert"))))))
 
+;; Curves supported by pure-tls
+(defparameter *supported-curves*
+  '("X25519" "P-256" "secp256r1" "prime256v1")
+  "List of elliptic curves supported by pure-tls.")
+
+(defun curve-supported-p (curve-name)
+  "Check if a curve is supported by pure-tls."
+  (member curve-name *supported-curves* :test #'string-equal))
+
+(defun uses-unsupported-curve-p (server-section client-section)
+  "Check if either server or client requires an unsupported curve."
+  (let ((server-curves (get-value server-section "Curves"))
+        (client-curves (get-value client-section "Curves")))
+    ;; If curves are specified and none are supported, skip the test
+    (or (and server-curves
+             (not (some #'curve-supported-p
+                        (mapcar (lambda (s) (string-trim " " s))
+                                (cl-ppcre:split ":" server-curves)))))
+        (and client-curves
+             (not (some #'curve-supported-p
+                        (mapcar (lambda (s) (string-trim " " s))
+                                (cl-ppcre:split ":" client-curves))))))))
+
 (defun categorize-test (server-section client-section result-section)
   "Categorize a test as :pass, :skip, :xfail, or :interop."
   (let ((server-min (get-value server-section "MinProtocol"))
@@ -226,6 +249,9 @@
        :skip)
       ((and client-min client-max (not (string= client-min client-max)))
        :skip)
+      ;; Skip tests that require unsupported curves
+      ((uses-unsupported-curve-p server-section client-section)
+       :skip)
       ;; Skip tests that require client certificates (mTLS not yet implemented)
       ((and client-cert (not (string= client-cert "")))
        :skip)
@@ -244,7 +270,9 @@
         (client-max (get-value client-section "MaxProtocol"))
         (client-cert (get-value client-section "Certificate"))
         (server-verify (get-value server-section "VerifyMode"))
-        (handshake-mode (get-value result-section "HandshakeMode")))
+        (handshake-mode (get-value result-section "HandshakeMode"))
+        (server-curves (get-value server-section "Curves"))
+        (client-curves (get-value client-section "Curves")))
     (cond
       ((and handshake-mode (string-equal handshake-mode "Resume"))
        "Requires session resumption (not yet implemented in test framework)")
@@ -256,6 +284,9 @@
        "Requires protocol version negotiation")
       ((and client-min client-max (not (string= client-min client-max)))
        "Requires protocol version negotiation")
+      ((uses-unsupported-curve-p server-section client-section)
+       (format nil "Requires unsupported curve (~A)"
+               (or server-curves client-curves)))
       ((and client-cert (not (string= client-cert "")))
        "Requires client certificate (mTLS not yet implemented)")
       ((and server-verify (or (string-equal server-verify "Require")
