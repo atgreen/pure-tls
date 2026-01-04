@@ -121,16 +121,48 @@
     (error 'tls-verification-error
            :message "No trusted root certificates available for verification"
            :reason :unknown-ca))
-  ;; Verify each certificate's dates
+
+  ;; Verify each certificate's dates and check for unknown critical extensions
   (dolist (cert chain)
-    (verify-certificate-dates cert now))
-  ;; Verify the chain links (both name matching AND signature verification)
+    (verify-certificate-dates cert now)
+    ;; RFC 5280: MUST reject certificates with unrecognized critical extensions
+    (let ((unknown-critical (certificate-has-unknown-critical-extensions-p cert)))
+      (when unknown-critical
+        (error 'tls-certificate-error
+               :message (format nil "Certificate has unknown critical extension(s): ~A"
+                               unknown-critical)))))
+
+  ;; Verify the chain links (name matching, CA constraints, key usage, signatures)
   (loop for i from 0 below (1- (length chain))
         for cert = (nth i chain)
         for issuer = (nth (1+ i) chain)
-        do (unless (certificate-issued-by-p cert issuer)
+        for certs-below = i  ; Number of certificates below issuer in chain
+        do
+           ;; Check issuer name matches
+           (unless (certificate-issued-by-p cert issuer)
              (error 'tls-certificate-error
                     :message "Certificate chain is broken (issuer mismatch)"))
+
+           ;; RFC 5280 4.2.1.9: Issuer MUST have BasicConstraints cA=true
+           (unless (certificate-is-ca-p issuer)
+             (error 'tls-certificate-error
+                    :message "Issuing certificate is not a CA (BasicConstraints cA=false or missing)"))
+
+           ;; RFC 5280 4.2.1.3: If KeyUsage present, issuer MUST have keyCertSign
+           (let ((issuer-key-usage (certificate-key-usage issuer)))
+             (when (and issuer-key-usage
+                        (not (member :key-cert-sign issuer-key-usage)))
+               (error 'tls-certificate-error
+                      :message "Issuing certificate lacks keyCertSign key usage")))
+
+           ;; RFC 5280 4.2.1.9: Check path length constraint
+           ;; pathLenConstraint limits the number of CA certificates that may follow
+           (let ((path-len (certificate-path-length-constraint issuer)))
+             (when (and path-len (> certs-below path-len))
+               (error 'tls-certificate-error
+                      :message (format nil "Path length constraint violated: ~D certs below but limit is ~D"
+                                      certs-below path-len))))
+
            ;; Verify the cryptographic signature
            (unless (verify-certificate-signature cert issuer)
              (error 'tls-certificate-error

@@ -282,11 +282,66 @@
   (ironclad:digest-sequence algorithm (x509-certificate-raw-der cert)))
 
 (defun certificate-is-ca-p (cert)
-  "Check if certificate is a CA certificate."
+  "Check if certificate is a CA certificate (BasicConstraints cA=true)."
   (let ((bc-ext (find :basic-constraints (x509-certificate-extensions cert)
                       :key #'x509-extension-oid)))
     (when bc-ext
       (getf (x509-extension-value bc-ext) :ca))))
+
+(defun certificate-path-length-constraint (cert)
+  "Get the path length constraint from BasicConstraints, or NIL if not set."
+  (let ((bc-ext (find :basic-constraints (x509-certificate-extensions cert)
+                      :key #'x509-extension-oid)))
+    (when bc-ext
+      (getf (x509-extension-value bc-ext) :path-length-constraint))))
+
+(defun certificate-key-usage (cert)
+  "Get the KeyUsage extension value as a list of keywords, or NIL if not present.
+   Possible values: :digital-signature, :non-repudiation, :key-encipherment,
+   :data-encipherment, :key-agreement, :key-cert-sign, :crl-sign,
+   :encipher-only, :decipher-only."
+  (let ((ku-ext (find :key-usage (x509-certificate-extensions cert)
+                      :key #'x509-extension-oid)))
+    (when ku-ext
+      (x509-extension-value ku-ext))))
+
+(defun certificate-has-key-usage-p (cert usage)
+  "Check if certificate has a specific key usage bit set.
+   USAGE is a keyword like :key-cert-sign or :digital-signature."
+  (member usage (certificate-key-usage cert)))
+
+(defun certificate-can-sign-certificates-p (cert)
+  "Check if certificate can sign other certificates.
+   Requires BasicConstraints cA=true AND KeyUsage keyCertSign (if KeyUsage present)."
+  (and (certificate-is-ca-p cert)
+       ;; If KeyUsage extension is present, keyCertSign must be set
+       ;; If KeyUsage is absent, we allow signing (per RFC 5280 - absence means all usages)
+       (let ((key-usage (certificate-key-usage cert)))
+         (or (null key-usage)
+             (member :key-cert-sign key-usage)))))
+
+(defun certificate-critical-extensions (cert)
+  "Get list of critical extensions from the certificate."
+  (loop for ext in (x509-certificate-extensions cert)
+        when (x509-extension-critical ext)
+          collect (x509-extension-oid ext)))
+
+(defun certificate-has-unknown-critical-extensions-p (cert)
+  "Check if certificate has any critical extensions we don't understand.
+   Returns a list of unknown critical extension OIDs, or NIL if all are known."
+  (let ((known-critical-extensions '(:basic-constraints
+                                     :key-usage
+                                     :subject-alt-name
+                                     :name-constraints
+                                     :certificate-policies
+                                     :policy-mappings
+                                     :policy-constraints
+                                     :inhibit-any-policy
+                                     :extended-key-usage)))
+    (loop for ext in (x509-certificate-extensions cert)
+          when (and (x509-extension-critical ext)
+                    (not (member (x509-extension-oid ext) known-critical-extensions)))
+            collect (x509-extension-oid ext))))
 
 ;;;; Certificate Loading
 
