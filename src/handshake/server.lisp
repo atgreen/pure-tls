@@ -461,7 +461,8 @@
           (setf (server-handshake-state hs) :wait-client-certificate-verify)))))
 
 (defun process-client-certificate-verify (hs message raw-bytes)
-  "Process the client's CertificateVerify message."
+  "Process the client's CertificateVerify message.
+   Verifies both the signature AND the certificate chain when verification is enabled."
   (let* ((cv (handshake-message-body message))
          (ks (server-handshake-key-schedule hs))
          ;; Get transcript hash BEFORE adding this message
@@ -470,17 +471,24 @@
          (content (make-certificate-verify-content transcript-hash t)) ; t = client
          (cert (server-handshake-peer-certificate hs))
          (algorithm (certificate-verify-algorithm cv))
-         (signature (certificate-verify-signature cv)))
-    ;; Verify signature
+         (signature (certificate-verify-signature cv))
+         (verify-mode (server-handshake-verify-mode hs))
+         (trust-store (server-handshake-trust-store hs)))
+    ;; Verify signature (proves client possesses the private key)
     (verify-certificate-verify-signature cert algorithm signature content)
     ;; Update transcript AFTER verification
     (server-handshake-update-transcript hs raw-bytes)
     (key-schedule-update-transcript ks raw-bytes)
-    ;; Verify certificate chain if trust store is configured
-    (when (server-handshake-trust-store hs)
+    ;; Verify certificate chain when verification mode requires it
+    (when (member verify-mode (list +verify-peer+ +verify-required+))
+      ;; Trust store is REQUIRED for chain verification
+      ;; Without it, we can't verify the client cert is from a trusted CA
+      (unless trust-store
+        (error 'tls-certificate-error
+               :message "Client certificate verification requires a trust store but none was configured"))
       (verify-certificate-chain
        (server-handshake-peer-certificate-chain hs)
-       (server-handshake-trust-store hs)))
+       (trust-store-certificates trust-store)))
     (setf (server-handshake-state hs) :wait-client-finished)))
 
 (defun process-client-finished (hs message raw-bytes)
