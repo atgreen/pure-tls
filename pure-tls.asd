@@ -16,6 +16,7 @@
                "alexandria"
                "cl-base64"
                "trivial-features"
+               "idna"
                ;; CFFI needed on Windows and macOS for native cert validation
                (:feature :windows "cffi")
                (:feature (:or :darwin :macos) "cffi"))

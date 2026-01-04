@@ -131,11 +131,27 @@
 
 ;;;; DNS Hostname Matching
 
+(defun normalize-hostname-to-ascii (hostname)
+  "Normalize HOSTNAME to ASCII form using IDNA punycode encoding.
+   Converts internationalized domain names (U-labels) to A-labels.
+   Returns the ASCII form, or the original if already ASCII."
+  ;; Check if hostname contains any non-ASCII characters
+  (if (every (lambda (c) (< (char-code c) 128)) hostname)
+      ;; Already ASCII - just downcase
+      (string-downcase hostname)
+      ;; Contains non-ASCII - convert to punycode using IDNA library
+      (handler-case
+          (string-downcase (idna:to-ascii hostname))
+        (error ()
+          ;; On encoding error, fall back to downcased original
+          (string-downcase hostname)))))
+
 (defun hostname-matches-p (pattern hostname)
   "Check if HOSTNAME matches PATTERN, supporting wildcards.
+   Both names are normalized to ASCII (punycode) form before comparison.
    Returns T if they match, NIL otherwise."
-  (let ((pattern (string-downcase pattern))
-        (hostname (string-downcase hostname)))
+  (let ((pattern (normalize-hostname-to-ascii pattern))
+        (hostname (normalize-hostname-to-ascii hostname)))
     (if (and (>= (length pattern) 2)
              (char= (char pattern 0) #\*)
              (char= (char pattern 1) #\.))
