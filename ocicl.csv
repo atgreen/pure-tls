@@ -46,6 +46,7 @@ mt19937, ghcr.io/ocicl/mt19937@sha256:49c0a25a535cd22212343c67e17635b8e05675ad9c
 named-readtables, ghcr.io/ocicl/named-readtables@sha256:c3b4f9e8c99154d63c9adb94144af2c366f2560a7be3d12f7dfed728ff769c91, named-readtables-20251210-6eea566/named-readtables.asd
 named-readtables-test, ghcr.io/ocicl/named-readtables@sha256:c3b4f9e8c99154d63c9adb94144af2c366f2560a7be3d12f7dfed728ff769c91, named-readtables-20251210-6eea566/named-readtables-test.asd
 net.didierverna.asdf-flv, ghcr.io/ocicl/net.didierverna.asdf-flv@sha256:e5cd087d41cf24302a92d9bac426a925f8868b554be2414c0f012c961e3ddb8c, asdf-flv-20240503-3f1de41/net.didierverna.asdf-flv.asd
+pure-tls, ghcr.io/ocicl/pure-tls@sha256:2f8be4e6bfb5787e7555bea1485ce9a6e7c421dc6cc64d419bdc31cf6ac6fd00, pure-tls-20260103-3797309/pure-tls.asd
 split-sequence, ghcr.io/ocicl/split-sequence@sha256:3a37662eedd99c42995587b9d443c4631f25c4c523091bcca31a27b880585b8e, split-sequence-2.0.1/split-sequence.asd
 swap-bytes, ghcr.io/ocicl/swap-bytes@sha256:06edc17deb0f27cdf6290689711ece670a8282dfd07b732a9adc541af1ce7ed6, swap-bytes-20240503-43ab141/swap-bytes.asd
 trivial-backtrace, ghcr.io/ocicl/trivial-backtrace@sha256:89a3138695bb767c50001402fad60dacfc1e867e4e3d3579cc6f636d3e29a51c, trivial-backtrace-20240503-7f90b4a/trivial-backtrace.asd

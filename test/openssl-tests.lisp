@@ -669,3 +669,93 @@ ExpectedResult = Success
     (when failed
       (format t "  Failed: ~{~A~^, ~}~%" failed))
     (is (= 0 fail) "All curves tests should pass")))
+
+(test execute-13-fragmentation-all
+  "Execute all tests from 13-fragmentation.cnf (record fragmentation tests)."
+  (multiple-value-bind (pass fail skip failed)
+      (run-all-tests-from-file "13-fragmentation.cnf")
+    (declare (ignore skip))
+    (format t "~&13-fragmentation.cnf: ~D pass, ~D fail~%" pass fail)
+    (when failed
+      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (is (= 0 fail) "All fragmentation tests should pass")))
+
+(test execute-24-padding-all
+  "Execute all tests from 24-padding.cnf (TLS 1.3 record padding tests)."
+  (multiple-value-bind (pass fail skip failed)
+      (run-all-tests-from-file "24-padding.cnf")
+    (declare (ignore skip))
+    (format t "~&24-padding.cnf: ~D pass, ~D fail~%" pass fail)
+    (when failed
+      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (is (= 0 fail) "All padding tests should pass")))
+
+(test execute-22-compression-all
+  "Execute all tests from 22-compression.cnf (compression disabled tests)."
+  (multiple-value-bind (pass fail skip failed)
+      (run-all-tests-from-file "22-compression.cnf")
+    (declare (ignore skip))
+    (format t "~&22-compression.cnf: ~D pass, ~D fail~%" pass fail)
+    (when failed
+      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (is (= 0 fail) "All compression tests should pass")))
+
+(test execute-05-sni-all
+  "Execute all tests from 05-sni.cnf (Server Name Indication tests)."
+  (multiple-value-bind (pass fail skip failed)
+      (run-all-tests-from-file "05-sni.cnf")
+    (declare (ignore skip))
+    (format t "~&05-sni.cnf: ~D pass, ~D fail~%" pass fail)
+    (when failed
+      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (is (= 0 fail) "All SNI tests should pass")))
+
+(test execute-03-custom-verify-all
+  "Execute all tests from 03-custom_verify.cnf (custom verification tests)."
+  (multiple-value-bind (pass fail skip failed)
+      (run-all-tests-from-file "03-custom_verify.cnf")
+    (declare (ignore skip))
+    (format t "~&03-custom_verify.cnf: ~D pass, ~D fail~%" pass fail)
+    (when failed
+      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (is (= 0 fail) "All custom verify tests should pass")))
+
+(test execute-26-tls13-client-auth-all
+  "Execute all tests from 26-tls13_client_auth.cnf (TLS 1.3 client authentication tests)."
+  (multiple-value-bind (pass fail skip failed)
+      (run-all-tests-from-file "26-tls13_client_auth.cnf")
+    (declare (ignore skip))
+    (format t "~&26-tls13_client_auth.cnf: ~D pass, ~D fail~%" pass fail)
+    (when failed
+      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (is (= 0 fail) "All TLS 1.3 client auth tests should pass")))
+
+(test execute-12-ct-all
+  "Execute all tests from 12-ct.cnf (Certificate Transparency tests)."
+  (multiple-value-bind (pass fail skip failed)
+      (run-all-tests-from-file "12-ct.cnf")
+    (declare (ignore skip))
+    (format t "~&12-ct.cnf: ~D pass, ~D fail~%" pass fail)
+    (when failed
+      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (is (= 0 fail) "All CT tests should pass")))
+
+(test execute-15-certstatus-all
+  "Execute all tests from 15-certstatus.cnf (OCSP stapling tests)."
+  (multiple-value-bind (pass fail skip failed)
+      (run-all-tests-from-file "15-certstatus.cnf")
+    (declare (ignore skip))
+    (format t "~&15-certstatus.cnf: ~D pass, ~D fail~%" pass fail)
+    (when failed
+      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (is (= 0 fail) "All certstatus tests should pass")))
+
+(test execute-28-seclevel-all
+  "Execute all tests from 28-seclevel.cnf (security level tests)."
+  (multiple-value-bind (pass fail skip failed)
+      (run-all-tests-from-file "28-seclevel.cnf")
+    (declare (ignore skip))
+    (format t "~&28-seclevel.cnf: ~D pass, ~D fail~%" pass fail)
+    (when failed
+      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (is (= 0 fail) "All seclevel tests should pass")))
