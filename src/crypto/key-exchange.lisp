@@ -30,10 +30,18 @@
                          :public-key public-key-bytes))))
 
 (defun x25519-compute-shared-secret (key-exchange peer-public-key)
-  "Compute the X25519 shared secret from our private key and peer's public key."
+  "Compute the X25519 shared secret from our private key and peer's public key.
+Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
   (let* ((private-key (key-exchange-private-key key-exchange))
-         (peer-key (ironclad:make-public-key :curve25519 :y peer-public-key)))
-    (ironclad:diffie-hellman private-key peer-key)))
+         (peer-key (ironclad:make-public-key :curve25519 :y peer-public-key))
+         (shared-secret (ironclad:diffie-hellman private-key peer-key)))
+    ;; RFC 8446 §7.4.2: For X25519, implementations MUST check whether the
+    ;; computed Diffie-Hellman shared secret is the all-zero value and abort.
+    (when (every #'zerop shared-secret)
+      (error 'tls-crypto-error
+             :operation "X25519 key exchange"
+             :message "Invalid shared secret (all zeros) - possible small-subgroup attack"))
+    shared-secret))
 
 ;;;; secp256r1 (P-256) Implementation
 
