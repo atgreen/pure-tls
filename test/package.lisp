@@ -15,9 +15,11 @@
    #:run-handshake-tests
    #:run-certificate-tests
    #:run-network-tests
+   #:run-openssl-tests
    ;; Test suites
    #:crypto-tests
    #:record-tests
    #:handshake-tests
    #:certificate-tests
-   #:network-tests))
+   #:network-tests
+   #:openssl-tests))

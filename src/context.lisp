@@ -287,8 +287,9 @@
 
 (defun asn1-octet-string-p (node)
   "Check if ASN.1 node is an OCTET STRING."
-  (and (listp node)
-       (eq (first node) :octet-string)))
+  (and (asn1-node-p node)
+       (= (asn1-node-class node) +asn1-class-universal+)
+       (= (asn1-node-tag node) +asn1-octet-string+)))
 
 (defun make-trust-store-from-sources (ca-file ca-directory)
   "Create a trust store from a CA file and/or directory."

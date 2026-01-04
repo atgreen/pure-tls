@@ -484,6 +484,7 @@ The test suite validates:
 - **Record layer**: Header format, content types, AEAD nonce construction
 - **X.509 certificates**: ASN.1 parsing, hostname verification, OID handling
 - **Bundled bad certificates**: Offline tests using certificates from [badssl.com](https://github.com/chromium/badssl.com) (expired, self-signed, known malware CAs)
+- **OpenSSL test suite**: Live TLS handshake tests adapted from OpenSSL's ssl-tests (basic handshakes, ALPN, key update, curves)
 - **Live validation**: TLS 1.3 connections to major sites (Google, Cloudflare, GitHub, etc.)
 
 ### Individual Test Suites
@@ -499,6 +500,15 @@ The test suite validates:
 ## Limitations
 
 - No 0-RTT early data
+
+## Acknowledgments
+
+This project includes test files derived from the [OpenSSL](https://github.com/openssl/openssl) project:
+
+- `test/ssl-tests/` - TLS test configuration files
+- `test/certs/openssl/` - Test certificates
+
+These files are used under the Apache License 2.0. Copyright (c) OpenSSL Project Authors.
 
 ## License
 

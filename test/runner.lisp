@@ -18,6 +18,14 @@
       (let ((handshake-ok (run! 'handshake-tests)))
         (format t "~%--- Certificate Tests ---~%")
         (let ((cert-ok (run! 'certificate-tests)))
-          (format t "~%=== Summary ===~%")
-          (format t "Note: Run (run-network-tests) separately for network tests.~%")
-          (and crypto-ok record-ok handshake-ok cert-ok))))))
+          (format t "~%--- OpenSSL Tests ---~%")
+          (let ((openssl-ok (run! 'openssl-tests)))
+            (format t "~%=== Summary ===~%")
+            (format t "Note: Run (run-network-tests) separately for network tests.~%")
+            (and crypto-ok record-ok handshake-ok cert-ok openssl-ok)))))))
+
+(defun run-openssl-tests ()
+  "Run OpenSSL test suite adaptation tests.
+   Returns T if all tests pass, NIL otherwise."
+  (format t "~&=== Running OpenSSL Tests ===~%~%")
+  (run! 'openssl-tests))

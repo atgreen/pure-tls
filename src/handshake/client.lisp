@@ -352,7 +352,7 @@
             (key-schedule-update-transcript ks (client-handshake-transcript hs))
             ;; Install server handshake keys for reading
             (multiple-value-bind (key iv)
-                (key-schedule-derive-read-keys ks :handshake)
+                (key-schedule-derive-server-traffic-keys ks :handshake)
               (record-layer-install-keys
                (client-handshake-record-layer hs)
                :read key iv
@@ -744,7 +744,7 @@
     (keylog-write-application-secrets ks)
     ;; Install server application keys for reading
     (multiple-value-bind (key iv)
-        (key-schedule-derive-read-keys ks :application)
+        (key-schedule-derive-server-traffic-keys ks :application)
       (record-layer-install-keys
        (client-handshake-record-layer hs)
        :read key iv cipher-suite))
@@ -758,7 +758,7 @@
          (cipher-suite (client-handshake-selected-cipher-suite hs))
          ;; Install client handshake keys for writing (before sending Finished)
          (_  (multiple-value-bind (key iv)
-                 (key-schedule-derive-write-keys ks :handshake)
+                 (key-schedule-derive-client-traffic-keys ks :handshake)
                (record-layer-install-keys
                 (client-handshake-record-layer hs)
                 :write key iv cipher-suite)))
@@ -782,7 +782,7 @@
           (key-schedule-resumption-master-secret ks))
     ;; Install client application keys for writing
     (multiple-value-bind (key iv)
-        (key-schedule-derive-write-keys ks :application)
+        (key-schedule-derive-client-traffic-keys ks :application)
       (record-layer-install-keys
        (client-handshake-record-layer hs)
        :write key iv cipher-suite))

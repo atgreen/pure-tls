@@ -285,14 +285,14 @@
       (key-schedule-update-transcript ks (server-handshake-transcript hs))
       ;; Install server handshake write keys
       (multiple-value-bind (key iv)
-          (key-schedule-derive-write-keys ks :handshake)
+          (key-schedule-derive-server-traffic-keys ks :handshake)
         (record-layer-install-keys
          (server-handshake-record-layer hs)
          :write key iv
          (server-handshake-selected-cipher-suite hs)))
       ;; Install client handshake read keys
       (multiple-value-bind (key iv)
-          (key-schedule-derive-read-keys ks :handshake)
+          (key-schedule-derive-client-traffic-keys ks :handshake)
         (record-layer-install-keys
          (server-handshake-record-layer hs)
          :read key iv
@@ -359,10 +359,14 @@
 (defun generate-certificate-message (hs)
   "Generate the server's Certificate message."
   (let ((cert-entries
-          (mapcar (lambda (cert-der)
-                    (make-certificate-entry
-                     :cert-data cert-der
-                     :extensions nil))
+          (mapcar (lambda (cert)
+                    ;; Handle both raw DER bytes and X509-CERTIFICATE objects
+                    (let ((cert-der (if (x509-certificate-p cert)
+                                        (x509-certificate-raw-der cert)
+                                        cert)))
+                      (make-certificate-entry
+                       :cert-data cert-der
+                       :extensions nil)))
                   (server-handshake-certificate-chain hs))))
     (make-certificate-message
      :certificate-request-context (make-octet-vector 0)
@@ -424,7 +428,7 @@
     (keylog-write-application-secrets ks)
     ;; Install server application write keys
     (multiple-value-bind (key iv)
-        (key-schedule-derive-write-keys ks :application)
+        (key-schedule-derive-server-traffic-keys ks :application)
       (record-layer-install-keys
        (server-handshake-record-layer hs)
        :write key iv
@@ -517,7 +521,7 @@
           (key-schedule-resumption-master-secret ks))
     ;; Install client application read keys
     (multiple-value-bind (key iv)
-        (key-schedule-derive-read-keys ks :application)
+        (key-schedule-derive-client-traffic-keys ks :application)
       (record-layer-install-keys
        (server-handshake-record-layer hs)
        :read key iv
@@ -563,13 +567,17 @@
 
 (defun send-new-session-ticket (hs)
   "Send a NewSessionTicket message to enable session resumption.
-   This should be called after the handshake completes."
+   This should be called after the handshake completes.
+   Silently ignores write errors if the client has already closed."
   (when (server-handshake-resumption-master-secret hs)
     (let* ((nst (generate-new-session-ticket hs))
            (nst-bytes (serialize-new-session-ticket nst))
            (message (wrap-handshake-message +handshake-new-session-ticket+ nst-bytes)))
       ;; Send (encrypted with server application keys)
-      (record-layer-write-handshake (server-handshake-record-layer hs) message))))
+      ;; Ignore errors - client may have already closed the connection
+      (handler-case
+          (record-layer-write-handshake (server-handshake-record-layer hs) message)
+        (error () nil)))))
 
 ;;;; Handshake Message Reading
 

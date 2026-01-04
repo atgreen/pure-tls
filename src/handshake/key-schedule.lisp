@@ -235,22 +235,24 @@
 
 ;;;; Traffic Key Derivation
 
-(defun key-schedule-derive-read-keys (ks direction)
-  "Derive traffic keys for reading.
-   DIRECTION is :handshake or :application."
-  (let* ((cipher-suite (key-schedule-cipher-suite ks))
-         (secret (ecase direction
-                   (:handshake (key-schedule-server-handshake-traffic-secret ks))
-                   (:application (key-schedule-server-application-traffic-secret ks)))))
-    (derive-traffic-keys secret cipher-suite)))
-
-(defun key-schedule-derive-write-keys (ks direction)
-  "Derive traffic keys for writing.
-   DIRECTION is :handshake or :application."
+(defun key-schedule-derive-client-traffic-keys (ks direction)
+  "Derive traffic keys from client traffic secret.
+   DIRECTION is :handshake or :application.
+   Use this for: client WRITE, server READ."
   (let* ((cipher-suite (key-schedule-cipher-suite ks))
          (secret (ecase direction
                    (:handshake (key-schedule-client-handshake-traffic-secret ks))
                    (:application (key-schedule-client-application-traffic-secret ks)))))
+    (derive-traffic-keys secret cipher-suite)))
+
+(defun key-schedule-derive-server-traffic-keys (ks direction)
+  "Derive traffic keys from server traffic secret.
+   DIRECTION is :handshake or :application.
+   Use this for: server WRITE, client READ."
+  (let* ((cipher-suite (key-schedule-cipher-suite ks))
+         (secret (ecase direction
+                   (:handshake (key-schedule-server-handshake-traffic-secret ks))
+                   (:application (key-schedule-server-application-traffic-secret ks)))))
     (derive-traffic-keys secret cipher-suite)))
 
 ;;;; Key Update

@@ -70,7 +70,10 @@
   :license "MIT"
   :depends-on ("pure-tls"
                "fiveam"
-               "usocket")
+               "usocket"
+               "iparse"
+               "cl-ppcre"
+               "bordeaux-threads")
   :serial t
   :components ((:module "test"
                 :serial t
@@ -80,4 +83,5 @@
                              (:file "handshake-tests")
                              (:file "certificate-tests")
                              (:file "network-tests")
+                             (:file "openssl-tests")
                              (:file "runner")))))

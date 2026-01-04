@@ -82,8 +82,10 @@
                                     +alert-level-warning+
                                     +alert-close-notify+)
         (error () nil)))  ; Ignore errors during shutdown
-    ;; Close underlying stream
-    (close (tls-stream-underlying-stream stream) :abort abort)
+    ;; Close underlying stream (ignore errors - peer may have already closed)
+    (handler-case
+        (close (tls-stream-underlying-stream stream) :abort abort)
+      (error () nil))
     ;; Mark as closed
     (setf (tls-stream-closed-p stream) t)
     ;; Call close callback
@@ -141,9 +143,11 @@
               (key-schedule-update-traffic-secret
                (key-schedule-client-application-traffic-secret ks)
                cipher-suite)))
-    ;; Install new read keys
+    ;; Install new read keys (from the sender's traffic secret)
     (multiple-value-bind (key iv)
-        (key-schedule-derive-read-keys ks :application)
+        (if is-client
+            (key-schedule-derive-server-traffic-keys ks :application)  ; client reads server
+            (key-schedule-derive-client-traffic-keys ks :application)) ; server reads client
       (record-layer-install-keys (tls-stream-record-layer stream)
                                  :read key iv cipher-suite))
     ;; If update was requested, send our own KeyUpdate
@@ -177,9 +181,11 @@
               (key-schedule-update-traffic-secret
                (key-schedule-server-application-traffic-secret ks)
                cipher-suite)))
-    ;; Install new write keys
+    ;; Install new write keys (from our own traffic secret)
     (multiple-value-bind (key iv)
-        (key-schedule-derive-write-keys ks :application)
+        (if is-client
+            (key-schedule-derive-client-traffic-keys ks :application)  ; client writes with client keys
+            (key-schedule-derive-server-traffic-keys ks :application)) ; server writes with server keys
       (record-layer-install-keys (tls-stream-record-layer stream)
                                  :write key iv cipher-suite))))
 
