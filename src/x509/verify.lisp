@@ -316,18 +316,22 @@
 ;;;; Signature Verification
 
 ;; DigestInfo prefixes for PKCS#1 v1.5 (DER-encoded AlgorithmIdentifier + NULL params)
+;; Note: SHA-1 intentionally excluded - it is cryptographically broken for certificates
 (defparameter *digest-info-prefixes*
   '((:sha256 . #(#x30 #x31 #x30 #x0d #x06 #x09 #x60 #x86 #x48 #x01 #x65 #x03 #x04 #x02 #x01 #x05 #x00 #x04 #x20))
     (:sha384 . #(#x30 #x41 #x30 #x0d #x06 #x09 #x60 #x86 #x48 #x01 #x65 #x03 #x04 #x02 #x02 #x05 #x00 #x04 #x30))
-    (:sha512 . #(#x30 #x51 #x30 #x0d #x06 #x09 #x60 #x86 #x48 #x01 #x65 #x03 #x04 #x02 #x03 #x05 #x00 #x04 #x40))
-    (:sha1   . #(#x30 #x21 #x30 #x09 #x06 #x05 #x2b #x0e #x03 #x02 #x1a #x05 #x00 #x04 #x14))))
+    (:sha512 . #(#x30 #x51 #x30 #x0d #x06 #x09 #x60 #x86 #x48 #x01 #x65 #x03 #x04 #x02 #x03 #x05 #x00 #x04 #x40))))
 
 (defun verify-rsa-pkcs1v15-signature (public-key tbs signature hash-algo)
-  "Verify an RSA PKCS#1 v1.5 signature.
+  "Verify an RSA PKCS#1 v1.5 signature per RFC 8017.
    PUBLIC-KEY is an Ironclad RSA public key.
    TBS is the to-be-signed data (raw bytes).
    SIGNATURE is the signature bytes.
-   HASH-ALGO is the hash algorithm keyword (:sha256, :sha384, :sha512)."
+   HASH-ALGO is the hash algorithm keyword (:sha256, :sha384, :sha512).
+   Note: SHA-1 is rejected as cryptographically broken."
+  ;; Reject SHA-1 - it's cryptographically broken for certificate signatures
+  (when (eq hash-algo :sha1)
+    (return-from verify-rsa-pkcs1v15-signature nil))
   (let* ((n (ironclad:rsa-key-modulus public-key))
          (e (ironclad:rsa-key-exponent public-key))
          (k (ceiling (integer-length n) 8))  ; Key length in bytes
@@ -336,31 +340,40 @@
          (m (ironclad:expt-mod s e n))
          (em (ironclad:integer-to-octets m :n-bits (* 8 k))))
     ;; Check PKCS#1 v1.5 padding: 0x00 0x01 [0xFF padding] 0x00 [DigestInfo]
+    ;; Minimum size: 2 (header) + 8 (min padding) + 1 (separator) + DigestInfo
     (when (< (length em) 11)
       (return-from verify-rsa-pkcs1v15-signature nil))
     (unless (and (zerop (aref em 0))
                  (= 1 (aref em 1)))
       (return-from verify-rsa-pkcs1v15-signature nil))
-    ;; Find the 0x00 separator after padding
-    (let ((separator-pos nil))
+    ;; Find the 0x00 separator after padding, counting 0xFF bytes
+    (let ((separator-pos nil)
+          (padding-count 0))
       (loop for i from 2 below (length em)
             do (cond
-                 ((= (aref em i) #xff)) ; Padding byte, continue
+                 ((= (aref em i) #xff)
+                  (incf padding-count)) ; Count padding bytes
                  ((zerop (aref em i))
                   (setf separator-pos i)
                   (return))
                  (t (return-from verify-rsa-pkcs1v15-signature nil))))
       (unless separator-pos
         (return-from verify-rsa-pkcs1v15-signature nil))
+      ;; RFC 8017: Require at least 8 bytes of 0xFF padding
+      (when (< padding-count 8)
+        (return-from verify-rsa-pkcs1v15-signature nil))
       ;; Extract DigestInfo (everything after the 0x00 separator)
       (let* ((digest-info (subseq em (1+ separator-pos)))
              (prefix (rest (assoc hash-algo *digest-info-prefixes*)))
              (hash-len (ironclad:digest-length hash-algo)))
         (unless prefix
-          (error "Unknown hash algorithm: ~A" hash-algo))
-        ;; Check DigestInfo has correct prefix and length
-        (unless (and (>= (length digest-info) (+ (length prefix) hash-len))
-                     (equalp (subseq digest-info 0 (length prefix)) prefix))
+          ;; Unknown/unsupported hash algorithm
+          (return-from verify-rsa-pkcs1v15-signature nil))
+        ;; Check DigestInfo has EXACT correct length (not >=, to prevent trailing garbage)
+        (unless (= (length digest-info) (+ (length prefix) hash-len))
+          (return-from verify-rsa-pkcs1v15-signature nil))
+        ;; Check DigestInfo has correct prefix
+        (unless (equalp (subseq digest-info 0 (length prefix)) prefix)
           (return-from verify-rsa-pkcs1v15-signature nil))
         ;; Extract the hash from DigestInfo and compare with our computed hash
         (let ((embedded-hash (subseq digest-info (length prefix)))
@@ -378,15 +391,18 @@
          (public-key-bytes (getf public-key-info :public-key)))
     (handler-case
         (cond
-          ;; RSA PKCS#1 v1.5 signatures
+          ;; Reject SHA-1 signatures - cryptographically broken
+          ((member algorithm '(:sha1-with-rsa-encryption
+                               :sha1WithRSAEncryption))
+           (error 'tls-certificate-error
+                  :message "SHA-1 certificate signatures are rejected (cryptographically broken)"))
+          ;; RSA PKCS#1 v1.5 signatures (SHA-256, SHA-384, SHA-512 only)
           ((member algorithm '(:sha256-with-rsa-encryption
                                :sha256WithRSAEncryption
                                :sha384-with-rsa-encryption
                                :sha384WithRSAEncryption
                                :sha512-with-rsa-encryption
                                :sha512WithRSAEncryption
-                               :sha1-with-rsa-encryption
-                               :sha1WithRSAEncryption
                                :rsa-pkcs1-sha256
                                :rsa-pkcs1-sha384
                                :rsa-pkcs1-sha512))
@@ -441,25 +457,35 @@
                :message (format nil "Certificate signature verification failed: ~A" e))))))
 
 (defun cert-sig-algorithm-to-hash (algorithm)
-  "Map certificate signature algorithm to hash algorithm keyword."
+  "Map certificate signature algorithm to hash algorithm keyword.
+   SHA-1 is not supported - it is cryptographically broken for certificates."
   (cond
+    ;; SHA-1 explicitly rejected
     ((member algorithm '(:sha1-with-rsa-encryption
-                         :sha1WithRSAEncryption)) :sha1)
+                         :sha1WithRSAEncryption
+                         :ecdsa-with-sha1
+                         :ecdsa-with-SHA1))
+     (error 'tls-certificate-error
+            :message "SHA-1 signatures are not supported (cryptographically broken)"))
+    ;; SHA-256
     ((member algorithm '(:sha256-with-rsa-encryption
                          :sha256WithRSAEncryption
                          :rsa-pkcs1-sha256
                          :ecdsa-with-sha256
                          :ecdsa-with-SHA256)) :sha256)
+    ;; SHA-384
     ((member algorithm '(:sha384-with-rsa-encryption
                          :sha384WithRSAEncryption
                          :rsa-pkcs1-sha384
                          :ecdsa-with-sha384
                          :ecdsa-with-SHA384)) :sha384)
+    ;; SHA-512
     ((member algorithm '(:sha512-with-rsa-encryption
                          :sha512WithRSAEncryption
                          :rsa-pkcs1-sha512
                          :ecdsa-with-sha512
                          :ecdsa-with-SHA512)) :sha512)
+    ;; Unknown algorithm - default to SHA-256 for best compatibility
     (t :sha256)))
 
 (defun parse-rsa-public-key (public-key-der)
