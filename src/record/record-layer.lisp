@@ -190,6 +190,18 @@
   "Write application data."
   (record-layer-write layer +content-type-application-data+ data))
 
+(defun record-layer-write-change-cipher-spec (layer)
+  "Write a dummy change_cipher_spec record for middlebox compatibility.
+   Per RFC 8446 Appendix D.4, TLS 1.3 implementations SHOULD send
+   a single CCS record immediately after the first ClientHello (client)
+   or ServerHello (server) for compatibility with broken middleboxes.
+   The CCS record is always sent unencrypted with content byte 0x01."
+  (let* ((ccs-data (octet-vector 1))  ; Single byte 0x01
+         (record (make-tls-record :content-type +content-type-change-cipher-spec+
+                                  :version +tls-1.2+
+                                  :fragment ccs-data)))
+    (write-tls-record (record-layer-stream layer) record)))
+
 ;;;; Record Fragmentation
 
 (defun fragment-data (data max-size)

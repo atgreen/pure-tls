@@ -307,8 +307,11 @@
          (message (wrap-handshake-message +handshake-server-hello+ hello-bytes)))
     ;; Update transcript
     (server-handshake-update-transcript hs message)
-    ;; Send (unencrypted)
+    ;; Send ServerHello (unencrypted)
     (record-layer-write-handshake (server-handshake-record-layer hs) message)
+    ;; Send dummy CCS for middlebox compatibility (RFC 8446 Appendix D.4)
+    ;; This must be sent immediately after ServerHello, before encrypted messages
+    (record-layer-write-change-cipher-spec (server-handshake-record-layer hs))
     ;; Derive handshake traffic secrets from transcript (ClientHello + ServerHello)
     (let ((ks (server-handshake-key-schedule hs)))
       (key-schedule-derive-handshake-traffic-secrets

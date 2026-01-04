@@ -202,8 +202,11 @@
          (message (wrap-handshake-message +handshake-client-hello+ hello-bytes)))
     ;; Update transcript
     (client-handshake-update-transcript hs message)
-    ;; Send
+    ;; Send ClientHello
     (record-layer-write-handshake (client-handshake-record-layer hs) message)
+    ;; Send dummy CCS for middlebox compatibility (RFC 8446 Appendix D.4)
+    ;; This must be sent immediately after ClientHello
+    (record-layer-write-change-cipher-spec (client-handshake-record-layer hs))
     (setf (client-handshake-state hs) :wait-server-hello)))
 
 ;;;; HelloRetryRequest Processing
@@ -600,10 +603,14 @@
 
 (defun encode-ecdsa-signature-der (raw-sig)
   "Encode an ECDSA signature (from Ironclad) to DER format.
-   RAW-SIG is an Ironclad signature object containing R and S values."
-  ;; Extract R and S from the signature
-  (let* ((r-bytes (ironclad::signature-element raw-sig :r))
-         (s-bytes (ironclad::signature-element raw-sig :s))
+   RAW-SIG is a byte array containing R and S values concatenated.
+   For P-256: 64 bytes (32 bytes R + 32 bytes S)
+   For P-384: 96 bytes (48 bytes R + 48 bytes S)
+   For P-521: 132 bytes (66 bytes R + 66 bytes S)"
+  ;; Extract R and S from the concatenated signature
+  (let* ((half-len (/ (length raw-sig) 2))
+         (r-bytes (subseq raw-sig 0 half-len))
+         (s-bytes (subseq raw-sig half-len))
          (r-int (ironclad:octets-to-integer r-bytes))
          (s-int (ironclad:octets-to-integer s-bytes)))
     ;; Encode as DER SEQUENCE { INTEGER r, INTEGER s }

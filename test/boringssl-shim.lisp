@@ -16,7 +16,7 @@
 
 (defpackage #:pure-tls/boringssl-shim
   (:use #:cl)
-  (:export #:main))
+  (:export #:main #:build-shim #:shim-toplevel))
 
 (in-package #:pure-tls/boringssl-shim)
 
