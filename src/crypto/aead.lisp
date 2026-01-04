@@ -348,8 +348,14 @@
    All decryption failures signal TLS-MAC-ERROR to avoid oracles.
    Per RFC 8446, all failures should appear as 'bad_record_mac'."
   (let* ((inner (aead-decrypt cipher ciphertext record-header))
+         ;; Check total decrypted size - RFC 8446 Section 5.4:
+         ;; "The length of TLSPlaintext.fragment MUST NOT exceed 2^14."
+         ;; TLSPlaintext.fragment includes content + type + padding
+         (_ (when (> (length inner) +max-record-size+)
+              (error 'tls-record-overflow :size (length inner))))
          ;; Find the content type (last non-zero byte)
          (content-type-pos (position-if-not #'zerop inner :from-end t)))
+    (declare (ignore _))
     ;; Missing content type is also reported as MAC error to avoid oracle
     (unless content-type-pos
       (error 'tls-mac-error))

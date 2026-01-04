@@ -80,28 +80,38 @@
          (key-share-group (or requested-group *preferred-group*))
          (key-exchange (generate-key-exchange key-share-group))
          ;; Build extensions
+         ;; GREASE values for protocol robustness (RFC 8701)
+         (grease-version (random-grease-value *grease-extension-values*))
+         (grease-group (random-grease-value *grease-group-values*))
+         (grease-cipher (random-grease-value *grease-cipher-suite-values*))
+         ;; Prepend GREASE cipher suite to the list
+         (cipher-suites-with-grease (cons grease-cipher (client-handshake-cipher-suites hs)))
          (extensions (list
                       ;; supported_versions (required for TLS 1.3)
+                      ;; Include GREASE version for robustness testing
                       (make-tls-extension
                        :type +extension-supported-versions+
-                       :data (make-supported-versions-ext :versions (list +tls-1.3+)))
-                      ;; supported_groups
+                       :data (make-supported-versions-ext :versions (list grease-version +tls-1.3+)))
+                      ;; supported_groups (include GREASE group)
                       (make-tls-extension
                        :type +extension-supported-groups+
-                       :data (make-supported-groups-ext :groups *supported-groups*))
+                       :data (make-supported-groups-ext :groups (cons grease-group *supported-groups*)))
                       ;; signature_algorithms
                       (make-tls-extension
                        :type +extension-signature-algorithms+
                        :data (make-signature-algorithms-ext
                               :algorithms (supported-signature-algorithms)))
                       ;; key_share
+                      ;; Note: Adding GREASE key_share entries is not yet supported
+                      ;; (causes test runner timeouts - needs investigation)
                       (make-tls-extension
                        :type +extension-key-share+
                        :data (make-key-share-ext
                               :client-shares
-                              (list (make-key-share-entry
-                                     :group (key-exchange-group key-exchange)
-                                     :key-exchange (key-exchange-public-key key-exchange))))))))
+                              (list
+                               (make-key-share-entry
+                                :group (key-exchange-group key-exchange)
+                                :key-exchange (key-exchange-public-key key-exchange))))))))
     ;; Add SNI if hostname provided
     (when (client-handshake-hostname hs)
       (push (make-tls-extension
@@ -122,6 +132,13 @@
              :type +extension-cookie+
              :data (client-handshake-hrr-cookie hs))
             extensions))
+    ;; Add GREASE extension (RFC 8701) for protocol robustness
+    ;; This helps prevent protocol ossification by ensuring servers
+    ;; properly ignore unknown extension types
+    (push (make-tls-extension
+           :type (random-grease-value *grease-extension-values*)
+           :data (make-grease-ext))
+          extensions)
     ;; Check for cached session ticket for resumption
     (let ((ticket (and (client-handshake-hostname hs)
                        (session-ticket-cache-get (client-handshake-hostname hs)))))
@@ -143,7 +160,7 @@
                   :legacy-version +tls-1.2+
                   :random random
                   :legacy-session-id session-id
-                  :cipher-suites (client-handshake-cipher-suites hs)
+                  :cipher-suites cipher-suites-with-grease
                   :legacy-compression-methods (octet-vector 0)
                   :extensions (nreverse extensions))))
       ;; If offering PSK, add pre_shared_key extension with binder
@@ -825,22 +842,31 @@
   ;; Read more data if needed
   (loop while (not (handshake-buffer-has-complete-message-p
                     (client-handshake-message-buffer hs)))
-        do (multiple-value-bind (content-type data)
-               (record-layer-read (client-handshake-record-layer hs))
-             ;; Handle alerts
-             (when (= content-type +content-type-alert+)
-               (process-alert data))
-             ;; Skip change_cipher_spec (compatibility) - just continue loop
-             (unless (= content-type +content-type-change-cipher-spec+)
-               ;; Must be handshake
-               (unless (= content-type +content-type-handshake+)
-                 (error 'tls-handshake-error
-                        :message (format nil "Expected handshake, got content type ~D" content-type)))
-               ;; Append to buffer
-               (setf (client-handshake-message-buffer hs)
-                     (if (client-handshake-message-buffer hs)
-                         (concat-octet-vectors (client-handshake-message-buffer hs) data)
-                         data)))))
+        do (handler-case
+               (multiple-value-bind (content-type data)
+                   (record-layer-read (client-handshake-record-layer hs))
+                 ;; Handle alerts
+                 (when (= content-type +content-type-alert+)
+                   (process-alert data))
+                 ;; Skip change_cipher_spec (compatibility) - just continue loop
+                 (unless (= content-type +content-type-change-cipher-spec+)
+                   ;; Must be handshake
+                   (unless (= content-type +content-type-handshake+)
+                     (error 'tls-handshake-error
+                            :message (format nil "Expected handshake, got content type ~D" content-type)))
+                   ;; Append to buffer
+                   (setf (client-handshake-message-buffer hs)
+                         (if (client-handshake-message-buffer hs)
+                             (concat-octet-vectors (client-handshake-message-buffer hs) data)
+                             data))))
+             ;; Handle record overflow - send alert and re-signal
+             (tls-record-overflow (e)
+               (handler-case
+                   (record-layer-write-alert (client-handshake-record-layer hs)
+                                             +alert-level-fatal+
+                                             +alert-record-overflow+)
+                 (error () nil))
+               (error e))))
   ;; Extract one message from buffer
   (multiple-value-bind (message-bytes remaining)
       (handshake-buffer-extract-message (client-handshake-message-buffer hs))
@@ -939,13 +965,22 @@
 
 (defun read-raw-handshake-message (hs)
   "Read a raw handshake message before encryption is established."
-  (multiple-value-bind (content-type data)
-      (record-layer-read (client-handshake-record-layer hs))
-    ;; Handle alerts
-    (when (= content-type +content-type-alert+)
-      (process-alert data))
-    ;; Must be handshake
-    (unless (= content-type +content-type-handshake+)
-      (error 'tls-handshake-error
-             :message (format nil "Expected handshake, got content type ~D" content-type)))
-    data))
+  (handler-case
+      (multiple-value-bind (content-type data)
+          (record-layer-read (client-handshake-record-layer hs))
+        ;; Handle alerts
+        (when (= content-type +content-type-alert+)
+          (process-alert data))
+        ;; Must be handshake
+        (unless (= content-type +content-type-handshake+)
+          (error 'tls-handshake-error
+                 :message (format nil "Expected handshake, got content type ~D" content-type)))
+        data)
+    ;; Handle record overflow - send alert and re-signal
+    (tls-record-overflow (e)
+      (handler-case
+          (record-layer-write-alert (client-handshake-record-layer hs)
+                                    +alert-level-fatal+
+                                    +alert-record-overflow+)
+        (error () nil))
+      (error e))))

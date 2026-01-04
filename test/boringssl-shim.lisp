@@ -390,6 +390,12 @@
                   (run-client-test config stream))
             (usocket:socket-close socket))))
 
+    ;; Handle TLS record overflow
+    (pure-tls:tls-record-overflow (e)
+      (declare (ignore e))
+      (format *error-output* ":DATA_LENGTH_TOO_LONG:~%")
+      +exit-failure+)
+
     ;; Handle TLS errors
     (pure-tls:tls-error (e)
       (format *error-output* "TLS error: ~A~%" e)

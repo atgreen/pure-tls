@@ -80,9 +80,13 @@
                (serialize-psk-key-exchange-modes-extension ext-data))
               (#.+extension-pre-shared-key+
                (serialize-pre-shared-key-extension ext-data))
-              (otherwise (if (typep ext-data 'octet-vector)
-                     ext-data
-                     (make-octet-vector 0))))))
+              (otherwise
+               (cond
+                 ((typep ext-data 'grease-ext)
+                  (serialize-grease-extension ext-data))
+                 ((typep ext-data 'octet-vector)
+                  ext-data)
+                 (t (make-octet-vector 0)))))))
       (concat-octet-vectors
        (encode-uint16 ext-type)
        (encode-uint16 (length serialized-data))
@@ -431,3 +435,13 @@
     (#.+extension-psk-key-exchange-modes+ "psk_key_exchange_modes")
     (#.+extension-key-share+ "key_share")
     (otherwise (format nil "unknown(~D)" ext-type))))
+
+;;;; GREASE Extension (RFC 8701)
+
+(defstruct grease-ext
+  "GREASE extension - contains random data to prevent protocol ossification."
+  (data (random-bytes 1) :type octet-vector))
+
+(defun serialize-grease-extension (ext)
+  "Serialize GREASE extension data."
+  (grease-ext-data ext))

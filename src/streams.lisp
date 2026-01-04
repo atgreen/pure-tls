@@ -191,32 +191,41 @@
 
 (defun tls-stream-fill-buffer (stream)
   "Read more data from the record layer into the input buffer."
-  (multiple-value-bind (content-type data)
-      (record-layer-read (tls-stream-record-layer stream))
-    (case content-type
-      (#.+content-type-application-data+
-       (setf (tls-stream-input-buffer stream) data)
-       (setf (tls-stream-input-position stream) 0)
-       t)
-      (#.+content-type-alert+
-       (process-alert data)
-       nil)
-      (#.+content-type-handshake+
-       ;; Post-handshake messages (e.g., NewSessionTicket, KeyUpdate)
-       (let ((msg (parse-handshake-message data)))
-         (case (handshake-message-type msg)
-           (#.+handshake-key-update+
-            (tls-stream-process-key-update stream (handshake-message-body msg)))
-           (#.+handshake-new-session-ticket+
-            ;; NewSessionTicket - cache for session resumption
-            (tls-stream-process-new-session-ticket stream (handshake-message-body msg)))
-           (otherwise
-            ;; Unknown post-handshake message - ignore
-            nil)))
-       ;; Recursively try to get more data
-       (tls-stream-fill-buffer stream))
-      (otherwise
-       (error 'tls-error :message (format nil "Unexpected content type: ~D" content-type))))))
+  (handler-case
+      (multiple-value-bind (content-type data)
+          (record-layer-read (tls-stream-record-layer stream))
+        (case content-type
+          (#.+content-type-application-data+
+           (setf (tls-stream-input-buffer stream) data)
+           (setf (tls-stream-input-position stream) 0)
+           t)
+          (#.+content-type-alert+
+           (process-alert data)
+           nil)
+          (#.+content-type-handshake+
+           ;; Post-handshake messages (e.g., NewSessionTicket, KeyUpdate)
+           (let ((msg (parse-handshake-message data)))
+             (case (handshake-message-type msg)
+               (#.+handshake-key-update+
+                (tls-stream-process-key-update stream (handshake-message-body msg)))
+               (#.+handshake-new-session-ticket+
+                ;; NewSessionTicket - cache for session resumption
+                (tls-stream-process-new-session-ticket stream (handshake-message-body msg)))
+               (otherwise
+                ;; Unknown post-handshake message - ignore
+                nil)))
+           ;; Recursively try to get more data
+           (tls-stream-fill-buffer stream))
+          (otherwise
+           (error 'tls-error :message (format nil "Unexpected content type: ~D" content-type)))))
+    ;; Handle record overflow - send alert and re-signal
+    (tls-record-overflow (e)
+      (handler-case
+          (record-layer-write-alert (tls-stream-record-layer stream)
+                                    +alert-level-fatal+
+                                    +alert-record-overflow+)
+        (error () nil))  ; Ignore errors during alert send
+      (error e))))
 
 (defun tls-stream-buffer-remaining (stream)
   "Return the number of bytes remaining in the input buffer."

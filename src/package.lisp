@@ -64,6 +64,7 @@
    #:tls-verification-error
    #:tls-alert-error
    #:tls-decode-error
+   #:tls-record-overflow
 
    ;; Verification modes
    #:+verify-none+

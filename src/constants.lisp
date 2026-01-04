@@ -144,6 +144,28 @@
 (defconstant +psk-ke-mode-dhe+ 1
   "PSK with (EC)DHE key exchange mode")
 
+;;;; GREASE Values (RFC 8701)
+;;;; GREASE values are of the form 0x?A?A where ? is any hex digit
+
+(defparameter *grease-extension-values*
+  '(#x0A0A #x1A1A #x2A2A #x3A3A #x4A4A #x5A5A #x6A6A #x7A7A
+    #x8A8A #x9A9A #xAAAA #xBABA #xCACA #xDADA #xEAEA #xFAFA)
+  "Reserved GREASE extension type values")
+
+(defparameter *grease-cipher-suite-values*
+  '(#x0A0A #x1A1A #x2A2A #x3A3A #x4A4A #x5A5A #x6A6A #x7A7A
+    #x8A8A #x9A9A #xAAAA #xBABA #xCACA #xDADA #xEAEA #xFAFA)
+  "Reserved GREASE cipher suite values")
+
+(defparameter *grease-group-values*
+  '(#x0A0A #x1A1A #x2A2A #x3A3A #x4A4A #x5A5A #x6A6A #x7A7A
+    #x8A8A #x9A9A #xAAAA #xBABA #xCACA #xDADA #xEAEA #xFAFA)
+  "Reserved GREASE named group values")
+
+(defun random-grease-value (values)
+  "Return a random GREASE value from the list."
+  (nth (random (length values)) values))
+
 ;;;; Verification Modes
 
 (defconstant +verify-none+ 0
