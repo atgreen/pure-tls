@@ -676,11 +676,17 @@
       (asn1-node-value (second (asn1-children parsed))))))
 
 (defun process-certificate-verify (hs message)
-  "Process CertificateVerify message."
+  "Process CertificateVerify message.
+   Verifies the signature AND performs full chain/hostname verification
+   when verify-mode is +verify-peer+ or +verify-required+."
   (let* ((cert-verify (handshake-message-body message))
          (algorithm (certificate-verify-algorithm cert-verify))
          (signature (certificate-verify-signature cert-verify))
-         (cert (client-handshake-peer-certificate hs)))
+         (cert (client-handshake-peer-certificate hs))
+         (chain (client-handshake-peer-certificate-chain hs))
+         (verify-mode (client-handshake-verify-mode hs))
+         (hostname (client-handshake-hostname hs))
+         (trust-store (client-handshake-trust-store hs)))
     ;; Must have a certificate to verify
     (unless cert
       (error 'tls-handshake-error
@@ -689,8 +695,20 @@
     (let* ((ks (client-handshake-key-schedule hs))
            (transcript-hash (key-schedule-transcript-hash-value ks))
            (content (make-certificate-verify-content transcript-hash)))
-      ;; Verify the signature
+      ;; Verify the signature (proves server possesses the private key)
       (verify-certificate-verify-signature cert algorithm signature content))
+    ;; Now perform full certificate verification if required
+    ;; This prevents bypass when using perform-client-handshake directly
+    (when (member verify-mode (list +verify-peer+ +verify-required+))
+      ;; Verify hostname matches certificate
+      (when hostname
+        (verify-hostname cert hostname))
+      ;; Verify certificate chain
+      (when chain
+        (let ((trusted-roots (when trust-store
+                               (trust-store-certificates trust-store))))
+          (verify-certificate-chain chain trusted-roots
+                                    (get-universal-time) hostname))))
     (setf (client-handshake-state hs) :wait-finished)))
 
 ;;;; Finished Processing
