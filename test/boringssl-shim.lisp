@@ -33,6 +33,7 @@
   (shim-id 0 :type integer)
   (is-server nil :type boolean)
   (is-dtls nil :type boolean)
+  (is-quic nil :type boolean)
   (cert-file nil :type (or null string))
   (key-file nil :type (or null string))
   (trust-cert nil :type (or null string))
@@ -54,7 +55,13 @@
   (resume-count 0 :type fixnum)
   (expect-session-miss nil :type boolean)
   (async nil :type boolean)
-  (ipv6 nil :type boolean))
+  (ipv6 nil :type boolean)
+  (curves nil :type (or null list))  ; List of required curve IDs
+  (cert-compression nil :type boolean)  ; Certificate compression
+  (expect-hrr nil :type boolean)  ; HelloRetryRequest expected
+  (ech-grease nil :type boolean)  ; ECH GREASE
+  (psk nil :type (or null string))  ; PSK mode
+  (channel-id nil :type boolean))  ; Channel ID
 
 ;;;; Argument Parsing
 (defun parse-args (args)
@@ -86,6 +93,10 @@
                ;; DTLS mode
                ((string= arg "-dtls")
                 (setf (shim-config-is-dtls config) t))
+
+               ;; QUIC mode
+               ((string= arg "-quic")
+                (setf (shim-config-is-quic config) t))
 
                ;; IPv6
                ((string= arg "-ipv6")
@@ -190,6 +201,45 @@
                ((string= arg "-fallback-scsv")
                 (setf (shim-config-fallback-scsv config) t))
 
+               ;; GREASE (always enabled in pure-tls, just parse the flag)
+               ((string= arg "-enable-grease")
+                ;; GREASE is always enabled in pure-tls, nothing to do
+                nil)
+
+               ;; Curves (colon-separated list of curve IDs)
+               ((string= arg "-curves")
+                (incf i)
+                (when (< i (length args))
+                  (let ((curves-str (elt args i)))
+                    ;; Parse colon-separated curve IDs
+                    (setf (shim-config-curves config)
+                          (loop for start = 0 then (1+ pos)
+                                for pos = (position #\: curves-str :start start)
+                                collect (parse-integer curves-str :start start :end pos)
+                                while pos)))))
+
+               ;; Certificate compression
+               ((string= arg "-install-cert-compression-algs")
+                (setf (shim-config-cert-compression config) t))
+
+               ;; HelloRetryRequest expected
+               ((string= arg "-expect-hrr")
+                (setf (shim-config-expect-hrr config) t))
+
+               ;; ECH GREASE
+               ((string= arg "-enable-ech-grease")
+                (setf (shim-config-ech-grease config) t))
+
+               ;; PSK mode
+               ((string= arg "-psk")
+                (incf i)
+                (when (< i (length args))
+                  (setf (shim-config-psk config) (elt args i))))
+
+               ;; Channel ID
+               ((string= arg "-enable-channel-id")
+                (setf (shim-config-channel-id config) t))
+
                ;; Skip unknown flags but continue
                (t
                 ;; Check if next arg is a value for this flag
@@ -208,6 +258,10 @@
     ((shim-config-is-dtls config)
      :dtls-not-supported)
 
+    ;; QUIC not supported
+    ((shim-config-is-quic config)
+     :quic-not-supported)
+
     ;; Session resumption not fully supported
     ((> (shim-config-resume-count config) 0)
      :resumption-not-supported)
@@ -221,6 +275,43 @@
     ;; Fallback SCSV is TLS 1.2 specific
     ((shim-config-fallback-scsv config)
      :fallback-scsv-not-supported)
+
+    ;; Check for unsupported curves
+    ;; We only support X25519 (29) and secp256r1/P-256 (23)
+    ((let ((curves (shim-config-curves config)))
+       (when curves
+         ;; If curves are specified and NONE of them are supported, skip
+         (not (some (lambda (curve-id)
+                      (or (= curve-id 23)    ; P-256 / secp256r1
+                          (= curve-id 29)))  ; X25519
+                    curves))))
+     :unsupported-curves)
+
+    ;; Client certificate authentication not supported
+    ;; If client mode with cert-file specified, test expects client auth
+    ((and (not (shim-config-is-server config))
+          (shim-config-cert-file config))
+     :client-auth-not-supported)
+
+    ;; Certificate compression not supported
+    ((shim-config-cert-compression config)
+     :cert-compression-not-supported)
+
+    ;; HelloRetryRequest not supported
+    ((shim-config-expect-hrr config)
+     :hrr-not-supported)
+
+    ;; ECH not supported
+    ((shim-config-ech-grease config)
+     :ech-not-supported)
+
+    ;; PSK mode not supported (explicit PSK, not session resumption)
+    ((shim-config-psk config)
+     :psk-not-supported)
+
+    ;; Channel ID not supported (deprecated)
+    ((shim-config-channel-id config)
+     :channel-id-not-supported)
 
     (t nil)))
 

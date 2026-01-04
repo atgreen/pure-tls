@@ -105,8 +105,9 @@
                        :data (make-signature-algorithms-ext
                               :algorithms (supported-signature-algorithms)))
                       ;; key_share
-                      ;; Note: Adding GREASE key_share entries is not yet supported
-                      ;; (causes test runner timeouts - needs investigation)
+                      ;; Note: GREASE key_share entries cause timeouts in the test runner.
+                      ;; This needs more investigation to understand why the handshake
+                      ;; hangs when we include a GREASE key share entry.
                       (make-tls-extension
                        :type +extension-key-share+
                        :data (make-key-share-ext
