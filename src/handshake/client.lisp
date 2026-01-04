@@ -55,6 +55,9 @@
   (offered-psk nil)  ; session-ticket if we offered a PSK
   (psk-accepted nil :type boolean)  ; T if server accepted our PSK
   (resumption-master-secret nil :type (or null octet-vector))  ; For ticket derivation
+  ;; Client authentication (mTLS)
+  (certificate-requested nil :type boolean)  ; T if server sent CertificateRequest
+  (cert-request-context nil :type (or null octet-vector))  ; Context from CertificateRequest
   ;; State
   (state :start))
 
@@ -397,6 +400,21 @@
     ;; In PSK mode with resumption, server skips Certificate/CertificateVerify
     ;; Otherwise, expect Certificate next
     (setf (client-handshake-state hs) :wait-cert-or-finished)))
+
+;;;; CertificateRequest Processing
+
+(defun process-certificate-request (hs message)
+  "Process CertificateRequest message from server.
+   This indicates the server wants client authentication (mTLS).
+   We currently don't support sending client certificates, so we'll send
+   an empty Certificate message later."
+  (let ((cert-req (handshake-message-body message)))
+    ;; Store the certificate_request_context
+    ;; This must be echoed back in our Certificate message
+    (setf (client-handshake-cert-request-context hs)
+          (certificate-request-certificate-request-context cert-req))
+    ;; Mark that client auth was requested
+    (setf (client-handshake-certificate-requested hs) t)))
 
 ;;;; Certificate Processing
 
@@ -778,30 +796,52 @@
 
 ;;;; Client Finished
 
-(defun send-client-finished (hs)
-  "Send client Finished message."
-  (let* ((ks (client-handshake-key-schedule hs))
-         (cipher-suite (client-handshake-selected-cipher-suite hs))
-         ;; Install client handshake keys for writing (before sending Finished)
-         (_  (multiple-value-bind (key iv)
-                 (key-schedule-derive-client-traffic-keys ks :handshake)
-               (record-layer-install-keys
-                (client-handshake-record-layer hs)
-                :write key iv cipher-suite)))
-         ;; Compute verify_data
-         (transcript-hash (key-schedule-transcript-hash-value ks))
-         (verify-data (compute-finished-verify-data
-                       (key-schedule-client-handshake-traffic-secret ks)
-                       transcript-hash
-                       cipher-suite))
-         (finished (make-finished-message :verify-data verify-data))
-         (finished-bytes (serialize-finished finished))
-         (message (wrap-handshake-message +handshake-finished+ finished-bytes)))
-    (declare (ignore _))
-    ;; Update transcript (for resumption master secret)
+(defun send-empty-client-certificate (hs)
+  "Send an empty Certificate message when server requested client auth.
+   In TLS 1.3, if we have no certificate to send, we must still send
+   an empty Certificate message with the request context."
+  (let* ((context (or (client-handshake-cert-request-context hs)
+                      (make-octet-vector 0)))
+         ;; Build Certificate message: context_len(1) + context + cert_list_len(3)
+         ;; Empty certificate list has 0 length
+         (context-len (length context))
+         (message-data (concat-octet-vectors
+                        (octet-vector context-len)
+                        context
+                        (octet-vector 0 0 0)))  ; 3-byte length = 0 (empty cert list)
+         (message (wrap-handshake-message +handshake-certificate+ message-data)))
+    ;; Update transcript
     (client-handshake-update-transcript hs message)
     ;; Send
-    (record-layer-write-handshake (client-handshake-record-layer hs) message)
+    (record-layer-write-handshake (client-handshake-record-layer hs) message)))
+
+(defun send-client-finished (hs)
+  "Send client Finished message.
+   If client auth was requested, sends empty Certificate first."
+  (let* ((ks (client-handshake-key-schedule hs))
+         (cipher-suite (client-handshake-selected-cipher-suite hs)))
+    ;; Install client handshake keys for writing (before sending Certificate/Finished)
+    (multiple-value-bind (key iv)
+        (key-schedule-derive-client-traffic-keys ks :handshake)
+      (record-layer-install-keys
+       (client-handshake-record-layer hs)
+       :write key iv cipher-suite))
+    ;; If server requested client auth, send empty Certificate first
+    (when (client-handshake-certificate-requested hs)
+      (send-empty-client-certificate hs))
+    ;; Compute verify_data using current transcript
+    (let* ((transcript-hash (key-schedule-transcript-hash-value ks))
+           (verify-data (compute-finished-verify-data
+                         (key-schedule-client-handshake-traffic-secret ks)
+                         transcript-hash
+                         cipher-suite))
+           (finished (make-finished-message :verify-data verify-data))
+           (finished-bytes (serialize-finished finished))
+           (message (wrap-handshake-message +handshake-finished+ finished-bytes)))
+      ;; Update transcript (for resumption master secret)
+      (client-handshake-update-transcript hs message)
+      ;; Send
+      (record-layer-write-handshake (client-handshake-record-layer hs) message))
     ;; Derive resumption master secret (for session tickets)
     (key-schedule-derive-resumption-master-secret ks (client-handshake-transcript hs))
     (setf (client-handshake-resumption-master-secret hs)
@@ -923,6 +963,13 @@
          (multiple-value-bind (message raw-bytes)
              (read-handshake-message hs :update-transcript nil)
            (case (handshake-message-type message)
+             (#.+handshake-certificate-request+
+              ;; Server is requesting client certificate (mTLS)
+              ;; Update transcript and remember we need to send a cert later
+              (client-handshake-update-transcript hs raw-bytes)
+              (process-certificate-request hs message)
+              ;; Stay in this state, waiting for server's Certificate
+              )
              (#.+handshake-certificate+
               ;; Update transcript now for Certificate
               (client-handshake-update-transcript hs raw-bytes)
@@ -937,7 +984,7 @@
               (setf (client-handshake-state hs) :wait-finished)
               (process-server-finished hs message raw-bytes))
              (otherwise (error 'tls-handshake-error
-                       :message "Expected Certificate or Finished"
+                       :message "Expected CertificateRequest, Certificate or Finished"
                        :state :wait-cert-or-finished)))))
         (:wait-certificate-verify
          (let ((message (read-handshake-message hs)))

@@ -67,14 +67,12 @@
     (let* ((content-type (aref header 0))
            (version (decode-uint16 header 1))
            (length (decode-uint16 header 3)))
-      ;; Validate legacy_record_version per RFC 8446 Section 5.1:
-      ;; - MUST be 0x0303 for all records except initial ClientHello
-      ;; - Initial ClientHello MAY use 0x0301 for compatibility
-      ;; We accept both 0x0301 and 0x0303 for interoperability
-      (unless (member version (list +tls-1.0+ +tls-1.2+))
-        (error 'tls-decode-error
-               :message (format nil "Invalid legacy_record_version: ~4,'0X (expected 0x0301 or 0x0303)"
-                                version)))
+      ;; Per RFC 8446 Section 5.1:
+      ;; "Implementations SHOULD NOT enforce this restriction [version checking],
+      ;;  as otherwise they may reject compliant peers."
+      ;; We accept any version value for maximum compatibility.
+      ;; The version field is essentially ignored in TLS 1.3 but we preserve
+      ;; it in the record structure for potential debugging use.
       ;; Validate length
       (when (> length +max-record-size-with-padding+)
         (error 'tls-record-overflow :size length))

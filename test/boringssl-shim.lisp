@@ -298,14 +298,15 @@
                  (shim-config-expect-alpn config) negotiated))))
 
     ;; Exchange test data
+    ;; Use a large buffer to handle LargePlaintext tests (up to 16KB)
     (if (shim-config-shim-writes-first config)
         (progn
           (write-sequence (babel:string-to-octets "hello") tls-stream)
           (force-output tls-stream)
-          (let ((buf (make-array 1024 :element-type '(unsigned-byte 8))))
+          (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
             (read-sequence buf tls-stream)))
         (progn
-          (let ((buf (make-array 1024 :element-type '(unsigned-byte 8))))
+          (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
             (let ((n (read-sequence buf tls-stream)))
               (when (> n 0)
                 (write-sequence buf tls-stream :end n)
@@ -337,14 +338,15 @@
               :sni-callback sni-callback)))
 
       ;; Exchange test data
+      ;; Use a large buffer to handle LargePlaintext tests (up to 16KB)
       (if (shim-config-shim-writes-first config)
           (progn
             (write-sequence (babel:string-to-octets "hello") tls-stream)
             (force-output tls-stream)
-            (let ((buf (make-array 1024 :element-type '(unsigned-byte 8))))
+            (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
               (read-sequence buf tls-stream)))
           (progn
-            (let ((buf (make-array 1024 :element-type '(unsigned-byte 8))))
+            (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
               (let ((n (read-sequence buf tls-stream)))
                 (when (> n 0)
                   (write-sequence buf tls-stream :end n)
