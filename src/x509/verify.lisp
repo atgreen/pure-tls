@@ -344,7 +344,15 @@
    TBS is the to-be-signed data (raw bytes).
    SIGNATURE is the signature bytes.
    HASH-ALGO is the hash algorithm keyword (:sha256, :sha384, :sha512).
-   Note: SHA-1 is rejected as cryptographically broken."
+
+   Note: This implements PKCS#1 v1.5 verification using Ironclad's RSA
+   primitives (expt-mod) for the core modular exponentiation. Ironclad's
+   verify-signature does not support PKCS#1 v1.5 mode (only raw RSA and
+   RSA-PSS), so custom padding verification is required.
+
+   Security: SHA-1 is rejected as cryptographically broken. Padding is
+   validated per RFC 8017 with minimum 8 bytes of 0xFF, and DigestInfo
+   length must exactly match (no trailing garbage allowed)."
   ;; Reject SHA-1 - it's cryptographically broken for certificate signatures
   (when (eq hash-algo :sha1)
     (return-from verify-rsa-pkcs1v15-signature nil))
