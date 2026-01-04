@@ -55,14 +55,67 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
                          :private-key private-key
                          :public-key public-key-bytes))))
 
-(defun secp256r1-compute-shared-secret (key-exchange peer-public-key)
-  "Compute the secp256r1 shared secret from our private key and peer's public key."
-  ;; peer-public-key should be in uncompressed format: 04 || x || y
-  (unless (and (>= (length peer-public-key) 65)
-               (= (aref peer-public-key 0) #x04))
+;; secp256r1 curve parameters (NIST P-256)
+(defconstant +secp256r1-p+
+  #xffffffff00000001000000000000000000000000ffffffffffffffffffffffff
+  "The prime p for secp256r1")
+
+(defconstant +secp256r1-a+
+  #xffffffff00000001000000000000000000000000fffffffffffffffffffffffc
+  "The curve parameter a for secp256r1 (equals p - 3)")
+
+(defconstant +secp256r1-b+
+  #x5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b
+  "The curve parameter b for secp256r1")
+
+(defun secp256r1-point-on-curve-p (x y)
+  "Check if point (x, y) lies on the secp256r1 curve.
+   Curve equation: y² ≡ x³ + ax + b (mod p)"
+  (let* ((p +secp256r1-p+)
+         (a +secp256r1-a+)
+         (b +secp256r1-b+)
+         ;; Compute y² mod p
+         (y-squared (mod (* y y) p))
+         ;; Compute x³ + ax + b mod p
+         (x-cubed (mod (* x x x) p))
+         (ax (mod (* a x) p))
+         (rhs (mod (+ x-cubed ax b) p)))
+    (= y-squared rhs)))
+
+(defun validate-secp256r1-public-key (peer-public-key)
+  "Validate a secp256r1 public key per RFC 8446 §4.2.8.2.
+   Returns (values x y) if valid, signals error otherwise."
+  ;; Check format: must be uncompressed (04 || x || y), exactly 65 bytes
+  (unless (= (length peer-public-key) 65)
     (error 'tls-crypto-error
            :operation "secp256r1 key exchange"
-           :message "Invalid peer public key format"))
+           :message (format nil "Invalid key length: ~D (expected 65)" (length peer-public-key))))
+  (unless (= (aref peer-public-key 0) #x04)
+    (error 'tls-crypto-error
+           :operation "secp256r1 key exchange"
+           :message "Invalid key format: expected uncompressed point (0x04 prefix)"))
+  ;; Extract x and y coordinates (big-endian, 32 bytes each)
+  (let ((x (ironclad:octets-to-integer peer-public-key :start 1 :end 33))
+        (y (ironclad:octets-to-integer peer-public-key :start 33 :end 65)))
+    ;; Check coordinates are in valid range [1, p-1]
+    (unless (and (< 0 x +secp256r1-p+)
+                 (< 0 y +secp256r1-p+))
+      (error 'tls-crypto-error
+             :operation "secp256r1 key exchange"
+             :message "Point coordinates out of range"))
+    ;; Check point is on curve
+    (unless (secp256r1-point-on-curve-p x y)
+      (error 'tls-crypto-error
+             :operation "secp256r1 key exchange"
+             :message "Point not on curve - possible invalid curve attack"))
+    (values x y)))
+
+(defun secp256r1-compute-shared-secret (key-exchange peer-public-key)
+  "Compute the secp256r1 shared secret from our private key and peer's public key.
+   Validates that the peer's public key is a valid point on the curve."
+  ;; Validate peer public key (signals error if invalid)
+  (validate-secp256r1-public-key peer-public-key)
+  ;; Proceed with ECDH
   (let* ((private-key (key-exchange-private-key key-exchange))
          (peer-key (ironclad:make-public-key :secp256r1 :y peer-public-key)))
     (ironclad:diffie-hellman private-key peer-key)))
