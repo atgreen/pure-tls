@@ -142,10 +142,19 @@
       (multiple-value-bind (cert-chain priv-key)
           (funcall (server-handshake-sni-callback hs)
                    (server-handshake-client-hostname hs))
-        (when cert-chain
-          (setf (server-handshake-certificate-chain hs) cert-chain))
-        (when priv-key
-          (setf (server-handshake-private-key hs) priv-key))))
+        (cond
+          ;; Callback returned :reject - send unrecognized_name alert
+          ((eq cert-chain :reject)
+           (record-layer-write-alert (server-handshake-record-layer hs)
+                                     +alert-level-fatal+ +alert-unrecognized-name+)
+           (error 'tls-alert-error
+                  :level +alert-level-fatal+
+                  :description +alert-unrecognized-name+))
+          ;; Callback returned certificate chain - use it
+          (cert-chain
+           (setf (server-handshake-certificate-chain hs) cert-chain)
+           (when priv-key
+             (setf (server-handshake-private-key hs) priv-key))))))
     ;; Verify we have a certificate after SNI callback
     (unless (server-handshake-certificate-chain hs)
       (error 'tls-handshake-error

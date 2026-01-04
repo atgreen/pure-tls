@@ -374,6 +374,7 @@
 
 (defun make-tls-client-stream (socket &key
                                         hostname
+                                        sni-hostname
                                         (context (ensure-default-context))
                                         (verify (tls-context-verify-mode context))
                                         alpn-protocols
@@ -384,6 +385,7 @@
 
    SOCKET - The underlying TCP stream or socket.
    HOSTNAME - Server hostname for SNI and verification.
+   SNI-HOSTNAME - Override hostname for SNI only (no verification).
    CONTEXT - TLS context for configuration.
    VERIFY - Certificate verification mode.
    ALPN-PROTOCOLS - List of ALPN protocol names to offer.
@@ -397,23 +399,27 @@
                                 :close-callback close-callback
                                 :buffer-size buffer-size))
          (record-layer (make-record-layer socket))
-         (trust-store (tls-context-trust-store context)))
+         (trust-store (tls-context-trust-store context))
+         ;; SNI uses sni-hostname if provided, otherwise hostname
+         (sni-name (or sni-hostname hostname)))
     (setf (tls-stream-record-layer stream) record-layer)
     ;; Perform handshake (CertificateVerify is verified during handshake)
+    ;; Skip hostname verification if only sni-hostname is provided (no hostname)
     (let ((hs (perform-client-handshake
                record-layer
-               :hostname hostname
+               :hostname sni-name
                :alpn-protocols (or alpn-protocols
                                    (tls-context-alpn-protocols context))
                :verify-mode verify
-               :trust-store trust-store)))
+               :trust-store trust-store
+               :skip-hostname-verify (and sni-hostname (null hostname)))))
       (setf (tls-stream-handshake stream) hs)
       ;; Verify certificate chain and hostname if verification enabled
       (when (and (member verify (list +verify-peer+ +verify-required+))
                  (client-handshake-peer-certificate hs))
         (let ((cert (client-handshake-peer-certificate hs))
               (chain (client-handshake-peer-certificate-chain hs)))
-          ;; Verify hostname
+          ;; Verify hostname - only if hostname (not just sni-hostname) was provided
           (when hostname
             (verify-hostname cert hostname))
           ;; Verify certificate chain for both +verify-peer+ and +verify-required+

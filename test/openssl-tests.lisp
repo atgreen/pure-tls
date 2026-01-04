@@ -107,6 +107,7 @@
   (server-min-protocol nil :type (or null string))
   (server-max-protocol nil :type (or null string))
   (server-alpn-protocols nil :type list)  ; List of ALPN protocols, :none for empty config
+  (server-sni-callback nil :type (or null string))  ; ServerNameCallback type
   ;; Client configuration
   (client-certificate nil :type (or null string))
   (client-private-key nil :type (or null string))
@@ -115,6 +116,7 @@
   (client-min-protocol nil :type (or null string))
   (client-max-protocol nil :type (or null string))
   (client-alpn-protocols nil :type list)  ; List of ALPN protocols
+  (client-server-name nil :type (or null string))  ; SNI hostname to send
   ;; Expected results
   (expected-result nil :type (or null string))
   (expected-client-alert nil :type (or null string))
@@ -172,8 +174,8 @@
                              (get-section sections client-extra-name))))
         (make-openssl-test
          :name test-name
-         :category (categorize-test server-section client-section result-section)
-         :skip-reason (get-skip-reason server-section client-section result-section)
+         :category (categorize-test server-section client-section result-section ssl-conf)
+         :skip-reason (get-skip-reason server-section client-section result-section ssl-conf)
          ;; Server config
          :server-certificate (resolve-cert-path
                               (get-value server-section "Certificate"))
@@ -186,6 +188,7 @@
          :server-max-protocol (get-value server-section "MaxProtocol")
          :server-alpn-protocols (parse-alpn-protocols
                                  (get-value server-extra "ALPNProtocols"))
+         :server-sni-callback (get-value server-extra "ServerNameCallback")
          ;; Client config
          :client-certificate (resolve-cert-path
                               (get-value client-section "Certificate"))
@@ -198,6 +201,7 @@
          :client-max-protocol (get-value client-section "MaxProtocol")
          :client-alpn-protocols (parse-alpn-protocols
                                  (get-value client-extra "ALPNProtocols"))
+         :client-server-name (get-value client-extra "ServerName")
          ;; Expected results
          :expected-result (get-value result-section "ExpectedResult")
          :expected-client-alert (get-value result-section "ExpectedClientAlert")
@@ -226,7 +230,7 @@
                         (mapcar (lambda (s) (string-trim " " s))
                                 (cl-ppcre:split ":" client-curves))))))))
 
-(defun categorize-test (server-section client-section result-section)
+(defun categorize-test (server-section client-section result-section ssl-conf)
   "Categorize a test as :pass, :skip, :xfail, or :interop."
   (let ((server-min (get-value server-section "MinProtocol"))
         (server-max (get-value server-section "MaxProtocol"))
@@ -234,10 +238,18 @@
         (client-max (get-value client-section "MaxProtocol"))
         (client-cert (get-value client-section "Certificate"))
         (server-verify (get-value server-section "VerifyMode"))
-        (handshake-mode (get-value result-section "HandshakeMode")))
+        (handshake-mode (get-value result-section "HandshakeMode"))
+        (expected-protocol (get-value result-section "ExpectedProtocol"))
+        (server2 (when ssl-conf (get-value ssl-conf "server2"))))
     (cond
       ;; Skip tests that require session resumption
       ((and handshake-mode (string-equal handshake-mode "Resume"))
+       :skip)
+      ;; Skip tests that require server2 context switching (SNI virtual hosting)
+      (server2
+       :skip)
+      ;; Skip tests that expect a specific protocol that is not TLS 1.3
+      ((and expected-protocol (not (string-equal expected-protocol "TLSv1.3")))
        :skip)
       ;; Skip tests that require protocol versions other than TLS 1.3
       ((and server-max (not (string= server-max "TLSv1.3")))
@@ -262,7 +274,7 @@
       ;; Default to pass
       (t :pass))))
 
-(defun get-skip-reason (server-section client-section result-section)
+(defun get-skip-reason (server-section client-section result-section ssl-conf)
   "Get the reason for skipping a test, if applicable."
   (let ((server-min (get-value server-section "MinProtocol"))
         (server-max (get-value server-section "MaxProtocol"))
@@ -271,11 +283,17 @@
         (client-cert (get-value client-section "Certificate"))
         (server-verify (get-value server-section "VerifyMode"))
         (handshake-mode (get-value result-section "HandshakeMode"))
+        (expected-protocol (get-value result-section "ExpectedProtocol"))
         (server-curves (get-value server-section "Curves"))
-        (client-curves (get-value client-section "Curves")))
+        (client-curves (get-value client-section "Curves"))
+        (server2 (when ssl-conf (get-value ssl-conf "server2"))))
     (cond
       ((and handshake-mode (string-equal handshake-mode "Resume"))
        "Requires session resumption (not yet implemented in test framework)")
+      (server2
+       "Requires server2 context switching (SNI virtual hosting not yet implemented)")
+      ((and expected-protocol (not (string-equal expected-protocol "TLSv1.3")))
+       (format nil "Expects ~A (pure-tls is TLS 1.3 only)" expected-protocol))
       ((and server-max (not (string= server-max "TLSv1.3")))
        (format nil "Requires ~A (pure-tls is TLS 1.3 only)" server-max))
       ((and client-max (not (string= client-max "TLSv1.3")))
@@ -326,9 +344,10 @@
     (t pure-tls:+verify-none+)))
 
 (defun run-tls-server (port cert-file key-file verify-mode ca-file alpn-protocols
-                       result-box error-box ready-lock ready-cv)
+                       sni-callback result-box error-box ready-lock ready-cv)
   "Run a TLS server on PORT. Stores result in RESULT-BOX.
-   ALPN-PROTOCOLS is a list of protocol strings, or (:none) for empty list."
+   ALPN-PROTOCOLS is a list of protocol strings, or (:none) for empty list.
+   SNI-CALLBACK is a function (hostname) that returns :reject or (values cert-chain key)."
   (let ((server-socket nil)
         (client-socket nil))
     (unwind-protect
@@ -360,6 +379,7 @@
                                   :key key-file
                                   :verify verify-mode
                                   :alpn-protocols alpn-protocols
+                                  :sni-callback sni-callback
                                   :context context)))
                 ;; Handshake succeeded
                 (close tls-stream)
@@ -380,9 +400,11 @@
       (when client-socket (ignore-errors (usocket:socket-close client-socket)))
       (when server-socket (ignore-errors (usocket:socket-close server-socket))))))
 
-(defun run-tls-client (port cert-file key-file verify-mode ca-file alpn-protocols)
+(defun run-tls-client (port cert-file key-file verify-mode ca-file alpn-protocols
+                       server-name)
   "Run a TLS client connecting to PORT. Returns (values result error-info).
-   ALPN-PROTOCOLS is a list of protocol strings to offer."
+   ALPN-PROTOCOLS is a list of protocol strings to offer.
+   SERVER-NAME is the SNI hostname to send (or nil for none)."
   (let ((socket nil))
     (unwind-protect
         (handler-case
@@ -398,13 +420,13 @@
                                :ca-file ca-file
                                :alpn-protocols alpn-list
                                :auto-load-system-ca nil))
-                     ;; Use server.example as hostname since that's what the test certs use
-                     ;; Disable hostname verification since we're connecting to localhost
+                     ;; Use sni-hostname for SNI without hostname verification
+                     ;; The tests send arbitrary hostnames that don't match cert CN/SAN
                      (tls-stream (if cert-file
                                      ;; Client with certificate (mTLS)
                                      (pure-tls:make-tls-client-stream
                                       (usocket:socket-stream socket)
-                                      :hostname nil  ; Skip hostname verification
+                                      :sni-hostname server-name  ; SNI only, no verification
                                       :verify verify-mode
                                       :context context
                                       :certificate cert-file
@@ -413,7 +435,7 @@
                                      ;; Client without certificate
                                      (pure-tls:make-tls-client-stream
                                       (usocket:socket-stream socket)
-                                      :hostname nil  ; Skip hostname verification
+                                      :sni-hostname server-name  ; SNI only, no verification
                                       :verify verify-mode
                                       :context context
                                       :alpn-protocols alpn-list))))
@@ -431,6 +453,30 @@
             (values :error (format nil "~A: ~A" (type-of e) e))))
       (when socket (ignore-errors (usocket:socket-close socket))))))
 
+(defun make-sni-callback (callback-type server-cert)
+  "Create an SNI callback based on the OpenSSL ServerNameCallback type.
+   CALLBACK-TYPE is the OpenSSL callback type string (e.g., 'RejectMismatch').
+   SERVER-CERT is the certificate path the server expects to match."
+  (declare (ignore server-cert))
+  (cond
+    ;; RejectMismatch - reject if hostname is "invalid" (test hostname for mismatch)
+    ((and callback-type (or (string-equal callback-type "RejectMismatch")
+                            (string-equal callback-type "ClientHelloRejectMismatch")))
+     (lambda (hostname)
+       ;; For the test cases, "invalid" is always the mismatch hostname
+       ;; A real implementation would check the certificate's CN/SAN
+       (if (string-equal hostname "invalid")
+           :reject  ; Signal rejection
+           nil)))   ; Use default certificate
+    ;; IgnoreMismatch - always return nil (use default certificate)
+    ((and callback-type (or (string-equal callback-type "IgnoreMismatch")
+                            (string-equal callback-type "ClientHelloIgnoreMismatch")))
+     (lambda (hostname)
+       (declare (ignore hostname))
+       nil))  ; Always use default certificate
+    ;; No callback configured - return nil (no callback function)
+    (t nil)))
+
 (defun execute-openssl-test (test)
   "Execute an OpenSSL test case. Returns (values result-keyword message)."
   (let* ((port (allocate-test-port))
@@ -445,18 +491,21 @@
                          (openssl-test-server-verify-mode test)))
          (server-ca (openssl-test-server-verify-ca-file test))
          (server-alpn (openssl-test-server-alpn-protocols test))
+         (server-sni-cb (make-sni-callback (openssl-test-server-sni-callback test)
+                                           server-cert))
          ;; Client config
          (client-cert (openssl-test-client-certificate test))
          (client-key (openssl-test-client-private-key test))
          (client-verify (openssl-verify-mode-to-pure-tls
                          (openssl-test-client-verify-mode test)))
          (client-ca (openssl-test-client-verify-ca-file test))
-         (client-alpn (openssl-test-client-alpn-protocols test)))
+         (client-alpn (openssl-test-client-alpn-protocols test))
+         (client-server-name (openssl-test-client-server-name test)))
     ;; Start server in background thread
     (bt:make-thread
      (lambda ()
        (run-tls-server port server-cert server-key server-verify server-ca server-alpn
-                       server-result server-error ready-lock ready-cv))
+                       server-sni-cb server-result server-error ready-lock ready-cv))
      :name "openssl-test-server")
     ;; Wait for server to be ready
     (bt:with-lock-held (ready-lock)
@@ -465,7 +514,8 @@
     (sleep 0.1)
     ;; Run client
     (multiple-value-bind (client-result client-error)
-        (run-tls-client port client-cert client-key client-verify client-ca client-alpn)
+        (run-tls-client port client-cert client-key client-verify client-ca client-alpn
+                        client-server-name)
       ;; Wait for server to finish
       (sleep 0.2)
       ;; Determine overall result

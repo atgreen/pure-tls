@@ -100,7 +100,8 @@ Or add to your ASDF system:
 
 ```lisp
 (defun my-sni-callback (hostname)
-  "Return certificate and key based on client-requested hostname."
+  "Return certificate and key based on client-requested hostname.
+   Return :reject to send an unrecognized_name alert and abort the handshake."
   (cond
     ((string= hostname "site-a.example.com")
      (values (pure-tls:load-certificate-chain "/certs/site-a.pem")
@@ -108,6 +109,8 @@ Or add to your ASDF system:
     ((string= hostname "site-b.example.com")
      (values (pure-tls:load-certificate-chain "/certs/site-b.pem")
              (pure-tls:load-private-key "/certs/site-b-key.pem")))
+    ((string= hostname "blocked.example.com")
+     :reject)  ; Reject unknown/blocked hostnames with unrecognized_name alert
     (t nil)))  ; Use default certificate
 
 (pure-tls:make-tls-server-stream stream
@@ -183,12 +186,13 @@ Execute BODY with VAR bound to a TLS client stream. The stream is automatically 
 
 Execute BODY with VAR bound to a TLS server stream. The stream is automatically closed when BODY exits.
 
-#### `make-tls-client-stream` (socket &key hostname context verify alpn-protocols close-callback external-format buffer-size)
+#### `make-tls-client-stream` (socket &key hostname sni-hostname context verify alpn-protocols close-callback external-format buffer-size)
 
 Create a TLS client stream over a TCP socket.
 
 - `socket` - The underlying TCP stream
 - `hostname` - Server hostname for SNI and certificate verification
+- `sni-hostname` - Override hostname for SNI only (no certificate hostname verification)
 - `context` - TLS context for configuration (optional)
 - `verify` - Certificate verification mode: `+verify-none+`, `+verify-peer+`, or `+verify-required+`
 - `alpn-protocols` - List of ALPN protocol names to offer
@@ -206,7 +210,7 @@ Create a TLS server stream over a TCP socket.
 - `key` - Private key (Ironclad key object or path to PEM file)
 - `verify` - Client certificate verification mode: `+verify-none+`, `+verify-peer+`, or `+verify-required+`
 - `alpn-protocols` - List of ALPN protocol names the server supports
-- `sni-callback` - Function called with client's requested hostname, returns (VALUES cert-chain private-key) or NIL
+- `sni-callback` - Function called with client's requested hostname, returns (VALUES cert-chain private-key), NIL to use defaults, or :REJECT to abort with unrecognized_name alert
 - `close-callback` - Function called when stream is closed
 - `external-format` - If specified, wrap in a flexi-stream for character I/O
 - `buffer-size` - Size of I/O buffers (default 16384)

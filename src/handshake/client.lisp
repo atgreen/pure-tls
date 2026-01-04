@@ -18,6 +18,8 @@
   (verify-mode +verify-required+ :type fixnum)
   ;; Trust store for certificate verification
   (trust-store nil)
+  ;; Skip hostname verification (for SNI-only hostname)
+  (skip-hostname-verify nil :type boolean)
   ;; Cipher suites we support (in preference order)
   ;; ChaCha20-Poly1305 is preferred when available because it provides
   ;; better side-channel resistance than AES-GCM in pure software implementations.
@@ -700,8 +702,8 @@
     ;; Now perform full certificate verification if required
     ;; This prevents bypass when using perform-client-handshake directly
     (when (member verify-mode (list +verify-peer+ +verify-required+))
-      ;; Verify hostname matches certificate
-      (when hostname
+      ;; Verify hostname matches certificate (unless skip-hostname-verify is set)
+      (when (and hostname (not (client-handshake-skip-hostname-verify hs)))
         (verify-hostname cert hostname))
       ;; Verify certificate chain
       (when chain
@@ -848,15 +850,18 @@
 
 (defun perform-client-handshake (record-layer &key hostname alpn-protocols
                                                    (verify-mode +verify-required+)
-                                                   trust-store)
+                                                   trust-store
+                                                   skip-hostname-verify)
   "Perform the TLS 1.3 client handshake.
    Returns a CLIENT-HANDSHAKE structure on success.
-   TRUST-STORE is used for certificate chain verification when verify-mode is +verify-required+."
+   TRUST-STORE is used for certificate chain verification when verify-mode is +verify-required+.
+   SKIP-HOSTNAME-VERIFY when true skips hostname verification (for SNI-only hostname)."
   (let ((hs (make-client-handshake
              :hostname hostname
              :alpn-protocols alpn-protocols
              :verify-mode verify-mode
              :trust-store trust-store
+             :skip-hostname-verify skip-hostname-verify
              :record-layer record-layer)))
     ;; Send ClientHello
     (send-client-hello hs)
