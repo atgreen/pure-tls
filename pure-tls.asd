@@ -84,4 +84,5 @@
                              (:file "certificate-tests")
                              (:file "network-tests")
                              (:file "openssl-tests")
+                             (:file "boringssl-tests")
                              (:file "runner")))))

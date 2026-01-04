@@ -132,27 +132,31 @@ Implement a pure-tls shim following `PORTING.md`:
 2. Build shim infrastructure incrementally
 3. Run both standalone and shim tests
 
-## Action Plan
+## Implementation Status
 
-### Phase 1: Key Files and Patterns
-- [ ] Copy `*.pem` key files to `test/certs/boringssl/`
-- [ ] Create `test/boringssl-patterns.lisp` with translated test cases
-- [ ] Document ProtocolBugs coverage in test comments
+### Phase 1: Key Files and Patterns ✅ COMPLETE
+- [x] Copy `*.pem` key files to `test/certs/boringssl/`
+- [x] Create `test/boringssl-tests.lisp` with translated test cases
+- [x] Document ProtocolBugs coverage in test comments
+- [x] Verify key files load correctly (RSA-2048, ECDSA P-256, P-384)
 
-### Phase 2: PKI Test Data
-- [ ] Identify relevant certificate chain test cases
-- [ ] Copy test certificates for chain validation
-- [ ] Add name constraint and policy tests
+### Phase 2: Shim Binary (PREPARED)
+- [x] Create `test/boringssl-shim.lisp` with command-line parsing
+- [x] Implement core configuration structure
+- [x] Document exit codes (0=success, 89=unimplemented, 90=expected-failure)
+- [ ] Build and test against BoringSSL runner (future work)
 
-### Phase 3: Shim Prototype
-- [ ] Implement minimal shim (handshake only)
-- [ ] Add flag parsing for core options
-- [ ] Run basic handshake tests via runner
+### Phase 3: Test Coverage
+Current tests validate:
+- Key file loading from BoringSSL test suite
+- TLS 1.3 cipher suite definitions
+- Alert code definitions
+- ProtocolBugs checklist documentation
 
-### Phase 4: Full Shim
-- [ ] Extend shim for all supported features
+### Future Work
+- [ ] Implement full shim binary for running against BoringSSL runner
+- [ ] Add PKI test data from `pki/testdata/`
 - [ ] Integrate with CI/CD pipeline
-- [ ] Track test coverage against BoringSSL suite
 
 ## Key Files Reference
 
