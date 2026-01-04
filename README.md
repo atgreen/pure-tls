@@ -499,7 +499,24 @@ The test suite validates:
 
 ## Limitations
 
-- No 0-RTT early data
+### Not Supported
+
+- **0-RTT early data** - Disabled for security (replay attack concerns)
+- **DTLS** - Datagram TLS (UDP-based) is not implemented
+- **Post-quantum algorithms** - ML-KEM, ML-DSA, etc. are not yet supported
+- **Certificate compression** - RFC 8879 is not implemented
+
+### Limited Support
+
+- **Elliptic curves** - Only X25519 and secp256r1 (P-256) are supported. The following are not implemented:
+  - P-384 (secp384r1), P-521 (secp521r1)
+  - Brainpool curves (brainpoolP256r1, brainpoolP384r1, brainpoolP512r1)
+  - Legacy curves (sect233k1, sect283k1, secp224r1, etc.)
+
+- **Signature algorithms** - Only RSA-PSS, ECDSA-P256, and ECDSA-P384 are supported. Not implemented:
+  - Ed25519, Ed448
+  - DSA
+  - RSA-PKCS1 (deprecated in TLS 1.3 but still seen in some certificates)
 
 ## Acknowledgments
 

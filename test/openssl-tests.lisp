@@ -106,6 +106,7 @@
   (server-verify-ca-file nil :type (or null string))
   (server-min-protocol nil :type (or null string))
   (server-max-protocol nil :type (or null string))
+  (server-alpn-protocols nil :type list)  ; List of ALPN protocols, :none for empty config
   ;; Client configuration
   (client-certificate nil :type (or null string))
   (client-private-key nil :type (or null string))
@@ -113,6 +114,7 @@
   (client-verify-ca-file nil :type (or null string))
   (client-min-protocol nil :type (or null string))
   (client-max-protocol nil :type (or null string))
+  (client-alpn-protocols nil :type list)  ; List of ALPN protocols
   ;; Expected results
   (expected-result nil :type (or null string))
   (expected-client-alert nil :type (or null string))
@@ -133,6 +135,15 @@
                       certs-dir)))
       resolved)))
 
+(defun parse-alpn-protocols (alpn-string)
+  "Parse comma-separated ALPN protocols string.
+   Returns a list of protocol strings, or :none if explicitly empty."
+  (cond
+    ((null alpn-string) nil)              ; Not configured
+    ((string= alpn-string "") '(:none))   ; Explicitly empty
+    (t (mapcar (lambda (s) (string-trim " " s))
+               (cl-ppcre:split "," alpn-string)))))
+
 (defun extract-test (sections test-index)
   "Extract a single test case from parsed sections."
   (let* ((test-key (format nil "test-~D" test-index))
@@ -151,7 +162,14 @@
                                (get-section sections server-section-name)))
              (client-section (when client-section-name
                                (get-section sections client-section-name)))
-             (result-section (get-section sections test-key)))
+             (result-section (get-section sections test-key))
+             ;; Extra sections for ALPN, etc. (referenced from result-section)
+             (server-extra-name (get-value result-section "server"))
+             (client-extra-name (get-value result-section "client"))
+             (server-extra (when server-extra-name
+                             (get-section sections server-extra-name)))
+             (client-extra (when client-extra-name
+                             (get-section sections client-extra-name))))
         (make-openssl-test
          :name test-name
          :category (categorize-test server-section client-section result-section)
@@ -166,6 +184,8 @@
                                  (get-value server-section "VerifyCAFile"))
          :server-min-protocol (get-value server-section "MinProtocol")
          :server-max-protocol (get-value server-section "MaxProtocol")
+         :server-alpn-protocols (parse-alpn-protocols
+                                 (get-value server-extra "ALPNProtocols"))
          ;; Client config
          :client-certificate (resolve-cert-path
                               (get-value client-section "Certificate"))
@@ -176,6 +196,8 @@
                                  (get-value client-section "VerifyCAFile"))
          :client-min-protocol (get-value client-section "MinProtocol")
          :client-max-protocol (get-value client-section "MaxProtocol")
+         :client-alpn-protocols (parse-alpn-protocols
+                                 (get-value client-extra "ALPNProtocols"))
          ;; Expected results
          :expected-result (get-value result-section "ExpectedResult")
          :expected-client-alert (get-value result-section "ExpectedClientAlert")
@@ -183,14 +205,17 @@
 
 (defun categorize-test (server-section client-section result-section)
   "Categorize a test as :pass, :skip, :xfail, or :interop."
-  (declare (ignore result-section))
   (let ((server-min (get-value server-section "MinProtocol"))
         (server-max (get-value server-section "MaxProtocol"))
         (client-min (get-value client-section "MinProtocol"))
         (client-max (get-value client-section "MaxProtocol"))
         (client-cert (get-value client-section "Certificate"))
-        (server-verify (get-value server-section "VerifyMode")))
+        (server-verify (get-value server-section "VerifyMode"))
+        (handshake-mode (get-value result-section "HandshakeMode")))
     (cond
+      ;; Skip tests that require session resumption
+      ((and handshake-mode (string-equal handshake-mode "Resume"))
+       :skip)
       ;; Skip tests that require protocol versions other than TLS 1.3
       ((and server-max (not (string= server-max "TLSv1.3")))
        :skip)
@@ -213,14 +238,16 @@
 
 (defun get-skip-reason (server-section client-section result-section)
   "Get the reason for skipping a test, if applicable."
-  (declare (ignore result-section))
   (let ((server-min (get-value server-section "MinProtocol"))
         (server-max (get-value server-section "MaxProtocol"))
         (client-min (get-value client-section "MinProtocol"))
         (client-max (get-value client-section "MaxProtocol"))
         (client-cert (get-value client-section "Certificate"))
-        (server-verify (get-value server-section "VerifyMode")))
+        (server-verify (get-value server-section "VerifyMode"))
+        (handshake-mode (get-value result-section "HandshakeMode")))
     (cond
+      ((and handshake-mode (string-equal handshake-mode "Resume"))
+       "Requires session resumption (not yet implemented in test framework)")
       ((and server-max (not (string= server-max "TLSv1.3")))
        (format nil "Requires ~A (pure-tls is TLS 1.3 only)" server-max))
       ((and client-max (not (string= client-max "TLSv1.3")))
@@ -267,8 +294,10 @@
     ((string-equal mode-string "RequirePostHandshake") pure-tls:+verify-required+)
     (t pure-tls:+verify-none+)))
 
-(defun run-tls-server (port cert-file key-file verify-mode ca-file result-box error-box ready-lock ready-cv)
-  "Run a TLS server on PORT. Stores result in RESULT-BOX."
+(defun run-tls-server (port cert-file key-file verify-mode ca-file alpn-protocols
+                       result-box error-box ready-lock ready-cv)
+  "Run a TLS server on PORT. Stores result in RESULT-BOX.
+   ALPN-PROTOCOLS is a list of protocol strings, or (:none) for empty list."
   (let ((server-socket nil)
         (client-socket nil))
     (unwind-protect
@@ -285,15 +314,21 @@
               (setf client-socket (usocket:socket-accept server-socket
                                                           :element-type '(unsigned-byte 8)))
               ;; Create TLS context for client cert verification
+              ;; alpn-protocols can be:
+              ;;   nil - not configured (server ignores ALPN)
+              ;;   (:none) - explicitly empty (server rejects any client ALPN)
+              ;;   list of strings - supported protocols
               (let* ((context (pure-tls:make-tls-context
                                :verify-mode verify-mode
                                :ca-file ca-file
+                               :alpn-protocols alpn-protocols
                                :auto-load-system-ca nil))
                      (tls-stream (pure-tls:make-tls-server-stream
                                   (usocket:socket-stream client-socket)
                                   :certificate cert-file
                                   :key key-file
                                   :verify verify-mode
+                                  :alpn-protocols alpn-protocols
                                   :context context)))
                 ;; Handshake succeeded
                 (close tls-stream)
@@ -314,17 +349,23 @@
       (when client-socket (ignore-errors (usocket:socket-close client-socket)))
       (when server-socket (ignore-errors (usocket:socket-close server-socket))))))
 
-(defun run-tls-client (port cert-file key-file verify-mode ca-file)
-  "Run a TLS client connecting to PORT. Returns (values result error-info)."
+(defun run-tls-client (port cert-file key-file verify-mode ca-file alpn-protocols)
+  "Run a TLS client connecting to PORT. Returns (values result error-info).
+   ALPN-PROTOCOLS is a list of protocol strings to offer."
   (let ((socket nil))
     (unwind-protect
         (handler-case
             (progn
               (setf socket (usocket:socket-connect "127.0.0.1" port
                                                     :element-type '(unsigned-byte 8)))
-              (let* ((context (pure-tls:make-tls-context
+              ;; Filter out :none marker - client should only send real protocols
+              (let* ((alpn-list (when (and alpn-protocols
+                                           (not (equal alpn-protocols '(:none))))
+                                  alpn-protocols))
+                     (context (pure-tls:make-tls-context
                                :verify-mode verify-mode
                                :ca-file ca-file
+                               :alpn-protocols alpn-list
                                :auto-load-system-ca nil))
                      ;; Use server.example as hostname since that's what the test certs use
                      ;; Disable hostname verification since we're connecting to localhost
@@ -336,13 +377,15 @@
                                       :verify verify-mode
                                       :context context
                                       :certificate cert-file
-                                      :key key-file)
+                                      :key key-file
+                                      :alpn-protocols alpn-list)
                                      ;; Client without certificate
                                      (pure-tls:make-tls-client-stream
                                       (usocket:socket-stream socket)
                                       :hostname nil  ; Skip hostname verification
                                       :verify verify-mode
-                                      :context context))))
+                                      :context context
+                                      :alpn-protocols alpn-list))))
                 (close tls-stream)
                 (values :success nil)))
           (pure-tls:tls-alert-error (e)
@@ -370,16 +413,18 @@
          (server-verify (openssl-verify-mode-to-pure-tls
                          (openssl-test-server-verify-mode test)))
          (server-ca (openssl-test-server-verify-ca-file test))
+         (server-alpn (openssl-test-server-alpn-protocols test))
          ;; Client config
          (client-cert (openssl-test-client-certificate test))
          (client-key (openssl-test-client-private-key test))
          (client-verify (openssl-verify-mode-to-pure-tls
                          (openssl-test-client-verify-mode test)))
-         (client-ca (openssl-test-client-verify-ca-file test)))
+         (client-ca (openssl-test-client-verify-ca-file test))
+         (client-alpn (openssl-test-client-alpn-protocols test)))
     ;; Start server in background thread
     (bt:make-thread
      (lambda ()
-       (run-tls-server port server-cert server-key server-verify server-ca
+       (run-tls-server port server-cert server-key server-verify server-ca server-alpn
                        server-result server-error ready-lock ready-cv))
      :name "openssl-test-server")
     ;; Wait for server to be ready
@@ -389,7 +434,7 @@
     (sleep 0.1)
     ;; Run client
     (multiple-value-bind (client-result client-error)
-        (run-tls-client port client-cert client-key client-verify client-ca)
+        (run-tls-client port client-cert client-key client-verify client-ca client-alpn)
       ;; Wait for server to finish
       (sleep 0.2)
       ;; Determine overall result

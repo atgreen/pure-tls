@@ -220,14 +220,40 @@
                 (key-schedule-init ks accepted-psk)
                 (key-schedule-derive-handshake-secret ks shared-secret)
                 (setf (server-handshake-key-schedule hs) ks)))))))
-    ;; Handle ALPN
-    (let ((alpn-ext (find-extension extensions +extension-application-layer-protocol-negotiation+)))
-      (when (and alpn-ext (server-handshake-alpn-protocols hs))
-        (let* ((client-protos (alpn-ext-protocol-list (tls-extension-data alpn-ext)))
-               (server-protos (server-handshake-alpn-protocols hs))
-               (selected (find-if (lambda (p) (member p client-protos :test #'string=))
-                                  server-protos)))
-          (setf (server-handshake-selected-alpn hs) selected))))
+    ;; Handle ALPN per RFC 7301
+    ;; alpn-protocols can be:
+    ;;   nil - server doesn't care about ALPN
+    ;;   (:none) - server requires ALPN but supports no protocols (always fail)
+    ;;   list of strings - server supports these protocols
+    (let ((alpn-ext (find-extension extensions +extension-application-layer-protocol-negotiation+))
+          (server-protos (server-handshake-alpn-protocols hs)))
+      (cond
+        ;; Server doesn't care about ALPN - ignore client ALPN extension
+        ((null server-protos)
+         nil)
+        ;; Server requires ALPN but has no protocols - fail if client sends ALPN
+        ((equal server-protos '(:none))
+         (when alpn-ext
+           (record-layer-write-alert (server-handshake-record-layer hs)
+                                     +alert-level-fatal+ +alert-no-application-protocol+)
+           (error 'tls-alert-error
+                  :level +alert-level-fatal+
+                  :description +alert-no-application-protocol+)))
+        ;; Server has protocols - try to negotiate
+        (t
+         (when alpn-ext
+           (let* ((client-protos (alpn-ext-protocol-list (tls-extension-data alpn-ext)))
+                  (selected (find-if (lambda (p) (member p client-protos :test #'string=))
+                                     server-protos)))
+             (if selected
+                 (setf (server-handshake-selected-alpn hs) selected)
+                 ;; No match - send fatal alert per RFC 7301
+                 (progn
+                   (record-layer-write-alert (server-handshake-record-layer hs)
+                                             +alert-level-fatal+ +alert-no-application-protocol+)
+                   (error 'tls-alert-error
+                          :level +alert-level-fatal+
+                          :description +alert-no-application-protocol+))))))))
     (setf (server-handshake-state hs) :send-server-hello)))
 
 ;;;; Server Message Generation
