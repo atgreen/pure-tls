@@ -14,6 +14,9 @@
 (defconstant +tls-1.2+ #x0303
   "TLS 1.2 version identifier (used in record layer for compatibility)")
 
+(defconstant +tls-1.0+ #x0301
+  "TLS 1.0 version identifier (allowed in initial ClientHello per RFC 8446)")
+
 ;;;; Content Types (RFC 8446 Section 5.1)
 
 (defconstant +content-type-invalid+ 0)

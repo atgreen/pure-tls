@@ -52,7 +52,8 @@
 (defun read-tls-record (stream)
   "Read a TLS record from STREAM.
    Returns a TLS-RECORD structure or signals an error.
-   Properly handles short reads from the underlying stream."
+   Properly handles short reads from the underlying stream.
+   Validates legacy_record_version per RFC 8446 Section 5.1."
   (let ((header (make-octet-vector 5)))
     ;; Read 5-byte header (loop until complete or EOF)
     (let ((bytes-read (read-exact-bytes stream header 5)))
@@ -66,6 +67,14 @@
     (let* ((content-type (aref header 0))
            (version (decode-uint16 header 1))
            (length (decode-uint16 header 3)))
+      ;; Validate legacy_record_version per RFC 8446 Section 5.1:
+      ;; - MUST be 0x0303 for all records except initial ClientHello
+      ;; - Initial ClientHello MAY use 0x0301 for compatibility
+      ;; We accept both 0x0301 and 0x0303 for interoperability
+      (unless (member version (list +tls-1.0+ +tls-1.2+))
+        (error 'tls-decode-error
+               :message (format nil "Invalid legacy_record_version: ~4,'0X (expected 0x0301 or 0x0303)"
+                                version)))
       ;; Validate length
       (when (> length +max-record-size-with-padding+)
         (error 'tls-record-overflow :size length))
