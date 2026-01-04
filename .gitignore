@@ -29,3 +29,6 @@ RCS
 *-REVIEW.md
 *-REVIEW.md.bak
 OPENSSL.md
+
+# Build artifacts
+pure-tls-shim
