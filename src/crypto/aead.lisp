@@ -56,15 +56,19 @@
 (defun aes-gcm-encrypt (key nonce plaintext aad)
   "Encrypt using AES-GCM.
 
-   KEY       - 16 or 32 byte encryption key.
+   KEY       - 16 or 32 byte encryption key (AES-128 or AES-256).
    NONCE     - 12 byte nonce.
    PLAINTEXT - Data to encrypt.
    AAD       - Additional authenticated data.
 
    Returns ciphertext with 16-byte authentication tag appended."
-  (let* ((cipher-name (if (= (length key) 16) :aes :aes))
-         (mode (ironclad:make-authenticated-encryption-mode
-                :gcm :cipher-name cipher-name :key key
+  (let ((key-len (length key)))
+    (unless (or (= key-len 16) (= key-len 32))
+      (error 'tls-crypto-error
+             :operation "AES-GCM encrypt"
+             :message (format nil "Invalid key length ~D (must be 16 or 32)" key-len))))
+  (let* ((mode (ironclad:make-authenticated-encryption-mode
+                :gcm :cipher-name :aes :key key
                 :initialization-vector nonce))
          (ciphertext (make-octet-vector (length plaintext)))
          (tag (make-octet-vector 16)))
@@ -80,20 +84,24 @@
 (defun aes-gcm-decrypt (key nonce ciphertext-with-tag aad)
   "Decrypt using AES-GCM.
 
-   KEY               - 16 or 32 byte encryption key.
+   KEY               - 16 or 32 byte encryption key (AES-128 or AES-256).
    NONCE             - 12 byte nonce.
    CIPHERTEXT-WITH-TAG - Ciphertext with 16-byte tag appended.
    AAD               - Additional authenticated data.
 
    Returns plaintext, or signals TLS-MAC-ERROR if authentication fails."
+  (let ((key-len (length key)))
+    (unless (or (= key-len 16) (= key-len 32))
+      (error 'tls-crypto-error
+             :operation "AES-GCM decrypt"
+             :message (format nil "Invalid key length ~D (must be 16 or 32)" key-len))))
   (when (< (length ciphertext-with-tag) 16)
     (error 'tls-mac-error))
   (let* ((ct-len (- (length ciphertext-with-tag) 16))
          (ciphertext (subseq ciphertext-with-tag 0 ct-len))
          (tag (subseq ciphertext-with-tag ct-len))
-         (cipher-name (if (= (length key) 16) :aes :aes))
          (mode (ironclad:make-authenticated-encryption-mode
-                :gcm :cipher-name cipher-name :key key
+                :gcm :cipher-name :aes :key key
                 :initialization-vector nonce))
          (plaintext (make-octet-vector ct-len))
          (computed-tag (make-octet-vector 16)))
