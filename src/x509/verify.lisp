@@ -409,13 +409,22 @@
            (let* ((hash-algo (cert-sig-algorithm-to-hash algorithm))
                   (public-key (parse-rsa-public-key public-key-bytes)))
              (verify-rsa-pkcs1v15-signature public-key tbs signature hash-algo)))
-          ;; RSA-PSS
+          ;; RSA-PSS - use parameters from certificate
           ((member algorithm '(:rsa-pss :rsassa-pss))
-           ;; RSA-PSS needs to extract hash from signature parameters
-           ;; For now, default to SHA-256
-           (let ((public-key (parse-rsa-public-key public-key-bytes)))
-             (ironclad:verify-signature public-key tbs signature
-                                        :pss :sha256)))
+           (let* ((params (x509-certificate-signature-algorithm-params cert))
+                  (hash-algo (or (getf params :hash) :sha256))
+                  (salt-length (or (getf params :salt-length) 32)))
+             ;; Reject SHA-1 for RSA-PSS (cryptographically broken)
+             (when (eq hash-algo :sha1)
+               (error 'tls-certificate-error
+                      :message "SHA-1 is not supported for RSA-PSS signatures (cryptographically broken)"))
+             (let ((public-key (parse-rsa-public-key public-key-bytes)))
+               ;; Ironclad's PSS verification uses hash algorithm and salt length
+               (ironclad:verify-signature public-key
+                                          (ironclad:digest-sequence hash-algo tbs)
+                                          signature
+                                          :pss hash-algo
+                                          :salt-length salt-length))))
           ;; ECDSA signatures
           ((member algorithm '(:ecdsa-with-sha256
                                :ecdsa-with-SHA256

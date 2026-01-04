@@ -36,6 +36,7 @@
   (version 1 :type fixnum)
   (serial-number nil)
   (signature-algorithm nil)
+  (signature-algorithm-params nil)  ; For RSA-PSS: (:hash :salt-length)
   (issuer nil)
   (validity-not-before nil)
   (validity-not-after nil)
@@ -70,9 +71,11 @@
       (let ((tbs (first children)))
         (setf (x509-certificate-tbs-raw cert) (asn1-node-raw-bytes tbs))
         (parse-tbs-certificate cert tbs))
-      ;; SignatureAlgorithm
-      (setf (x509-certificate-signature-algorithm cert)
-            (parse-algorithm-identifier (second children)))
+      ;; SignatureAlgorithm (with params for RSA-PSS)
+      (multiple-value-bind (algorithm params)
+          (parse-algorithm-identifier-with-params (second children))
+        (setf (x509-certificate-signature-algorithm cert) algorithm)
+        (setf (x509-certificate-signature-algorithm-params cert) params))
       ;; SignatureValue (BIT STRING)
       (let ((sig-value (asn1-node-value (third children))))
         (setf (x509-certificate-signature cert)
@@ -146,6 +149,59 @@
                (second children))
           (oid-name (asn1-node-value (second children)))
           algorithm))))
+
+(defun parse-algorithm-identifier-with-params (node)
+  "Parse an AlgorithmIdentifier, returning (algorithm . params).
+   For RSA-PSS, params is a plist with :hash and :salt-length.
+   For other algorithms, params is NIL."
+  (let* ((children (asn1-children node))
+         (algorithm (oid-name (asn1-node-value (first children))))
+         (params nil))
+    ;; For EC public keys, the second parameter is the curve OID
+    (when (and (member algorithm '(:ec-public-key :ecdsa))
+               (second children))
+      (setf algorithm (oid-name (asn1-node-value (second children)))))
+    ;; For RSA-PSS, parse the parameters
+    (when (and (member algorithm '(:rsa-pss :rsassa-pss))
+               (second children))
+      (setf params (parse-rsa-pss-params (second children))))
+    (values algorithm params)))
+
+(defun parse-rsa-pss-params (node)
+  "Parse RSA-PSS AlgorithmIdentifier parameters.
+   RSASSA-PSS-params ::= SEQUENCE {
+     hashAlgorithm      [0] HashAlgorithm DEFAULT sha1,
+     maskGenAlgorithm   [1] MaskGenAlgorithm DEFAULT mgf1SHA1,
+     saltLength         [2] INTEGER DEFAULT 20,
+     trailerField       [3] TrailerField DEFAULT trailerFieldBC }
+   Returns a plist with :hash and :salt-length."
+  (let ((hash :sha1)        ; Default per RFC 4055
+        (salt-length 20))   ; Default per RFC 4055
+    (when (and node (asn1-sequence-p node))
+      (dolist (child (asn1-children node))
+        (when (asn1-node-p child)
+          (let ((tag (asn1-node-tag child)))
+            (cond
+              ;; [0] hashAlgorithm
+              ((and (asn1-context-p child 0)
+                    (asn1-children child))
+               (let* ((hash-seq (first (asn1-children child)))
+                      (hash-children (when (asn1-sequence-p hash-seq)
+                                      (asn1-children hash-seq))))
+                 (when hash-children
+                   (let ((hash-oid (oid-name (asn1-node-value (first hash-children)))))
+                     (setf hash (case hash-oid
+                                  (:sha256 :sha256)
+                                  (:sha384 :sha384)
+                                  (:sha512 :sha512)
+                                  (:sha1 :sha1)
+                                  (otherwise hash-oid)))))))
+              ;; [2] saltLength
+              ((asn1-context-p child 2)
+               (let ((salt-node (first (asn1-children child))))
+                 (when (and salt-node (integerp (asn1-node-value salt-node)))
+                   (setf salt-length (asn1-node-value salt-node))))))))))
+    (list :hash hash :salt-length salt-length)))
 
 (defun parse-subject-public-key-info (node)
   "Parse SubjectPublicKeyInfo."
