@@ -103,14 +103,11 @@
                          ;; Compute transcript hash up to but not including binders
                          ;; The binders list length is encoded as 2 bytes before the binders
                          ;; We need to find where the binders start in the ClientHello
-                         (let* (;; Total binders length (1 byte per binder length + binder data)
-                                (total-binders-len
-                                  (loop for b in binders
-                                        sum (1+ (length b))))
-                                ;; Truncated hello is everything except the binders
-                                ;; The extension ends with: 2 bytes binders length + binders data
+                         (let* (;; Use helper that includes 2-byte length prefix + all binder data
+                                (binders-len (pre-shared-key-ext-binders-length psk-ext))
+                                ;; Truncated hello is everything except the binders portion
                                 (truncated-len (- (length raw-client-hello)
-                                                  total-binders-len))
+                                                  binders-len))
                                 (truncated-hello (subseq raw-client-hello 0 truncated-len))
                                 (digest (cipher-suite-digest cipher-suite))
                                 (transcript-hash (ironclad:digest-sequence digest truncated-hello)))
