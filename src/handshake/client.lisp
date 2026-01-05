@@ -261,6 +261,13 @@
            :message "Received multiple HelloRetryRequests"
            :state :wait-server-hello))
   (incf (client-handshake-hello-retry-count hs))
+  ;; RFC 8446 Section 4.1.3: legacy_compression_method MUST be 0
+  (unless (zerop (server-hello-legacy-compression-method server-hello))
+    (record-layer-write-alert (client-handshake-record-layer hs)
+                              +alert-level-fatal+ +alert-decode-error+)
+    (error 'tls-handshake-error
+           :message ":DECODE_ERROR: HelloRetryRequest legacy_compression_method must be 0"
+           :state :wait-server-hello))
 
   (let ((extensions (server-hello-extensions server-hello)))
     ;; Get the selected cipher suite (needed for hash algorithm)
@@ -313,6 +320,13 @@
       (return-from process-server-hello nil))
     ;; Normal ServerHello - update transcript now
     (client-handshake-update-transcript hs raw-bytes)
+    ;; RFC 8446 Section 4.1.3: legacy_compression_method MUST be 0
+    (unless (zerop (server-hello-legacy-compression-method server-hello))
+      (record-layer-write-alert (client-handshake-record-layer hs)
+                                +alert-level-fatal+ +alert-decode-error+)
+      (error 'tls-handshake-error
+             :message ":DECODE_ERROR: ServerHello legacy_compression_method must be 0"
+             :state :wait-server-hello))
     ;; Verify supported_versions extension
     (let ((sv-ext (find-extension extensions +extension-supported-versions+)))
       (unless sv-ext

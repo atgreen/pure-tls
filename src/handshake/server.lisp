@@ -192,7 +192,7 @@
         (record-layer-write-alert (server-handshake-record-layer hs)
                                   +alert-level-fatal+ +alert-illegal-parameter+)
         (error 'tls-handshake-error
-               :message "TLS 1.3 requires legacy_compression_methods to be [0]"
+               :message ":INVALID_COMPRESSION_LIST: TLS 1.3 requires legacy_compression_methods to be [0]"
                :state :wait-client-hello)))
     ;; Select cipher suite (first mutually supported)
     (let ((client-suites (client-hello-cipher-suites client-hello))
