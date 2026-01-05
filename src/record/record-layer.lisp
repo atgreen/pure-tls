@@ -67,6 +67,14 @@
     (let* ((content-type (aref header 0))
            (version (decode-uint16 header 1))
            (length (decode-uint16 header 3)))
+      ;; Validate content type - must be a valid TLS content type (20-24)
+      ;; This quickly rejects SSLv2 records which have high-bit-set bytes
+      ;; in position 0, preventing us from waiting forever for invalid lengths.
+      (unless (and (>= content-type +content-type-change-cipher-spec+)  ; 20
+                   (<= content-type 24))  ; heartbeat is 24
+        (error 'tls-decode-error
+               :message (format nil ":WRONG_VERSION_NUMBER: Invalid content type ~D (not a valid TLS record)"
+                                content-type)))
       ;; Per RFC 8446 Section 5.1:
       ;; "Implementations SHOULD NOT enforce this restriction [version checking],
       ;;  as otherwise they may reject compliant peers."
@@ -154,9 +162,16 @@
                                     (ldb (byte 8 0) (length fragment)))))
           ;; tls13-decrypt-record returns (plaintext, content-type)
           ;; We need to return (content-type, plaintext)
-          (multiple-value-bind (plaintext inner-content-type)
-              (tls13-decrypt-record cipher fragment header)
-            (values inner-content-type plaintext)))
+          ;; Catch record overflow to send alert before re-raising
+          (handler-bind ((tls-record-overflow
+                           (lambda (c)
+                             (declare (ignore c))
+                             (record-layer-write-alert layer
+                                                       +alert-level-fatal+
+                                                       +alert-record-overflow+))))
+            (multiple-value-bind (plaintext inner-content-type)
+                (tls13-decrypt-record cipher fragment header)
+              (values inner-content-type plaintext))))
         (values content-type fragment))))
 
 (defun record-layer-write (layer content-type data)

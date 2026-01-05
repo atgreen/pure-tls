@@ -151,9 +151,15 @@
              :initform +max-record-size+
              :reader tls-record-overflow-max-size))
   (:report (lambda (condition stream)
-             (format stream "TLS record overflow: ~D bytes exceeds maximum ~D"
-                     (tls-record-overflow-size condition)
-                     (tls-record-overflow-max-size condition))))
+             (let ((msg (tls-error-message condition)))
+               (if msg
+                   (format stream "~A TLS record overflow: ~D bytes exceeds maximum ~D"
+                           msg
+                           (tls-record-overflow-size condition)
+                           (tls-record-overflow-max-size condition))
+                   (format stream "TLS record overflow: ~D bytes exceeds maximum ~D"
+                           (tls-record-overflow-size condition)
+                           (tls-record-overflow-max-size condition))))))
   (:documentation "TLS record exceeds maximum size"))
 
 ;;;; Crypto Errors
