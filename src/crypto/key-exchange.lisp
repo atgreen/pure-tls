@@ -193,9 +193,25 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
         +sig-rsa-pkcs1-sha512+
         +sig-ed25519+))
 
+(defun supported-signature-algorithms-tls13 ()
+  "Return the list of supported TLS 1.3 signature algorithms."
+  (list +sig-ecdsa-secp256r1-sha256+
+        +sig-rsa-pss-rsae-sha256+
+        +sig-rsa-pss-pss-sha256+
+        +sig-ecdsa-secp384r1-sha384+
+        +sig-rsa-pss-rsae-sha384+
+        +sig-rsa-pss-pss-sha384+
+        +sig-ecdsa-secp521r1-sha512+
+        +sig-rsa-pss-rsae-sha512+
+        +sig-rsa-pss-pss-sha512+
+        +sig-ed25519+))
+
 (defun signature-algorithm-name (sig-alg)
   "Return the human-readable name for a signature algorithm."
   (case sig-alg
+    (#.+sig-rsa-pkcs1-md5+ "rsa_pkcs1_md5")
+    (#.+sig-rsa-pkcs1-sha1+ "rsa_pkcs1_sha1")
+    (#.+sig-ecdsa-sha1+ "ecdsa_sha1")
     (#.+sig-rsa-pkcs1-sha256+ "rsa_pkcs1_sha256")
     (#.+sig-rsa-pkcs1-sha384+ "rsa_pkcs1_sha384")
     (#.+sig-rsa-pkcs1-sha512+ "rsa_pkcs1_sha512")

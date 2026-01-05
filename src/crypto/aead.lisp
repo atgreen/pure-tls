@@ -139,18 +139,23 @@
   ;; The first 32 bytes of ChaCha20 keystream become the Poly1305 key
   (let* ((poly-key-block (make-octet-vector 64))
          (zeros (make-octet-vector 64))
-         ;; ChaCha20 with 12-byte nonce, implicitly counter=0
-         (cipher (ironclad:make-cipher :chacha :key key
-                                       :initialization-vector nonce
-                                       :mode :stream)))
-    (ironclad:encrypt cipher zeros poly-key-block)
+         ;; Use a dedicated cipher for the Poly1305 key block (counter=0).
+         (poly-cipher (ironclad:make-cipher :chacha :key key
+                                            :initialization-vector nonce
+                                            :mode :stream))
+         ;; Use a separate cipher for payload encryption and explicitly
+         ;; advance to block counter=1 by consuming one 64-byte block.
+         (data-cipher (ironclad:make-cipher :chacha :key key
+                                            :initialization-vector nonce
+                                            :mode :stream)))
+    (ironclad:encrypt poly-cipher zeros poly-key-block)
+    (let ((skip (make-octet-vector 64)))
+      (ironclad:encrypt data-cipher zeros skip))
     (let ((poly-key (subseq poly-key-block 0 32)))
 
       ;; Step 2: Encrypt plaintext using ChaCha20 starting at counter=1
-      ;; We've already consumed one block (64 bytes) for the poly key,
-      ;; so the cipher state is now at counter=1
       (let ((ciphertext (make-octet-vector (length plaintext))))
-        (ironclad:encrypt cipher plaintext ciphertext)
+        (ironclad:encrypt data-cipher plaintext ciphertext)
 
         ;; Step 3: Construct the Poly1305 input per RFC 8439 Section 2.8
         ;; AAD || pad16(AAD) || ciphertext || pad16(ciphertext) || len(AAD) || len(ciphertext)
@@ -190,10 +195,18 @@
     ;; Step 1: Generate Poly1305 one-time key using ChaCha20 with counter=0
     (let* ((poly-key-block (make-octet-vector 64))
            (zeros (make-octet-vector 64))
-           (cipher (ironclad:make-cipher :chacha :key key
-                                         :initialization-vector nonce
-                                         :mode :stream)))
-      (ironclad:encrypt cipher zeros poly-key-block)
+           ;; Use a dedicated cipher for the Poly1305 key block (counter=0).
+           (poly-cipher (ironclad:make-cipher :chacha :key key
+                                              :initialization-vector nonce
+                                              :mode :stream))
+           ;; Use a separate cipher for payload decryption and explicitly
+           ;; advance to block counter=1 by consuming one 64-byte block.
+           (data-cipher (ironclad:make-cipher :chacha :key key
+                                              :initialization-vector nonce
+                                              :mode :stream)))
+      (ironclad:encrypt poly-cipher zeros poly-key-block)
+      (let ((skip (make-octet-vector 64)))
+        (ironclad:encrypt data-cipher zeros skip))
       (let ((poly-key (subseq poly-key-block 0 32)))
 
         ;; Step 2: Verify the Poly1305 tag before decrypting (verify-then-decrypt)
@@ -216,7 +229,7 @@
 
         ;; Step 3: Decrypt the ciphertext using ChaCha20 starting at counter=1
         (let ((plaintext (make-octet-vector ct-len)))
-          (ironclad:encrypt cipher ciphertext plaintext)  ; XOR-based, same as decrypt
+          (ironclad:encrypt data-cipher ciphertext plaintext)  ; XOR-based, same as decrypt
           plaintext)))))
 
 (defun encode-uint64-le (n)

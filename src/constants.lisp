@@ -114,6 +114,9 @@
 
 ;;;; Signature Algorithms (RFC 8446 Section 4.2.3)
 
+(defconstant +sig-rsa-pkcs1-md5+ #x0101)
+(defconstant +sig-rsa-pkcs1-sha1+ #x0201)
+(defconstant +sig-ecdsa-sha1+ #x0203)
 (defconstant +sig-rsa-pkcs1-sha256+ #x0401)
 (defconstant +sig-rsa-pkcs1-sha384+ #x0501)
 (defconstant +sig-rsa-pkcs1-sha512+ #x0601)

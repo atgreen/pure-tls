@@ -58,6 +58,7 @@
   ;; Client authentication (mTLS)
   (certificate-requested nil :type boolean)  ; T if server sent CertificateRequest
   (cert-request-context nil :type (or null octet-vector))  ; Context from CertificateRequest
+  (cert-request-signature-algorithms nil :type list)  ; signature_algorithms from CertificateRequest
   ;; Client certificate/key for mTLS (when server requests client auth)
   (client-certificate nil)  ; Parsed X.509 certificate (or raw DER)
   (client-private-key nil)  ; Private key for signing CertificateVerify
@@ -107,7 +108,7 @@
                       (make-tls-extension
                        :type +extension-signature-algorithms+
                        :data (make-signature-algorithms-ext
-                              :algorithms (supported-signature-algorithms)))
+                              :algorithms (supported-signature-algorithms-tls13)))
                       ;; key_share
                       ;; Note: GREASE key_share entries cause timeouts in the test runner.
                       ;; This needs more investigation to understand why the handshake
@@ -418,6 +419,17 @@
     ;; This must be echoed back in our Certificate message
     (setf (client-handshake-cert-request-context hs)
           (certificate-request-certificate-request-context cert-req))
+    ;; Store signature_algorithms preferences (TLS 1.3 requires this extension)
+    (let ((sig-ext (find-extension (certificate-request-extensions cert-req)
+                                   +extension-signature-algorithms+)))
+      (unless sig-ext
+        (error 'tls-decode-error
+               :message "CertificateRequest missing signature_algorithms extension"))
+      (let ((algorithms (signature-algorithms-ext-algorithms (tls-extension-data sig-ext))))
+        (when (null algorithms)
+          (error 'tls-decode-error
+                 :message "CertificateRequest has empty signature_algorithms list"))
+        (setf (client-handshake-cert-request-signature-algorithms hs) algorithms)))
     ;; Mark that client auth was requested
     (setf (client-handshake-certificate-requested hs) t)))
 
@@ -474,18 +486,88 @@
     (replace content transcript-hash :start1 pos)
     content))
 
-(defun verify-certificate-verify-signature (cert algorithm signature content)
+(defun signature-key-type-from-public-algorithm (key-algorithm)
+  "Return the key type symbol for a certificate public key algorithm."
+  (cond
+    ((member key-algorithm '(:rsa-encryption :rsassa-pss :rsa-pss :rsa)) :rsa)
+    ((member key-algorithm '(:secp256r1 :secp384r1 :secp521r1 :prime256v1)) :ecdsa)
+    ((eql key-algorithm :ed25519) :ed25519)
+    ((eql key-algorithm :ed448) :ed448)
+    (t :unknown)))
+
+(defun signature-key-type-from-private-key (private-key)
+  "Return the key type symbol for a private key."
+  (let ((key-type (type-of private-key)))
+    (cond
+      ((subtypep key-type 'ironclad::rsa-private-key) :rsa)
+      ((subtypep key-type 'ironclad::secp256r1-private-key) :ecdsa-p256)
+      ((subtypep key-type 'ironclad::secp384r1-private-key) :ecdsa-p384)
+      ((subtypep key-type 'ironclad::secp521r1-private-key) :ecdsa-p521)
+      ((subtypep key-type 'ironclad::ed25519-private-key) :ed25519)
+      (t :unknown))))
+
+(defun signature-required-key-type (sig-type)
+  "Return the key type required by a signature type."
+  (case sig-type
+    ((:rsa-pss-rsae :rsa-pss-pss :rsa-pkcs1) :rsa)
+    (:ecdsa :ecdsa)
+    (:ed25519 :ed25519)
+    (:ed448 :ed448)
+    (otherwise :unknown)))
+
+(defun signature-algorithm-allowed-p (algorithm)
+  "Return T when ALGORITHM is permitted for TLS 1.3."
+  (member algorithm (supported-signature-algorithms-tls13) :test #'eql))
+
+(defun signature-algorithms-for-private-key (private-key)
+  "Return the TLS 1.3 signature algorithms compatible with PRIVATE-KEY."
+  (case (signature-key-type-from-private-key private-key)
+    (:rsa (list +sig-rsa-pss-rsae-sha256+
+                +sig-rsa-pss-rsae-sha384+
+                +sig-rsa-pss-rsae-sha512+
+                +sig-rsa-pss-pss-sha256+
+                +sig-rsa-pss-pss-sha384+
+                +sig-rsa-pss-pss-sha512+))
+    (:ecdsa-p256 (list +sig-ecdsa-secp256r1-sha256+))
+    (:ecdsa-p384 (list +sig-ecdsa-secp384r1-sha384+))
+    (:ecdsa-p521 (list +sig-ecdsa-secp521r1-sha512+))
+    (:ed25519 (list +sig-ed25519+))
+    (otherwise nil)))
+
+(defun select-signature-algorithm-for-key (private-key peer-algorithms)
+  "Select a signature algorithm based on PRIVATE-KEY and PEER-ALGORITHMS."
+  (let* ((allowed (signature-algorithms-for-private-key private-key))
+         (choice (when peer-algorithms
+                   (find-if (lambda (alg) (member alg allowed)) peer-algorithms))))
+    (or choice
+        (error 'tls-handshake-error
+               :message ":NO_COMMON_SIGNATURE_ALGORITHMS:"))))
+
+(defun verify-certificate-verify-signature (cert algorithm signature content
+                                           &key allowed-algorithms)
   "Verify the CertificateVerify signature using the certificate's public key.
    Returns T on success, signals an error on failure."
   (let* ((public-key-info (x509-certificate-subject-public-key-info cert))
          (key-algorithm (getf public-key-info :algorithm))
+         (key-type (signature-key-type-from-public-algorithm key-algorithm))
          (public-key-bytes (getf public-key-info :public-key)))
+    (unless (signature-algorithm-allowed-p algorithm)
+      (error 'tls-handshake-error
+             :message ":WRONG_SIGNATURE_TYPE: unsupported signature algorithm"))
+    (when (and allowed-algorithms (not (member algorithm allowed-algorithms)))
+      (error 'tls-handshake-error
+             :message ":WRONG_SIGNATURE_TYPE: signature algorithm not permitted"))
     ;; Determine hash algorithm from signature algorithm
     (multiple-value-bind (hash-algo sig-type)
         (signature-algorithm-params algorithm)
       (unless sig-type
         (error 'tls-handshake-error
                :message (format nil "Unsupported signature algorithm: ~X" algorithm)))
+      (let ((required-key-type (signature-required-key-type sig-type)))
+        (unless (and (not (eql key-type :unknown))
+                     (eql required-key-type key-type))
+          (error 'tls-handshake-error
+                 :message ":WRONG_SIGNATURE_TYPE: signature type mismatch")))
       ;; Verify based on key type
       (cond
         ;; RSA-PSS signatures
@@ -507,6 +589,9 @@
 (defun signature-algorithm-params (algorithm)
   "Return (hash-algorithm signature-type) for a TLS signature algorithm code."
   (case algorithm
+    (#.+sig-rsa-pkcs1-md5+ (values :md5 :rsa-pkcs1))
+    (#.+sig-rsa-pkcs1-sha1+ (values :sha1 :rsa-pkcs1))
+    (#.+sig-ecdsa-sha1+ (values :sha1 :ecdsa))
     (#.+sig-rsa-pkcs1-sha256+ (values :sha256 :rsa-pkcs1))
     (#.+sig-rsa-pkcs1-sha384+ (values :sha384 :rsa-pkcs1))
     (#.+sig-rsa-pkcs1-sha512+ (values :sha512 :rsa-pkcs1))
@@ -613,6 +698,44 @@
       (t
        (error 'tls-handshake-error
               :message (format nil "Unsupported private key type: ~A" key-type))))))
+
+(defun sign-data-with-algorithm (content private-key algorithm)
+  "Sign CONTENT with PRIVATE-KEY using TLS signature algorithm ALGORITHM."
+  (multiple-value-bind (hash-algo sig-type)
+      (signature-algorithm-params algorithm)
+    (unless sig-type
+      (error 'tls-handshake-error
+             :message (format nil "Unsupported signature algorithm: ~X" algorithm)))
+    (unless (signature-algorithm-allowed-p algorithm)
+      (error 'tls-handshake-error
+             :message ":WRONG_SIGNATURE_TYPE: unsupported signature algorithm"))
+    (let* ((key-type (signature-key-type-from-private-key private-key))
+           (required-key-type (signature-required-key-type sig-type))
+           (normalized-key-type (case key-type
+                                  ((:ecdsa-p256 :ecdsa-p384 :ecdsa-p521) :ecdsa)
+                                  (otherwise key-type))))
+      (unless (and (not (eql normalized-key-type :unknown))
+                   (eql required-key-type normalized-key-type))
+        (error 'tls-handshake-error
+               :message ":WRONG_SIGNATURE_TYPE: signature type mismatch"))
+      (cond
+        ;; RSA-PSS signatures
+        ((member sig-type '(:rsa-pss-rsae :rsa-pss-pss))
+         (ironclad:sign-message private-key content :pss hash-algo))
+        ;; RSA PKCS#1 v1.5 signatures
+        ((eql sig-type :rsa-pkcs1)
+         (ironclad:sign-message private-key content hash-algo))
+        ;; ECDSA signatures
+        ((eql sig-type :ecdsa)
+         (let* ((hash (ironclad:digest-sequence hash-algo content))
+                (raw-sig (ironclad:sign-message private-key hash)))
+           (encode-ecdsa-signature-der raw-sig)))
+        ;; Ed25519 signatures
+        ((eql sig-type :ed25519)
+         (ironclad:sign-message private-key content))
+        (t
+         (error 'tls-handshake-error
+                :message (format nil "Unsupported signature type: ~A" sig-type)))))))
 
 (defun sign-data (content private-key)
   "Sign CONTENT with PRIVATE-KEY.
@@ -743,9 +866,11 @@
     ;; Get the transcript hash at this point (excludes CertificateVerify)
     (let* ((ks (client-handshake-key-schedule hs))
            (transcript-hash (key-schedule-transcript-hash-value ks))
-           (content (make-certificate-verify-content transcript-hash)))
+      (content (make-certificate-verify-content transcript-hash)))
       ;; Verify the signature (proves server possesses the private key)
-      (verify-certificate-verify-signature cert algorithm signature content))
+      (verify-certificate-verify-signature
+       cert algorithm signature content
+       :allowed-algorithms (supported-signature-algorithms-tls13)))
     ;; Now perform full certificate verification if required
     ;; This prevents bypass when using perform-client-handshake directly
     (when (member verify-mode (list +verify-peer+ +verify-required+))
@@ -860,8 +985,10 @@
          (content (make-certificate-verify-content transcript-hash t))
          ;; Sign with client's private key
          (private-key (client-handshake-client-private-key hs))
-         (signature (sign-data content private-key))
-         (algorithm (signature-algorithm-for-key private-key))
+         (algorithm (select-signature-algorithm-for-key
+                     private-key
+                     (client-handshake-cert-request-signature-algorithms hs)))
+         (signature (sign-data-with-algorithm content private-key algorithm))
          (cv (make-certificate-verify :algorithm algorithm :signature signature))
          (cv-bytes (serialize-certificate-verify cv))
          (message (wrap-handshake-message +handshake-certificate-verify+ cv-bytes)))

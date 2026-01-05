@@ -26,6 +26,13 @@
 (defconstant +exit-unimplemented+ 89)
 (defconstant +exit-expected-failure+ 90)
 
+;;;; Test Helpers
+(defun invert-bytes! (buffer count)
+  "Invert COUNT bytes in BUFFER in place."
+  (loop for i from 0 below count
+        do (setf (aref buffer i) (logxor (aref buffer i) #xff)))
+  buffer)
+
 ;;;; Configuration Structure
 (defstruct shim-config
   "Configuration parsed from command-line arguments."
@@ -271,10 +278,13 @@
     ((> (shim-config-resume-count config) 0)
      :resumption-not-supported)
 
-    ;; If only TLS 1.2 or earlier is allowed (no TLS 1.3)
-    ((and (shim-config-no-tls13 config)
-          (or (zerop (shim-config-max-version config))
-              (< (shim-config-max-version config) #x0304)))
+    ;; TLS 1.2 (or earlier) is not supported by this shim.
+    ;; Skip if the test's version range permits < TLS 1.3, or TLS 1.3 is disabled.
+    ((or (shim-config-no-tls13 config)
+         (let ((min-version (shim-config-min-version config))
+               (max-version (shim-config-max-version config)))
+           (or (and (not (zerop min-version)) (< min-version #x0304))
+               (and (not (zerop max-version)) (< max-version #x0304)))))
      :only-tls13-supported)
 
     ;; Fallback SCSV is TLS 1.2 specific
@@ -384,7 +394,7 @@
               ;; Pass client certificate/key for mTLS
               :client-certificate (first client-cert-chain)
               :client-key client-private-key)))
-
+      (declare (ignore trust-store))
       ;; Check ALPN result if expected
       (when (shim-config-expect-alpn config)
         (let ((negotiated (pure-tls:tls-selected-alpn tls-stream)))
@@ -400,12 +410,12 @@
             (force-output tls-stream)
             (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
               (read-sequence buf tls-stream)))
-          (progn
             (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
-              (let ((n (read-sequence buf tls-stream)))
-                (when (> n 0)
-                  (write-sequence buf tls-stream :end n)
-                  (force-output tls-stream))))))
+            (let ((n (read-sequence buf tls-stream)))
+              (when (> n 0)
+                (invert-bytes! buf n)
+                (write-sequence buf tls-stream :end n)
+                (force-output tls-stream)))))
 
       ;; Close with close_notify
       (close tls-stream)
@@ -453,6 +463,7 @@
             (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
               (let ((n (read-sequence buf tls-stream)))
                 (when (> n 0)
+                  (invert-bytes! buf n)
                   (write-sequence buf tls-stream :end n)
                   (force-output tls-stream))))))
 

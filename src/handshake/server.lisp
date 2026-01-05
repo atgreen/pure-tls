@@ -48,8 +48,12 @@
   (client-hostname nil :type (or null string))
   ;; Client random (for SSLKEYLOGFILE)
   (client-random nil :type (or null octet-vector))
+  ;; Client's signature algorithm preferences (from ClientHello)
+  (client-signature-algorithms nil :type list)
   ;; Whether we requested a client certificate
   (certificate-requested nil :type boolean)
+  ;; signature_algorithms sent in CertificateRequest (for mTLS verification)
+  (cert-request-signature-algorithms nil :type list)
   ;; Session resumption (PSK)
   (psk-accepted nil :type boolean)  ; T if we accepted client's PSK
   (accepted-psk nil :type (or null octet-vector))  ; The PSK we accepted
@@ -182,6 +186,11 @@
         (error 'tls-handshake-error
                :message "Client does not support TLS 1.3"
                :state :wait-client-hello)))
+    ;; Capture client's signature algorithm preferences (may be nil if missing)
+    (let ((sig-ext (find-extension extensions +extension-signature-algorithms+)))
+      (when sig-ext
+        (setf (server-handshake-client-signature-algorithms hs)
+              (signature-algorithms-ext-algorithms (tls-extension-data sig-ext)))))
     ;; Check for PSK (session resumption) before key exchange
     ;; We need the psk_key_exchange_modes and pre_shared_key extensions
     (let ((psk-modes-ext (find-extension extensions +extension-psk-key-exchange-modes+))
@@ -375,9 +384,7 @@
            (make-tls-extension
             :type +extension-signature-algorithms+
             :data (make-signature-algorithms-ext
-                   :algorithms (list +sig-ecdsa-secp256r1-sha256+
-                                     +sig-rsa-pss-rsae-sha256+
-                                     +sig-rsa-pkcs1-sha256+))))))
+                   :algorithms (supported-signature-algorithms-tls13))))))
     (make-certificate-request
      :certificate-request-context (make-octet-vector 0)
      :extensions extensions)))
@@ -394,6 +401,11 @@
     (record-layer-write-handshake (server-handshake-record-layer hs) message)
     ;; Mark that we requested a certificate
     (setf (server-handshake-certificate-requested hs) t)
+    (setf (server-handshake-cert-request-signature-algorithms hs)
+          (let ((sig-ext (find-extension (certificate-request-extensions req)
+                                         +extension-signature-algorithms+)))
+            (when sig-ext
+              (signature-algorithms-ext-algorithms (tls-extension-data sig-ext)))))
     (setf (server-handshake-state hs) :send-certificate)))
 
 (defun generate-certificate-message (hs)
@@ -431,8 +443,10 @@
          ;; Build the content to sign (per RFC 8446 Section 4.4.3)
          (content (make-certificate-verify-content transcript-hash nil)) ; nil = server
          ;; Sign with server's private key
-         (signature (sign-data content (server-handshake-private-key hs)))
-         (algorithm (signature-algorithm-for-key (server-handshake-private-key hs)))
+         (algorithm (select-signature-algorithm-for-key
+                     (server-handshake-private-key hs)
+                     (server-handshake-client-signature-algorithms hs)))
+         (signature (sign-data-with-algorithm content (server-handshake-private-key hs) algorithm))
          (cv (make-certificate-verify :algorithm algorithm :signature signature))
          (cv-bytes (serialize-certificate-verify cv))
          (message (wrap-handshake-message +handshake-certificate-verify+ cv-bytes)))
@@ -519,7 +533,9 @@
          (verify-mode (server-handshake-verify-mode hs))
          (trust-store (server-handshake-trust-store hs)))
     ;; Verify signature (proves client possesses the private key)
-    (verify-certificate-verify-signature cert algorithm signature content)
+    (verify-certificate-verify-signature
+     cert algorithm signature content
+     :allowed-algorithms (server-handshake-cert-request-signature-algorithms hs))
     ;; Update transcript AFTER verification
     (server-handshake-update-transcript hs raw-bytes)
     (key-schedule-update-transcript ks raw-bytes)
