@@ -95,7 +95,7 @@ Extensive PKI test fixtures in `pki/testdata/`:
 
 ## Integration Approaches
 
-### Approach A: Standalone Test Extraction (Recommended for Phase 1)
+### Approach A: Standalone Test Extraction
 
 Extract test patterns and data without the full shim infrastructure:
 
@@ -106,9 +106,9 @@ Extract test patterns and data without the full shim infrastructure:
 **Pros**: Quick wins, no infrastructure overhead
 **Cons**: Manual translation, may miss some edge cases
 
-### Approach B: Shim Integration (Future)
+### Approach B: Shim Integration ✅ IMPLEMENTED
 
-Implement a pure-tls shim following `PORTING.md`:
+We implemented a full pure-tls shim following `PORTING.md`:
 
 ```
 ┌─────────────────┐     TCP      ┌─────────────────┐
@@ -117,16 +117,16 @@ Implement a pure-tls shim following `PORTING.md`:
 └─────────────────┘              └─────────────────┘
 ```
 
-**Shim requirements** (from `test_config.h`):
+**Shim implementation** (`test/boringssl-shim.lisp`):
 - Accept `-port` and `-shim-id` flags
-- Parse 200+ configuration flags
+- Parse 30+ configuration flags (TLS 1.3 relevant subset)
 - Return exit code 89 for unimplemented features
 - Return exit code 0 for success
+- 53MB standalone SBCL binary
 
-**Pros**: Full test coverage, automated regression
-**Cons**: Significant implementation effort
+**Result**: 65.4% pass rate (4274/6533 tests)
 
-### Approach C: Hybrid (Recommended Long-term)
+### Approach C: Hybrid
 
 1. Start with Approach A for immediate coverage
 2. Build shim infrastructure incrementally
