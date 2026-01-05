@@ -56,6 +56,8 @@
   (selected-psk-index nil)  ; Index of selected PSK identity
   (resumption-master-secret nil :type (or null octet-vector))  ; For ticket generation
   (ticket-nonce-counter 0 :type fixnum)  ; Counter for ticket nonces
+  ;; Message buffer for reassembling fragmented handshake messages
+  (message-buffer nil :type (or null octet-vector))
   ;; State machine state
   (state :start))
 
@@ -620,27 +622,52 @@
 ;;;; Handshake Message Reading
 
 (defun server-read-handshake-message (hs &key update-transcript)
-  "Read the next handshake message from the record layer.
-   Returns (VALUES message raw-bytes)."
-  (multiple-value-bind (content-type data)
-      (record-layer-read (server-handshake-record-layer hs))
-    ;; Handle alerts
-    (when (= content-type +content-type-alert+)
-      (process-alert data))
-    ;; Skip change_cipher_spec (compatibility)
-    (when (= content-type +content-type-change-cipher-spec+)
-      (return-from server-read-handshake-message
-        (server-read-handshake-message hs :update-transcript update-transcript)))
-    ;; Must be handshake
-    (unless (= content-type +content-type-handshake+)
-      (error 'tls-handshake-error
-             :message (format nil "Expected handshake, got content type ~D" content-type)
-             :state (server-handshake-state hs)))
+  "Read and parse a handshake message from the record layer.
+   Handles handshake messages that are fragmented across multiple TLS records
+   by buffering data until a complete message is available.
+   Returns (VALUES message raw-bytes) where raw-bytes are the serialized message bytes."
+  ;; Read more data if needed until we have a complete message
+  (loop while (not (handshake-buffer-has-complete-message-p
+                    (server-handshake-message-buffer hs)))
+        do (handler-case
+               (multiple-value-bind (content-type data)
+                   (record-layer-read (server-handshake-record-layer hs))
+                 ;; Handle alerts
+                 (when (= content-type +content-type-alert+)
+                   (process-alert data))
+                 ;; Skip change_cipher_spec (compatibility) - just continue loop
+                 (unless (= content-type +content-type-change-cipher-spec+)
+                   ;; Must be handshake
+                   (unless (= content-type +content-type-handshake+)
+                     (error 'tls-handshake-error
+                            :message (format nil "Expected handshake, got content type ~D" content-type)
+                            :state (server-handshake-state hs)))
+                   ;; Append to buffer
+                   (setf (server-handshake-message-buffer hs)
+                         (if (server-handshake-message-buffer hs)
+                             (concat-octet-vectors (server-handshake-message-buffer hs) data)
+                             data))))
+             ;; Handle record overflow - send alert and re-signal
+             (tls-record-overflow (e)
+               (handler-case
+                   (record-layer-write-alert (server-handshake-record-layer hs)
+                                             +alert-level-fatal+
+                                             +alert-record-overflow+)
+                 (error () nil))
+               (error e))))
+  ;; Extract one message from buffer
+  (multiple-value-bind (message-bytes remaining)
+      (handshake-buffer-extract-message (server-handshake-message-buffer hs))
+    (setf (server-handshake-message-buffer hs) remaining)
+    ;; Optionally update transcript with raw message bytes
+    (when update-transcript
+      (server-handshake-update-transcript hs message-bytes))
+    ;; Parse the message and return both parsed message and raw bytes
     (let ((hash-length (when (server-handshake-selected-cipher-suite hs)
                          (cipher-suite-hash-length
                           (server-handshake-selected-cipher-suite hs)))))
-      (values (parse-handshake-message data :hash-length hash-length)
-              data))))
+      (values (parse-handshake-message message-bytes :hash-length hash-length)
+              message-bytes))))
 
 ;;;; Main Handshake Orchestration
 

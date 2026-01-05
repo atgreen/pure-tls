@@ -856,24 +856,9 @@
     (setf (client-handshake-state hs) :connected)))
 
 ;;;; Main Handshake Loop
-
-(defun handshake-buffer-has-complete-message-p (buffer)
-  "Check if the buffer contains at least one complete handshake message."
-  (when (and buffer (>= (length buffer) 4))
-    ;; Parse the length from the header
-    (let ((msg-length (decode-uint24 buffer 1)))
-      (>= (length buffer) (+ 4 msg-length)))))
-
-(defun handshake-buffer-extract-message (buffer)
-  "Extract one handshake message from the buffer.
-   Returns (VALUES message-bytes remaining-buffer)."
-  (let* ((msg-length (decode-uint24 buffer 1))
-         (total-length (+ 4 msg-length))
-         (message (subseq buffer 0 total-length))
-         (remaining (if (> (length buffer) total-length)
-                        (subseq buffer total-length)
-                        nil)))
-    (values message remaining)))
+;;;
+;;; Note: handshake-buffer-has-complete-message-p and handshake-buffer-extract-message
+;;; are defined in messages.lisp and shared by both client and server.
 
 (defun read-handshake-message (hs &key (update-transcript t))
   "Read and parse a handshake message from the record layer.
@@ -1012,23 +997,38 @@
                 :message (format nil "Unknown state: ~A" (client-handshake-state hs))))))))
 
 (defun read-raw-handshake-message (hs)
-  "Read a raw handshake message before encryption is established."
-  (handler-case
-      (multiple-value-bind (content-type data)
-          (record-layer-read (client-handshake-record-layer hs))
-        ;; Handle alerts
-        (when (= content-type +content-type-alert+)
-          (process-alert data))
-        ;; Must be handshake
-        (unless (= content-type +content-type-handshake+)
-          (error 'tls-handshake-error
-                 :message (format nil "Expected handshake, got content type ~D" content-type)))
-        data)
-    ;; Handle record overflow - send alert and re-signal
-    (tls-record-overflow (e)
-      (handler-case
-          (record-layer-write-alert (client-handshake-record-layer hs)
-                                    +alert-level-fatal+
-                                    +alert-record-overflow+)
-        (error () nil))
-      (error e))))
+  "Read a raw handshake message before encryption is established.
+   Handles handshake messages fragmented across multiple TLS records."
+  ;; Read more data if needed until we have a complete message
+  (loop while (not (handshake-buffer-has-complete-message-p
+                    (client-handshake-message-buffer hs)))
+        do (handler-case
+               (multiple-value-bind (content-type data)
+                   (record-layer-read (client-handshake-record-layer hs))
+                 ;; Handle alerts
+                 (when (= content-type +content-type-alert+)
+                   (process-alert data))
+                 ;; Skip change_cipher_spec (compatibility) - just continue loop
+                 (unless (= content-type +content-type-change-cipher-spec+)
+                   ;; Must be handshake
+                   (unless (= content-type +content-type-handshake+)
+                     (error 'tls-handshake-error
+                            :message (format nil "Expected handshake, got content type ~D" content-type)))
+                   ;; Append to buffer
+                   (setf (client-handshake-message-buffer hs)
+                         (if (client-handshake-message-buffer hs)
+                             (concat-octet-vectors (client-handshake-message-buffer hs) data)
+                             data))))
+             ;; Handle record overflow - send alert and re-signal
+             (tls-record-overflow (e)
+               (handler-case
+                   (record-layer-write-alert (client-handshake-record-layer hs)
+                                             +alert-level-fatal+
+                                             +alert-record-overflow+)
+                 (error () nil))
+               (error e))))
+  ;; Extract one message from buffer
+  (multiple-value-bind (message-bytes remaining)
+      (handshake-buffer-extract-message (client-handshake-message-buffer hs))
+    (setf (client-handshake-message-buffer hs) remaining)
+    message-bytes))

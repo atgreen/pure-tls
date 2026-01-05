@@ -371,3 +371,30 @@
     (#.+handshake-key-update+ "KeyUpdate")
     (#.+handshake-message-hash+ "MessageHash")
     (otherwise (format nil "Unknown(~D)" msg-type))))
+
+;;;; Handshake Message Buffer Functions
+;;;
+;;; These functions support reassembling handshake messages that are
+;;; fragmented across multiple TLS records (per RFC 8446 Section 5.1).
+
+(defun handshake-buffer-has-complete-message-p (buffer)
+  "Check if the buffer contains at least one complete handshake message.
+   A handshake message has a 4-byte header (type + 3-byte length) followed by
+   the message body."
+  (when (and buffer (>= (length buffer) 4))
+    ;; Parse the length from the header (bytes 1-3 are the 24-bit length)
+    (let ((msg-length (decode-uint24 buffer 1)))
+      (>= (length buffer) (+ 4 msg-length)))))
+
+(defun handshake-buffer-extract-message (buffer)
+  "Extract one complete handshake message from the buffer.
+   Returns (VALUES message-bytes remaining-buffer).
+   MESSAGE-BYTES contains the complete message including header.
+   REMAINING-BUFFER contains any leftover data (or NIL if empty)."
+  (let* ((msg-length (decode-uint24 buffer 1))
+         (total-length (+ 4 msg-length))
+         (message (subseq buffer 0 total-length))
+         (remaining (if (> (length buffer) total-length)
+                        (subseq buffer total-length)
+                        nil)))
+    (values message remaining)))
