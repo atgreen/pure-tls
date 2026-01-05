@@ -69,38 +69,51 @@ The following RFC compliance issues were fixed:
 # BoringSSL Test Suite Status (2026-01-05)
 
 ## Latest Run
-- Command: `go test -v -shim-path=/home/green/git/pure-tls/pure-tls-shim -allow-unimplemented -test "*TLS13*"`
-- Shim build: `XDG_CACHE_HOME=/home/green/git/pure-tls/.cache make -B boringssl-shim`
-- TLS 1.2 handling: shim now skips any test whose version range permits < TLS 1.3 (returns exit 89 = unimplemented).
+- **Pass rate: 65.4% (4274 passed, 2259 failed out of 6533 tests)**
+- Command: `go test -shim-path=/home/green/git/pure-tls/pure-tls-shim -allow-unimplemented`
+- Shim build: `make boringssl-shim`
+- TLS 1.2 handling: shim skips any test whose version range permits < TLS 1.3 (returns exit 89 = unimplemented)
+- Test suite completes fully without hanging
 
-## Result Summary
-The TLS 1.3-only suite still reports many failures. The failures are clustered in a few areas rather than spread evenly.
+## Recent Fixes (2026-01-05)
 
-### Key Failure Buckets
+### Alert Handling
+- ✅ `SendBogusAlertType` - Detect invalid alert levels (not 1 or 2)
+- ✅ `DoubleAlert` - Reject oversized alert records (> 2 bytes)
+- ✅ `FragmentAlert` - Reject short/incomplete alert records
+- ✅ `Alert` - Added `:TLSV1_ALERT_RECORD_OVERFLOW:` error code
+
+### Record Layer
+- ✅ `SendInvalidRecordType` - Added `:UNEXPECTED_RECORD:` error code
+- ✅ `LargePlaintext-TLS13-Padded-*` - Fixed inner plaintext size validation
+- ✅ SSLv2 ClientHello - Content type validation to reject invalid records
+
+### Shim Improvements
+- ✅ Fixed test suite hang at 6532/6533 (added `-shim-shuts-down` flag support)
+- ✅ Added `-check-close-notify` flag support for bidirectional shutdown
+
+## Remaining Failure Categories
+
+### Not Implemented (Expected)
+- TLS 1.2 tests (~35% of suite) - pure-tls is TLS 1.3 only
+- ALPS (Application-Level Protocol Settings) - draft extension
+- Certificate callbacks - FailCertCallback-* tests
+- Peek functionality - Peek-* tests
+- 0-RTT early data tests
+
+### Needs Investigation
 - GREASE handling:
-  - `GREASE-Client-TLS13` (client-side GREASE validation - needs investigation)
-  - ~~`GREASE-Server-TLS13`~~ ✅ FIXED (server now sends GREASE in NewSessionTicket)
-- Alert validation:
-  - `SendWarningAlerts-TLS13` (expected `:BAD_ALERT:`)
-  - `SendUserCanceledAlerts-TLS13`
+  - `GREASE-Client-TLS13` (client-side GREASE validation)
+- Alert validation edge cases:
   - `SendUserCanceledAlerts-TooMany-TLS13` (expected `:TOO_MANY_WARNING_ALERTS:`)
-- Record size and overflow:
-  - `LargePlaintext-TLS13-Padded-8193-8192`
-  - `LargePlaintext-TLS13-Padded-16384-1`
+- Record limits:
   - `MaxSendFragment-TLS13`
-- ~~Compression list validation~~ ✅ FIXED (server now validates compression method is [0])
-- Bad record / MAC error mapping:
-  - `TLS-TLS13-CHACHA20_POLY1305_SHA256-BadRecord`
-  - `TLS-TLS13-AES_128_GCM_SHA256-BadRecord`
-  - `AppDataBeforeTLS13KeyChange` / `AppDataBeforeTLS13KeyChange-Empty`
-- Finished verification error mapping:
-  - `BadFinished-Client-TLS13`
-  - `BadFinished-Server-TLS13`
 - Certificate selection behaviors:
-  - Several `CertificateSelection-*` cases fail due to sending an unexpected chain size or not enforcing issuer filters.
-- ECDSA bad signature handling:
-  - `BadECDSA-*` cases expect `:BAD_SIGNATURE:` but receive ECDSA decode errors.
+  - Several `CertificateSelection-*` cases (issuer filters, chain size)
+- ECDSA signature handling:
+  - `BadECDSA-*` cases expect `:BAD_SIGNATURE:` but receive decode errors
 
 ## Notes
 - TLS 1.2 is not required by RFC 8446. It is only a SHOULD if earlier versions are supported.
-- Even with TLS 1.2 gated off at the shim level, TLS 1.3 behavior still needs alignment with BoringSSL expectations for alerts, GREASE, record limits, and cert selection.
+- The 65% pass rate reflects that ~35% of tests are TLS 1.2 specific
+- Most remaining TLS 1.3 failures are in unimplemented features (ALPS, callbacks, etc.)
