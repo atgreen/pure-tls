@@ -404,6 +404,15 @@
               (record-layer-install-keys
                (client-handshake-record-layer hs)
                :read key iv
+               (client-handshake-selected-cipher-suite hs)))
+            ;; Install client handshake keys for writing
+            ;; This is done early so that any alerts during the encrypted handshake
+            ;; phase are also encrypted (required by TLS 1.3)
+            (multiple-value-bind (key iv)
+                (key-schedule-derive-client-traffic-keys ks :handshake)
+              (record-layer-install-keys
+               (client-handshake-record-layer hs)
+               :write key iv
                (client-handshake-selected-cipher-suite hs)))))))
     (setf (client-handshake-state hs) :wait-encrypted-extensions)))
 
@@ -440,12 +449,16 @@
     (let ((sig-ext (find-extension (certificate-request-extensions cert-req)
                                    +extension-signature-algorithms+)))
       (unless sig-ext
+        (record-layer-write-alert (client-handshake-record-layer hs)
+                                  +alert-level-fatal+ +alert-decode-error+)
         (error 'tls-decode-error
-               :message "CertificateRequest missing signature_algorithms extension"))
+               :message ":DECODE_ERROR: CertificateRequest missing signature_algorithms extension"))
       (let ((algorithms (signature-algorithms-ext-algorithms (tls-extension-data sig-ext))))
         (when (null algorithms)
+          (record-layer-write-alert (client-handshake-record-layer hs)
+                                    +alert-level-fatal+ +alert-decode-error+)
           (error 'tls-decode-error
-                 :message "CertificateRequest has empty signature_algorithms list"))
+                 :message ":DECODE_ERROR: CertificateRequest has empty signature_algorithms list"))
         (setf (client-handshake-cert-request-signature-algorithms hs) algorithms)))
     ;; Mark that client auth was requested
     (setf (client-handshake-certificate-requested hs) t)))
@@ -1040,12 +1053,7 @@
    If client auth was requested, sends Certificate (and CertificateVerify if we have a cert)."
   (let* ((ks (client-handshake-key-schedule hs))
          (cipher-suite (client-handshake-selected-cipher-suite hs)))
-    ;; Install client handshake keys for writing (before sending Certificate/Finished)
-    (multiple-value-bind (key iv)
-        (key-schedule-derive-client-traffic-keys ks :handshake)
-      (record-layer-install-keys
-       (client-handshake-record-layer hs)
-       :write key iv cipher-suite))
+    ;; Client handshake write keys were already installed after ServerHello processing
     ;; If server requested client auth, send Certificate (+ CertificateVerify if we have one)
     (when (client-handshake-certificate-requested hs)
       (if (and (client-handshake-client-certificate hs)
@@ -1105,7 +1113,7 @@
                    ;; Must be handshake
                    (unless (= content-type +content-type-handshake+)
                      (error 'tls-handshake-error
-                            :message (format nil "Expected handshake, got content type ~D" content-type)))
+                            :message (format nil ":UNEXPECTED_MESSAGE: Expected handshake, got content type ~D" content-type)))
                    ;; Append to buffer
                    (setf (client-handshake-message-buffer hs)
                          (if (client-handshake-message-buffer hs)
@@ -1165,8 +1173,10 @@
          (let* ((raw-message (read-raw-handshake-message hs))
                 (message (parse-handshake-message raw-message)))
            (unless (= (handshake-message-type message) +handshake-server-hello+)
+             (record-layer-write-alert (client-handshake-record-layer hs)
+                                       +alert-level-fatal+ +alert-unexpected-message+)
              (error 'tls-handshake-error
-                    :message "Expected ServerHello"
+                    :message ":UNEXPECTED_MESSAGE: Expected ServerHello"
                     :state :wait-server-hello))
            ;; DON'T update transcript here - process-server-hello handles it
            ;; (transcript handling differs for HRR vs regular ServerHello)
@@ -1174,8 +1184,10 @@
         (:wait-encrypted-extensions
          (let ((message (read-handshake-message hs)))
            (unless (= (handshake-message-type message) +handshake-encrypted-extensions+)
+             (record-layer-write-alert (client-handshake-record-layer hs)
+                                       +alert-level-fatal+ +alert-unexpected-message+)
              (error 'tls-handshake-error
-                    :message "Expected EncryptedExtensions"
+                    :message ":UNEXPECTED_MESSAGE: Expected EncryptedExtensions"
                     :state :wait-encrypted-extensions))
            (process-encrypted-extensions hs message)))
         (:wait-cert-or-finished
@@ -1203,16 +1215,21 @@
               ;; Don't update transcript yet - process-server-finished will do it after verification
               (setf (client-handshake-state hs) :wait-finished)
               (process-server-finished hs message raw-bytes))
-             (otherwise (error 'tls-handshake-error
-                       :message "Expected CertificateRequest, Certificate or Finished"
+             (otherwise
+             (record-layer-write-alert (client-handshake-record-layer hs)
+                                       +alert-level-fatal+ +alert-unexpected-message+)
+             (error 'tls-handshake-error
+                       :message ":UNEXPECTED_MESSAGE: Expected CertificateRequest, Certificate or Finished"
                        :state :wait-cert-or-finished)))))
         (:wait-certificate-verify
          ;; Don't update transcript yet - we need to verify signature first, THEN update
          (multiple-value-bind (message raw-bytes)
              (read-handshake-message hs :update-transcript nil)
            (unless (= (handshake-message-type message) +handshake-certificate-verify+)
+             (record-layer-write-alert (client-handshake-record-layer hs)
+                                       +alert-level-fatal+ +alert-unexpected-message+)
              (error 'tls-handshake-error
-                    :message "Expected CertificateVerify"
+                    :message ":UNEXPECTED_MESSAGE: Expected CertificateVerify"
                     :state :wait-certificate-verify))
            (process-certificate-verify hs message raw-bytes)))
         (:wait-finished
@@ -1220,8 +1237,10 @@
          (multiple-value-bind (message raw-bytes)
              (read-handshake-message hs :update-transcript nil)
            (unless (= (handshake-message-type message) +handshake-finished+)
+             (record-layer-write-alert (client-handshake-record-layer hs)
+                                       +alert-level-fatal+ +alert-unexpected-message+)
              (error 'tls-handshake-error
-                    :message "Expected Finished"
+                    :message ":UNEXPECTED_MESSAGE: Expected Finished"
                     :state :wait-finished))
            (process-server-finished hs message raw-bytes)))
         (:send-finished
@@ -1249,7 +1268,7 @@
                    ;; Must be handshake
                    (unless (= content-type +content-type-handshake+)
                      (error 'tls-handshake-error
-                            :message (format nil "Expected handshake, got content type ~D" content-type)))
+                            :message (format nil ":UNEXPECTED_MESSAGE: Expected handshake, got content type ~D" content-type)))
                    ;; Append to buffer
                    (setf (client-handshake-message-buffer hs)
                          (if (client-handshake-message-buffer hs)

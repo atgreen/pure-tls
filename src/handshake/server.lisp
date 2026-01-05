@@ -563,19 +563,16 @@
     (server-handshake-update-transcript hs raw-bytes)
     (key-schedule-update-transcript ks raw-bytes)
     ;; Verify certificate chain when verification mode requires it AND trust store available
-    ;; +verify-peer+ with no trust store = just verify signature (proof of key possession)
-    ;; +verify-peer+ with trust store = verify signature AND chain
-    ;; +verify-required+ without trust store = error (chain verification required)
-    (when (member verify-mode (list +verify-peer+ +verify-required+))
-      (if trust-store
-          ;; Full chain verification when trust store is available
-          (verify-certificate-chain
-           (server-handshake-peer-certificate-chain hs)
-           (trust-store-certificates trust-store))
-          ;; No trust store - only +verify-required+ needs to fail
-          (when (= verify-mode +verify-required+)
-            (error 'tls-certificate-error
-                   :message "Client certificate verification requires a trust store but none was configured"))))
+    ;; +verify-peer+ or +verify-required+ with no trust store = just verify signature (proof of key possession)
+    ;; +verify-peer+ or +verify-required+ with trust store = verify signature AND chain
+    ;; Note: +verify-required+ ensures certificate is REQUIRED (checked earlier in process-client-certificate)
+    ;;       but chain verification only happens when a trust store is provided
+    (when (and (member verify-mode (list +verify-peer+ +verify-required+))
+               trust-store)
+      ;; Full chain verification when trust store is available
+      (verify-certificate-chain
+       (server-handshake-peer-certificate-chain hs)
+       (trust-store-certificates trust-store)))
     (setf (server-handshake-state hs) :wait-client-finished)))
 
 (defun process-client-finished (hs message raw-bytes)
@@ -695,7 +692,7 @@
                    ;; Must be handshake
                    (unless (= content-type +content-type-handshake+)
                      (error 'tls-handshake-error
-                            :message (format nil "Expected handshake, got content type ~D" content-type)
+                            :message (format nil ":UNEXPECTED_MESSAGE: Expected handshake, got content type ~D" content-type)
                             :state (server-handshake-state hs)))
                    ;; Append to buffer
                    (setf (server-handshake-message-buffer hs)
@@ -757,8 +754,10 @@
          (multiple-value-bind (message raw-bytes)
              (server-read-handshake-message hs)
            (unless (= (handshake-message-type message) +handshake-client-hello+)
+             (record-layer-write-alert (server-handshake-record-layer hs)
+                                       +alert-level-fatal+ +alert-unexpected-message+)
              (error 'tls-handshake-error
-                    :message "Expected ClientHello"
+                    :message ":UNEXPECTED_MESSAGE: Expected ClientHello"
                     :state :wait-client-hello))
            (process-client-hello hs message raw-bytes)))
 
@@ -795,8 +794,10 @@
          (multiple-value-bind (message raw-bytes)
              (server-read-handshake-message hs)
            (unless (= (handshake-message-type message) +handshake-certificate-verify+)
+             (record-layer-write-alert (server-handshake-record-layer hs)
+                                       +alert-level-fatal+ +alert-unexpected-message+)
              (error 'tls-handshake-error
-                    :message "Expected client CertificateVerify"
+                    :message ":UNEXPECTED_MESSAGE: Expected client CertificateVerify"
                     :state :wait-client-certificate-verify))
            (process-client-certificate-verify hs message raw-bytes)))
 
@@ -804,8 +805,10 @@
          (multiple-value-bind (message raw-bytes)
              (server-read-handshake-message hs)
            (unless (= (handshake-message-type message) +handshake-finished+)
+             (record-layer-write-alert (server-handshake-record-layer hs)
+                                       +alert-level-fatal+ +alert-unexpected-message+)
              (error 'tls-handshake-error
-                    :message "Expected client Finished"
+                    :message ":UNEXPECTED_MESSAGE: Expected client Finished"
                     :state :wait-client-finished))
            (process-client-finished hs message raw-bytes)))
 

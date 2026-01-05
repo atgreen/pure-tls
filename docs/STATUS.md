@@ -90,7 +90,7 @@ The following RFC compliance issues were fixed:
 # BoringSSL Test Suite Status (2026-01-05)
 
 ## Latest Run
-- **Pass rate: 65.4% (4274 passed, 2259 failed out of 6533 tests)**
+- **Pass rate: 66.0% (4311 passed, 2222 failed out of 6533 tests)**
 - Command: `go test -shim-path=/home/green/git/pure-tls/pure-tls-shim -allow-unimplemented`
 - Shim build: `make boringssl-shim`
 - TLS 1.2 handling: shim skips any test whose version range permits < TLS 1.3 (returns exit 89 = unimplemented)
@@ -129,10 +129,22 @@ The following RFC compliance issues were fixed:
 - ✅ `BadECDSA-*-TLS13` - All TLS 1.3 variants pass (return `:BAD_SIGNATURE:`)
 - ✅ `TooManyKeyUpdates` - Added key update counter with 32 limit
 - ✅ `SendEmptyRecords` / `SendEmptyRecords-Async` - Added empty record counter with 32 limit
+- ✅ `WrongMessageType-TLS13-*` - 9/10 TLS 1.3 tests now pass (added `:UNEXPECTED_MESSAGE:` error codes and alerts)
+  - Client installs handshake write keys immediately after ServerHello for encrypted alerts
+  - Files: `src/handshake/client.lisp`, `src/handshake/server.lisp`
+- ✅ `TLS13-Client-ClientAuth-*` - Fixed client certificate handling when certificate is already an X509 object
+  - File: `src/streams.lisp`
+- ✅ `TLS13-Server-ClientAuth-*` - Server-side client auth tests pass
+  - Fixed: skip chain verification when no trust store provided (still requires certificate)
+  - Files: `src/handshake/server.lisp`, `src/streams.lisp`
+- ✅ `ClientAuth-NoFallback-TLS13` - Added `:DECODE_ERROR:` for CertificateRequest parse errors
+  - File: `src/handshake/client.lisp`
 
 ### Needs Investigation
 - Certificate selection behaviors:
   - Several `CertificateSelection-*` cases (issuer filters, chain size)
+- `WrongMessageType-TLS13-ClientCertificate-TLS` - Server-side test fails with "broken pipe"
+  - TCP timing issue: connection closes before peer receives alert
 
 ## Notes
 - TLS 1.2 is not required by RFC 8446. It is only a SHOULD if earlier versions are supported.

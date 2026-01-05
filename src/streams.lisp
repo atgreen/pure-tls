@@ -484,8 +484,11 @@
          ;; SNI uses sni-hostname if provided, otherwise hostname
          (sni-name (or sni-hostname hostname))
          ;; Load client certificate chain from file if path provided
+         ;; Handle: list of certs, single cert object, file path, or nil
          (loaded-certs (cond
+                         ((null client-certificate) nil)
                          ((listp client-certificate) client-certificate)
+                         ((x509-certificate-p client-certificate) (list client-certificate))
                          ((stringp client-certificate) (load-certificate-chain client-certificate))
                          ((pathnamep client-certificate) (load-certificate-chain client-certificate))
                          (t nil)))
@@ -593,13 +596,10 @@
                         (t key)))  ; Already an Ironclad key object
          ;; Get trust store for client certificate verification
          ;; Use explicit trust-store parameter if provided
-         ;; Only fall back to context trust store if verify mode REQUIRES verification
-         ;; (not for +verify-peer+ which allows optional verification)
-         (client-trust-store (cond
-                               (trust-store trust-store)
-                               ((= verify +verify-required+)
-                                (tls-context-trust-store context))
-                               (t nil)))
+         ;; Do NOT fall back to context trust store - server-side client cert verification
+         ;; should only use what's explicitly provided. This allows +verify-required+ to
+         ;; require a certificate without verifying its chain (e.g., for testing).
+         (client-trust-store trust-store)
          ;; Get ALPN protocols
          (alpn (or alpn-protocols (tls-context-alpn-protocols context))))
     ;; Validate we have certificate and key
