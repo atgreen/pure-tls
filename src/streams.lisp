@@ -251,11 +251,17 @@
 (defmethod stream-read-sequence ((stream tls-stream) sequence start end &key)
   (when (tls-stream-closed-p stream)
     (return-from stream-read-sequence start))
-  (let ((pos start))
+  (let ((pos start)
+        (first-read t))  ; Track if this is the first read
     (loop while (< pos end)
           do (progn
                ;; Refill buffer if needed
                (when (zerop (tls-stream-buffer-remaining stream))
+                 ;; After first successful read, don't block if no data available
+                 ;; This prevents deadlock when peer is waiting for response
+                 (when (and (not first-read)
+                            (not (listen (tls-stream-underlying-stream stream))))
+                   (return-from stream-read-sequence pos))
                  (handler-case
                      (tls-stream-fill-buffer stream)
                    (tls-connection-closed ()
@@ -270,7 +276,8 @@
                           :end1 (+ pos to-copy)
                           :start2 (tls-stream-input-position stream))
                  (incf pos to-copy)
-                 (incf (tls-stream-input-position stream) to-copy))))
+                 (incf (tls-stream-input-position stream) to-copy)
+                 (setf first-read nil))))  ; Mark that we've read some data
     pos))
 
 (defmethod stream-listen ((stream tls-stream))

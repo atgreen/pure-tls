@@ -262,7 +262,10 @@
             (parse-ec-private-key-with-curve private-key-bytes curve-oid)))))))
 
 (defun parse-ec-private-key-with-curve (private-key-bytes curve-oid)
-  "Parse an EC private key with a known curve OID."
+  "Parse an EC private key with a known curve OID.
+   The private-key-bytes may be either:
+   - Raw private key scalar bytes, or
+   - DER-encoded ECPrivateKey structure (from PKCS#8 wrapper)"
   ;; Map curve OIDs to Ironclad curve names
   (let ((curve (cond
                  ;; secp256r1 / prime256v1: 1.2.840.10045.3.1.7
@@ -273,8 +276,25 @@
                  ((equal curve-oid '(1 3 132 0 35)) :secp521r1)
                  ;; Default to secp256r1
                  (t :secp256r1))))
-    ;; Create the private key from the raw bytes
-    (ironclad:make-private-key curve :x private-key-bytes)))
+    ;; Check if this is DER-encoded ECPrivateKey (starts with SEQUENCE tag 0x30)
+    ;; If so, extract the raw private key from the structure
+    (let ((raw-key (if (and (> (length private-key-bytes) 2)
+                            (= (aref private-key-bytes 0) #x30))  ; SEQUENCE tag
+                       ;; Parse ECPrivateKey structure:
+                       ;; SEQUENCE { version INTEGER, privateKey OCTET STRING, ... }
+                       (handler-case
+                           (let ((parsed (parse-der private-key-bytes)))
+                             (if (and (asn1-sequence-p parsed)
+                                      (>= (length (asn1-children parsed)) 2))
+                                 (asn1-node-value (second (asn1-children parsed)))
+                                 ;; Parsing failed - use bytes as-is (might be raw key)
+                                 private-key-bytes))
+                         (error () private-key-bytes))
+                       ;; Already raw bytes
+                       private-key-bytes)))
+      (unless (and raw-key (> (length raw-key) 0))
+        (error 'tls-error :message "Failed to extract EC private key"))
+      (ironclad:make-private-key curve :x raw-key))))
 
 (defun parse-ed25519-private-key (key-bytes)
   "Parse an Ed25519 private key."

@@ -14,13 +14,15 @@ SBCL := sbcl --noinform --non-interactive
 #           (push (truename ".") asdf:*central-registry*))
 SETUP := 1
 
-.PHONY: all test unit-tests network-tests boringssl-tests boringssl-shim load clean help
+.PHONY: all test check all-tests unit-tests network-tests boringssl-tests boringssl-shim load clean help
 
 all: test
 
 help:
 	@echo "pure-tls Makefile targets:"
-	@echo "  test            - Run unit tests (default)"
+	@echo "  test            - Run all tests (default)"
+	@echo "  check           - Alias for test"
+	@echo "  all-tests       - Run all tests (unit, network, verify, connect, boringssl)"
 	@echo "  unit-tests      - Run unit tests (crypto, record, handshake, certificate)"
 	@echo "  network-tests   - Run network integration tests (requires internet)"
 	@echo "  boringssl-shim  - Build the BoringSSL test shim"
@@ -30,8 +32,12 @@ help:
 	@echo "  verify          - Run certificate verification tests"
 	@echo "  clean           - Remove compiled files"
 
-# Run unit tests (no network required)
-test: unit-tests
+# Run all tests
+test: all-tests
+
+check: all-tests
+
+all-tests: unit-tests network-tests verify connect boringssl-tests
 
 unit-tests:
 	@echo "=== Running pure-tls Unit Tests ==="
