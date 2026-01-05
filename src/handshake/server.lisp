@@ -200,8 +200,10 @@
       (let ((selected (find-if (lambda (s) (member s client-suites))
                                server-suites)))
         (unless selected
+          (record-layer-write-alert (server-handshake-record-layer hs)
+                                    +alert-level-fatal+ +alert-handshake-failure+)
           (error 'tls-handshake-error
-                 :message "No common cipher suite"
+                 :message ":HANDSHAKE_FAILURE_ON_CLIENT_HELLO: No common cipher suite"
                  :state :wait-client-hello))
         (setf (server-handshake-selected-cipher-suite hs) selected)))
     ;; Capture client's signature algorithm preferences (may be nil if missing)

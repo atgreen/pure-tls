@@ -342,7 +342,7 @@
     (let ((cipher-suite (server-hello-cipher-suite server-hello)))
       (unless (member cipher-suite (client-handshake-cipher-suites hs))
         (error 'tls-handshake-error
-               :message "Server selected unsupported cipher suite"
+               :message ":WRONG_CIPHER_RETURNED: Server selected unsupported cipher suite"
                :state :wait-server-hello))
       (setf (client-handshake-selected-cipher-suite hs) cipher-suite))
     ;; Process key_share extension

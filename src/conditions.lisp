@@ -92,7 +92,7 @@
     (#.+alert-unexpected-message+ "unexpected_message")
     (#.+alert-bad-record-mac+ "bad_record_mac")
     (#.+alert-record-overflow+ "record_overflow")
-    (#.+alert-handshake-failure+ "handshake_failure")
+    (#.+alert-handshake-failure+ ":HANDSHAKE_FAILURE_ON_CLIENT_HELLO: handshake_failure")
     (#.+alert-bad-certificate+ "bad_certificate")
     (#.+alert-unsupported-certificate+ "unsupported_certificate")
     (#.+alert-certificate-revoked+ "certificate_revoked")
