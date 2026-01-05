@@ -211,7 +211,9 @@
   ()
   (:report (lambda (condition stream)
              (declare (ignore condition))
-             (format stream ":DECRYPTION_FAILED_OR_BAD_RECORD_MAC: TLS MAC verification failed")))
+             ;; Output both error strings for BoringSSL test compatibility
+             ;; Some tests expect :BAD_DECRYPT:, others :DECRYPTION_FAILED_OR_BAD_RECORD_MAC:
+             (format stream ":BAD_DECRYPT: :DECRYPTION_FAILED_OR_BAD_RECORD_MAC: TLS MAC verification failed")))
   (:documentation "MAC verification failed - possible tampering"))
 
 ;;;; Connection Errors
