@@ -244,7 +244,7 @@
       (handler-case
           (record-layer-write-alert record-layer +alert-level-fatal+ +alert-decode-error+)
         (error () nil)))
-    (error 'tls-decode-error :message "Alert too short"))
+    (error 'tls-error :message ":BAD_ALERT: Alert too short"))
   ;; An alert record must be exactly 2 bytes - reject "double alerts"
   (when (> (length content) 2)
     (when record-layer
