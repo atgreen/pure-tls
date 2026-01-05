@@ -387,6 +387,8 @@
                                         (context (ensure-default-context))
                                         (verify (tls-context-verify-mode context))
                                         alpn-protocols
+                                        client-certificate
+                                        client-key
                                         close-callback
                                         external-format
                                         (buffer-size *default-buffer-size*))
@@ -398,6 +400,8 @@
    CONTEXT - TLS context for configuration.
    VERIFY - Certificate verification mode.
    ALPN-PROTOCOLS - List of ALPN protocol names to offer.
+   CLIENT-CERTIFICATE - Certificate for client authentication (mTLS).
+   CLIENT-KEY - Private key for client authentication (mTLS).
    CLOSE-CALLBACK - Function called when stream is closed.
    EXTERNAL-FORMAT - If non-NIL, wrap in a flexi-stream.
    BUFFER-SIZE - Size of I/O buffers.
@@ -421,7 +425,9 @@
                                    (tls-context-alpn-protocols context))
                :verify-mode verify
                :trust-store trust-store
-               :skip-hostname-verify (and sni-hostname (null hostname)))))
+               :skip-hostname-verify (and sni-hostname (null hostname))
+               :client-certificate client-certificate
+               :client-private-key client-key)))
       (setf (tls-stream-handshake stream) hs)
       ;; Verify certificate chain and hostname if verification enabled
       (when (and (member verify (list +verify-peer+ +verify-required+))
@@ -450,6 +456,7 @@
                                         certificate
                                         key
                                         (verify +verify-none+)
+                                        trust-store
                                         alpn-protocols
                                         sni-callback
                                         close-callback
@@ -462,6 +469,7 @@
    CERTIFICATE - Certificate chain (list of x509-certificate) or path to PEM file.
    KEY - Private key (Ironclad key object) or path to PEM file.
    VERIFY - Client certificate verification mode (+verify-none+, +verify-peer+, +verify-required+).
+   TRUST-STORE - Trust store for verifying client certificates.
    ALPN-PROTOCOLS - List of ALPN protocol names the server supports.
    SNI-CALLBACK - Function called with the client's requested hostname.
                   Should return (VALUES certificate-chain private-key) for that host,
@@ -493,8 +501,14 @@
                                (tls-context-private-key context))))
                         (t key)))  ; Already an Ironclad key object
          ;; Get trust store for client certificate verification
-         (trust-store (when (member verify (list +verify-peer+ +verify-required+))
-                        (tls-context-trust-store context)))
+         ;; Use explicit trust-store parameter if provided
+         ;; Only fall back to context trust store if verify mode REQUIRES verification
+         ;; (not for +verify-peer+ which allows optional verification)
+         (client-trust-store (cond
+                               (trust-store trust-store)
+                               ((= verify +verify-required+)
+                                (tls-context-trust-store context))
+                               (t nil)))
          ;; Get ALPN protocols
          (alpn (or alpn-protocols (tls-context-alpn-protocols context))))
     ;; Validate we have certificate and key
@@ -510,7 +524,7 @@
                private-key
                :alpn-protocols alpn
                :verify-mode verify
-               :trust-store trust-store
+               :trust-store client-trust-store
                :sni-callback sni-callback)))
       (setf (tls-stream-handshake stream) hs))
     ;; Wrap with flexi-stream if external-format specified

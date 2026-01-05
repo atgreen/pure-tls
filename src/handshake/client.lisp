@@ -58,6 +58,10 @@
   ;; Client authentication (mTLS)
   (certificate-requested nil :type boolean)  ; T if server sent CertificateRequest
   (cert-request-context nil :type (or null octet-vector))  ; Context from CertificateRequest
+  ;; Client certificate/key for mTLS (when server requests client auth)
+  (client-certificate nil)  ; Parsed X.509 certificate (or raw DER)
+  (client-private-key nil)  ; Private key for signing CertificateVerify
+  (client-certificate-chain nil :type list)  ; Additional chain certificates
   ;; State
   (state :start))
 
@@ -816,9 +820,59 @@
     ;; Send
     (record-layer-write-handshake (client-handshake-record-layer hs) message)))
 
+(defun send-client-certificate (hs)
+  "Send the client's Certificate message with actual certificate(s).
+   Uses the certificate and chain from the handshake state."
+  (let* ((context (or (client-handshake-cert-request-context hs)
+                      (make-octet-vector 0)))
+         ;; Build certificate entries (client cert first, then chain certs)
+         (client-cert (client-handshake-client-certificate hs))
+         (chain-certs (client-handshake-client-certificate-chain hs))
+         ;; Combine: client cert + chain
+         (all-certs (cons client-cert chain-certs))
+         (cert-entries
+           (mapcar (lambda (cert)
+                     ;; Handle both raw DER bytes and X509-CERTIFICATE objects
+                     (let ((cert-der (if (x509-certificate-p cert)
+                                         (x509-certificate-raw-der cert)
+                                         cert)))
+                       (make-certificate-entry
+                        :cert-data cert-der
+                        :extensions nil)))
+                   all-certs))
+         (cert-msg (make-certificate-message
+                    :certificate-request-context context
+                    :certificate-list cert-entries))
+         (cert-bytes (serialize-certificate-message cert-msg))
+         (message (wrap-handshake-message +handshake-certificate+ cert-bytes)))
+    ;; Update transcript
+    (client-handshake-update-transcript hs message)
+    ;; Send
+    (record-layer-write-handshake (client-handshake-record-layer hs) message)))
+
+(defun send-client-certificate-verify (hs)
+  "Send the client's CertificateVerify message.
+   Signs the transcript hash with the client's private key."
+  (let* ((ks (client-handshake-key-schedule hs))
+         (transcript-hash (key-schedule-transcript-hash-value ks))
+         ;; Build the content to sign (per RFC 8446 Section 4.4.3)
+         ;; Note: t = client context string
+         (content (make-certificate-verify-content transcript-hash t))
+         ;; Sign with client's private key
+         (private-key (client-handshake-client-private-key hs))
+         (signature (sign-data content private-key))
+         (algorithm (signature-algorithm-for-key private-key))
+         (cv (make-certificate-verify :algorithm algorithm :signature signature))
+         (cv-bytes (serialize-certificate-verify cv))
+         (message (wrap-handshake-message +handshake-certificate-verify+ cv-bytes)))
+    ;; Update transcript
+    (client-handshake-update-transcript hs message)
+    ;; Send
+    (record-layer-write-handshake (client-handshake-record-layer hs) message)))
+
 (defun send-client-finished (hs)
   "Send client Finished message.
-   If client auth was requested, sends empty Certificate first."
+   If client auth was requested, sends Certificate (and CertificateVerify if we have a cert)."
   (let* ((ks (client-handshake-key-schedule hs))
          (cipher-suite (client-handshake-selected-cipher-suite hs)))
     ;; Install client handshake keys for writing (before sending Certificate/Finished)
@@ -827,9 +881,16 @@
       (record-layer-install-keys
        (client-handshake-record-layer hs)
        :write key iv cipher-suite))
-    ;; If server requested client auth, send empty Certificate first
+    ;; If server requested client auth, send Certificate (+ CertificateVerify if we have one)
     (when (client-handshake-certificate-requested hs)
-      (send-empty-client-certificate hs))
+      (if (and (client-handshake-client-certificate hs)
+               (client-handshake-client-private-key hs))
+          ;; We have a certificate and key - send them
+          (progn
+            (send-client-certificate hs)
+            (send-client-certificate-verify hs))
+          ;; No certificate available - send empty Certificate
+          (send-empty-client-certificate hs)))
     ;; Compute verify_data using current transcript
     (let* ((transcript-hash (key-schedule-transcript-hash-value ks))
            (verify-data (compute-finished-verify-data
@@ -910,17 +971,25 @@
 (defun perform-client-handshake (record-layer &key hostname alpn-protocols
                                                    (verify-mode +verify-required+)
                                                    trust-store
-                                                   skip-hostname-verify)
+                                                   skip-hostname-verify
+                                                   client-certificate
+                                                   client-private-key
+                                                   client-certificate-chain)
   "Perform the TLS 1.3 client handshake.
    Returns a CLIENT-HANDSHAKE structure on success.
    TRUST-STORE is used for certificate chain verification when verify-mode is +verify-required+.
-   SKIP-HOSTNAME-VERIFY when true skips hostname verification (for SNI-only hostname)."
+   SKIP-HOSTNAME-VERIFY when true skips hostname verification (for SNI-only hostname).
+   CLIENT-CERTIFICATE and CLIENT-PRIVATE-KEY are used for client authentication (mTLS)
+   when the server requests it. CLIENT-CERTIFICATE-CHAIN provides additional chain certificates."
   (let ((hs (make-client-handshake
              :hostname hostname
              :alpn-protocols alpn-protocols
              :verify-mode verify-mode
              :trust-store trust-store
              :skip-hostname-verify skip-hostname-verify
+             :client-certificate client-certificate
+             :client-private-key client-private-key
+             :client-certificate-chain client-certificate-chain
              :record-layer record-layer)))
     ;; Send ClientHello
     (send-client-hello hs)

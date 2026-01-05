@@ -523,16 +523,20 @@
     ;; Update transcript AFTER verification
     (server-handshake-update-transcript hs raw-bytes)
     (key-schedule-update-transcript ks raw-bytes)
-    ;; Verify certificate chain when verification mode requires it
+    ;; Verify certificate chain when verification mode requires it AND trust store available
+    ;; +verify-peer+ with no trust store = just verify signature (proof of key possession)
+    ;; +verify-peer+ with trust store = verify signature AND chain
+    ;; +verify-required+ without trust store = error (chain verification required)
     (when (member verify-mode (list +verify-peer+ +verify-required+))
-      ;; Trust store is REQUIRED for chain verification
-      ;; Without it, we can't verify the client cert is from a trusted CA
-      (unless trust-store
-        (error 'tls-certificate-error
-               :message "Client certificate verification requires a trust store but none was configured"))
-      (verify-certificate-chain
-       (server-handshake-peer-certificate-chain hs)
-       (trust-store-certificates trust-store)))
+      (if trust-store
+          ;; Full chain verification when trust store is available
+          (verify-certificate-chain
+           (server-handshake-peer-certificate-chain hs)
+           (trust-store-certificates trust-store))
+          ;; No trust store - only +verify-required+ needs to fail
+          (when (= verify-mode +verify-required+)
+            (error 'tls-certificate-error
+                   :message "Client certificate verification requires a trust store but none was configured"))))
     (setf (server-handshake-state hs) :wait-client-finished)))
 
 (defun process-client-finished (hs message raw-bytes)

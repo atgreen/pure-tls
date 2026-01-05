@@ -61,7 +61,8 @@
   (expect-hrr nil :type boolean)  ; HelloRetryRequest expected
   (ech-grease nil :type boolean)  ; ECH GREASE
   (psk nil :type (or null string))  ; PSK mode
-  (channel-id nil :type boolean))  ; Channel ID
+  (channel-id nil :type boolean)  ; Channel ID
+  (require-any-client-certificate nil :type boolean))  ; Require client cert (mTLS)
 
 ;;;; Argument Parsing
 (defun parse-args (args)
@@ -240,6 +241,10 @@
                ((string= arg "-enable-channel-id")
                 (setf (shim-config-channel-id config) t))
 
+               ;; Require client certificate (mTLS)
+               ((string= arg "-require-any-client-certificate")
+                (setf (shim-config-require-any-client-certificate config) t))
+
                ;; Skip unknown flags but continue
                (t
                 ;; Check if next arg is a value for this flag
@@ -286,12 +291,6 @@
                           (= curve-id 29)))  ; X25519
                     curves))))
      :unsupported-curves)
-
-    ;; Client certificate authentication not supported
-    ;; If client mode with cert-file specified, test expects client auth
-    ((and (not (shim-config-is-server config))
-          (shim-config-cert-file config))
-     :client-auth-not-supported)
 
     ;; Certificate compression not supported
     ((shim-config-cert-compression config)
@@ -369,43 +368,48 @@
 (defun run-client-test (config stream)
   "Run TLS client test against the runner.
    STREAM is the raw TCP stream from usocket:socket-stream."
-  (let* ((trust-store (load-trust-store config))
-         (alpn (parse-alpn-protocols (shim-config-advertise-alpn config)))
-         (hostname (or (shim-config-host-name config) "localhost"))
-         (tls-stream
-           (pure-tls:make-tls-client-stream
-            stream
-            :hostname hostname
-            :alpn-protocols alpn
-            :verify (if (shim-config-verify-peer config)
-                        pure-tls:+verify-required+
-                        pure-tls:+verify-none+))))
+  (multiple-value-bind (client-cert-chain client-private-key)
+      (load-credentials config)
+    (let* ((trust-store (load-trust-store config))
+           (alpn (parse-alpn-protocols (shim-config-advertise-alpn config)))
+           (hostname (or (shim-config-host-name config) "localhost"))
+           (tls-stream
+             (pure-tls:make-tls-client-stream
+              stream
+              :hostname hostname
+              :alpn-protocols alpn
+              :verify (if (shim-config-verify-peer config)
+                          pure-tls:+verify-required+
+                          pure-tls:+verify-none+)
+              ;; Pass client certificate/key for mTLS
+              :client-certificate (first client-cert-chain)
+              :client-key client-private-key)))
 
-    ;; Check ALPN result if expected
-    (when (shim-config-expect-alpn config)
-      (let ((negotiated (pure-tls:tls-selected-alpn tls-stream)))
-        (unless (string= negotiated (shim-config-expect-alpn config))
-          (error "ALPN mismatch: expected ~S, got ~S"
-                 (shim-config-expect-alpn config) negotiated))))
+      ;; Check ALPN result if expected
+      (when (shim-config-expect-alpn config)
+        (let ((negotiated (pure-tls:tls-selected-alpn tls-stream)))
+          (unless (string= negotiated (shim-config-expect-alpn config))
+            (error "ALPN mismatch: expected ~S, got ~S"
+                   (shim-config-expect-alpn config) negotiated))))
 
-    ;; Exchange test data
-    ;; Use a large buffer to handle LargePlaintext tests (up to 16KB)
-    (if (shim-config-shim-writes-first config)
-        (progn
-          (write-sequence (babel:string-to-octets "hello") tls-stream)
-          (force-output tls-stream)
-          (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
-            (read-sequence buf tls-stream)))
-        (progn
-          (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
-            (let ((n (read-sequence buf tls-stream)))
-              (when (> n 0)
-                (write-sequence buf tls-stream :end n)
-                (force-output tls-stream))))))
+      ;; Exchange test data
+      ;; Use a large buffer to handle LargePlaintext tests (up to 16KB)
+      (if (shim-config-shim-writes-first config)
+          (progn
+            (write-sequence (babel:string-to-octets "hello") tls-stream)
+            (force-output tls-stream)
+            (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
+              (read-sequence buf tls-stream)))
+          (progn
+            (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
+              (let ((n (read-sequence buf tls-stream)))
+                (when (> n 0)
+                  (write-sequence buf tls-stream :end n)
+                  (force-output tls-stream))))))
 
-    ;; Close with close_notify
-    (close tls-stream)
-    +exit-success+))
+      ;; Close with close_notify
+      (close tls-stream)
+      +exit-success+)))
 
 (defun run-server-test (config stream)
   "Run TLS server test against the runner.
@@ -421,11 +425,20 @@
                    (error "SNI mismatch: expected ~S, got ~S"
                           (shim-config-expect-server-name config) hostname))
                  nil)))
+           ;; Set verify mode if client certificate is required
+           (verify-mode (if (shim-config-require-any-client-certificate config)
+                            pure-tls:+verify-peer+
+                            pure-tls:+verify-none+))
+           ;; Load trust store for client certificate verification
+           (trust-store (when (shim-config-require-any-client-certificate config)
+                          (load-trust-store config)))
            (tls-stream
              (pure-tls:make-tls-server-stream
               stream
               :certificate cert-chain
               :key private-key
+              :verify verify-mode
+              :trust-store trust-store
               :sni-callback sni-callback)))
 
       ;; Exchange test data
