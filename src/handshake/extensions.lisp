@@ -22,13 +22,25 @@
 
 ;;;; Extension Parsing
 
-(defun parse-extensions (data)
-  "Parse a list of extensions from bytes."
+(defun tls12-only-extension-p (ext-type)
+  "Return T if ext-type is a TLS 1.2-only extension forbidden in TLS 1.3.
+   Per RFC 8446, these extensions MUST NOT be sent in TLS 1.3 handshakes."
+  (or (= ext-type +extension-extended-master-secret+)
+      (= ext-type +extension-renegotiation-info+)))
+
+(defun parse-extensions (data &key validate-tls13)
+  "Parse a list of extensions from bytes.
+   If VALIDATE-TLS13 is true, reject TLS 1.2-only extensions with an error."
   (let ((buf (make-tls-buffer data))
         (extensions nil))
     (loop while (plusp (buffer-remaining buf))
           do (let* ((ext-type (buffer-read-uint16 buf))
                     (ext-data (buffer-read-vector16 buf)))
+               ;; Check for TLS 1.2-only extensions when validating
+               (when (and validate-tls13 (tls12-only-extension-p ext-type))
+                 (error 'tls-handshake-error
+                        :message (format nil ":ERROR_PARSING_EXTENSION: TLS 1.2-only extension ~D received in TLS 1.3"
+                                        ext-type)))
                (push (parse-extension ext-type ext-data) extensions)))
     (nreverse extensions)))
 

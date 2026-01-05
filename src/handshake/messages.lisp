@@ -110,8 +110,10 @@
      :legacy-session-id-echo (buffer-read-vector8 buf)
      :cipher-suite (buffer-read-uint16 buf)
      :legacy-compression-method (buffer-read-octet buf)
+     ;; Validate that TLS 1.2-only extensions are not present
      :extensions (when (plusp (buffer-remaining buf))
-                   (parse-extensions (buffer-read-vector16 buf))))))
+                   (parse-extensions (buffer-read-vector16 buf)
+                                    :validate-tls13 t)))))
 
 (defun serialize-server-hello (hello)
   "Serialize a ServerHello to bytes."
@@ -144,7 +146,9 @@
   "Parse EncryptedExtensions from bytes."
   (let ((buf (make-tls-buffer data)))
     (make-encrypted-extensions
-     :extensions (parse-extensions (buffer-read-vector16 buf)))))
+     ;; Validate that TLS 1.2-only extensions are not present
+     :extensions (parse-extensions (buffer-read-vector16 buf)
+                                  :validate-tls13 t))))
 
 (defun serialize-encrypted-extensions (ee)
   "Serialize an EncryptedExtensions message to bytes."

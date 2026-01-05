@@ -88,6 +88,9 @@
 (defconstant +extension-client-certificate-type+ 19)
 (defconstant +extension-server-certificate-type+ 20)
 (defconstant +extension-padding+ 21)
+;; TLS 1.2-only extensions (forbidden in TLS 1.3 per RFC 8446)
+(defconstant +extension-extended-master-secret+ 23)
+(defconstant +extension-renegotiation-info+ 65281)  ; 0xFF01
 (defconstant +extension-pre-shared-key+ 41)
 (defconstant +extension-early-data+ 42)
 (defconstant +extension-supported-versions+ 43)
