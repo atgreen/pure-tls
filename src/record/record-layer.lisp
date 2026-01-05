@@ -250,6 +250,23 @@
     ;; close_notify is a clean shutdown
     (when (= description +alert-close-notify+)
       (error 'tls-connection-closed :clean t))
+    ;; Check for invalid alert level or unknown alert description
+    ;; Valid alert levels are 1 (warning) and 2 (fatal)
+    (unless (or (= level +alert-level-warning+) (= level +alert-level-fatal+))
+      (when record-layer
+        (handler-case
+            (record-layer-write-alert record-layer +alert-level-fatal+ +alert-illegal-parameter+)
+          (error () nil)))
+      (error 'tls-error
+             :message (format nil ":UNKNOWN_ALERT_TYPE: Unknown alert level ~D" level)))
+    ;; Check for unknown alert description - send illegal_parameter
+    (unless (known-alert-description-p description)
+      (when record-layer
+        (handler-case
+            (record-layer-write-alert record-layer +alert-level-fatal+ +alert-illegal-parameter+)
+          (error () nil)))
+      (error 'tls-error
+             :message (format nil ":UNKNOWN_ALERT_TYPE: Unknown alert type ~D" description)))
     ;; RFC 8446 Section 6: In TLS 1.3, all alerts except close_notify and
     ;; user_canceled MUST be sent at fatal level.
     (when (= level +alert-level-warning+)

@@ -85,6 +85,39 @@
                          "warning"))))
   (:documentation "TLS alert received from peer"))
 
+(defun known-alert-description-p (code)
+  "Return T if CODE is a known TLS alert description, NIL otherwise."
+  (case code
+    ((#.+alert-close-notify+
+      #.+alert-unexpected-message+
+      #.+alert-bad-record-mac+
+      #.+alert-record-overflow+
+      #.+alert-handshake-failure+
+      #.+alert-bad-certificate+
+      #.+alert-unsupported-certificate+
+      #.+alert-certificate-revoked+
+      #.+alert-certificate-expired+
+      #.+alert-certificate-unknown+
+      #.+alert-illegal-parameter+
+      #.+alert-unknown-ca+
+      #.+alert-access-denied+
+      #.+alert-decode-error+
+      #.+alert-decrypt-error+
+      #.+alert-protocol-version+
+      #.+alert-insufficient-security+
+      #.+alert-internal-error+
+      #.+alert-inappropriate-fallback+
+      #.+alert-user-canceled+
+      #.+alert-missing-extension+
+      #.+alert-unsupported-extension+
+      #.+alert-unrecognized-name+
+      #.+alert-bad-certificate-status-response+
+      #.+alert-unknown-psk-identity+
+      #.+alert-certificate-required+
+      #.+alert-no-application-protocol+)
+     t)
+    (otherwise nil)))
+
 (defun alert-description-name (code)
   "Return a human-readable name for an alert description code."
   (case code

@@ -52,6 +52,7 @@
   (no-tls11 nil :type boolean)
   (no-tls1 nil :type boolean)
   (shim-writes-first nil :type boolean)
+  (shim-shuts-down nil :type boolean)
   (check-close-notify nil :type boolean)
   (verify-peer nil :type boolean)
   (advertise-alpn nil :type (or null string))
@@ -169,6 +170,9 @@
                ;; Behavior flags
                ((string= arg "-shim-writes-first")
                 (setf (shim-config-shim-writes-first config) t))
+
+               ((string= arg "-shim-shuts-down")
+                (setf (shim-config-shim-shuts-down config) t))
 
                ((string= arg "-check-close-notify")
                 (setf (shim-config-check-close-notify config) t))
@@ -402,22 +406,38 @@
             (error "ALPN mismatch: expected ~S, got ~S"
                    (shim-config-expect-alpn config) negotiated))))
 
-      ;; Exchange test data
+      ;; Exchange test data (skip if shim-shuts-down is set)
       ;; Use a large buffer to handle LargePlaintext tests (up to 16KB)
-      (if (shim-config-shim-writes-first config)
-          (progn
-            (write-sequence (babel:string-to-octets "hello") tls-stream)
-            (force-output tls-stream)
+      (unless (shim-config-shim-shuts-down config)
+        (if (shim-config-shim-writes-first config)
+            (progn
+              (write-sequence (babel:string-to-octets "hello") tls-stream)
+              (force-output tls-stream)
+              (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
+                (read-sequence buf tls-stream)))
             (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
-              (read-sequence buf tls-stream)))
-            (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
-            (let ((n (read-sequence buf tls-stream)))
-              (when (> n 0)
-                (invert-bytes! buf n)
-                (write-sequence buf tls-stream :end n)
-                (force-output tls-stream)))))
+              (let ((n (read-sequence buf tls-stream)))
+                (when (> n 0)
+                  (invert-bytes! buf n)
+                  (write-sequence buf tls-stream :end n)
+                  (force-output tls-stream))))))
 
       ;; Close with close_notify
+      ;; If check-close-notify is set, wait for peer's close_notify first
+      (when (shim-config-check-close-notify config)
+        ;; Send our close_notify
+        (pure-tls::record-layer-write-alert
+         (pure-tls::tls-stream-record-layer tls-stream)
+         pure-tls::+alert-level-warning+
+         pure-tls::+alert-close-notify+)
+        (force-output tls-stream)
+        ;; Wait for peer's close_notify
+        (handler-case
+            (let ((buf (make-array 1 :element-type '(unsigned-byte 8))))
+              (loop (read-sequence buf tls-stream)))
+          (pure-tls::tls-connection-closed (e)
+            (unless (pure-tls::tls-connection-closed-clean-p e)
+              (error "Expected clean close_notify, got unclean shutdown")))))
       (close tls-stream)
       +exit-success+)))
 
@@ -457,23 +477,39 @@
               :trust-store trust-store
               :sni-callback sni-callback)))
 
-      ;; Exchange test data
+      ;; Exchange test data (skip if shim-shuts-down is set)
       ;; Use a large buffer to handle LargePlaintext tests (up to 16KB)
-      (if (shim-config-shim-writes-first config)
-          (progn
-            (write-sequence (babel:string-to-octets "hello") tls-stream)
-            (force-output tls-stream)
-            (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
-              (read-sequence buf tls-stream)))
-          (progn
-            (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
-              (let ((n (read-sequence buf tls-stream)))
-                (when (> n 0)
-                  (invert-bytes! buf n)
-                  (write-sequence buf tls-stream :end n)
-                  (force-output tls-stream))))))
+      (unless (shim-config-shim-shuts-down config)
+        (if (shim-config-shim-writes-first config)
+            (progn
+              (write-sequence (babel:string-to-octets "hello") tls-stream)
+              (force-output tls-stream)
+              (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
+                (read-sequence buf tls-stream)))
+            (progn
+              (let ((buf (make-array 32768 :element-type '(unsigned-byte 8))))
+                (let ((n (read-sequence buf tls-stream)))
+                  (when (> n 0)
+                    (invert-bytes! buf n)
+                    (write-sequence buf tls-stream :end n)
+                    (force-output tls-stream)))))))
 
       ;; Close with close_notify
+      ;; If check-close-notify is set, wait for peer's close_notify first
+      (when (shim-config-check-close-notify config)
+        ;; Send our close_notify
+        (pure-tls::record-layer-write-alert
+         (pure-tls::tls-stream-record-layer tls-stream)
+         pure-tls::+alert-level-warning+
+         pure-tls::+alert-close-notify+)
+        (force-output tls-stream)
+        ;; Wait for peer's close_notify
+        (handler-case
+            (let ((buf (make-array 1 :element-type '(unsigned-byte 8))))
+              (loop (read-sequence buf tls-stream)))
+          (pure-tls::tls-connection-closed (e)
+            (unless (pure-tls::tls-connection-closed-clean-p e)
+              (error "Expected clean close_notify, got unclean shutdown")))))
       (close tls-stream)
       +exit-success+)))
 
