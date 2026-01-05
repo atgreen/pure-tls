@@ -70,7 +70,8 @@
   (ech-grease nil :type boolean)  ; ECH GREASE
   (psk nil :type (or null string))  ; PSK mode
   (channel-id nil :type boolean)  ; Channel ID
-  (require-any-client-certificate nil :type boolean))  ; Require client cert (mTLS)
+  (require-any-client-certificate nil :type boolean)  ; Require client cert (mTLS)
+  (max-send-fragment 0 :type fixnum))  ; Max send fragment size (0 = default)
 
 ;;;; Argument Parsing
 (defun parse-args (args)
@@ -256,6 +257,13 @@
                ((string= arg "-require-any-client-certificate")
                 (setf (shim-config-require-any-client-certificate config) t))
 
+               ;; Max send fragment size
+               ((string= arg "-max-send-fragment")
+                (incf i)
+                (when (< i (length args))
+                  (setf (shim-config-max-send-fragment config)
+                        (parse-integer (elt args i)))))
+
                ;; Skip unknown flags but continue
                (t
                 ;; Check if next arg is a value for this flag
@@ -387,6 +395,8 @@
     (let* ((trust-store (load-trust-store config))
            (alpn (parse-alpn-protocols (shim-config-advertise-alpn config)))
            (hostname (or (shim-config-host-name config) "localhost"))
+           (max-frag (let ((frag (shim-config-max-send-fragment config)))
+                       (if (plusp frag) frag nil)))
            (tls-stream
              (pure-tls:make-tls-client-stream
               stream
@@ -397,7 +407,8 @@
                           pure-tls:+verify-none+)
               ;; Pass client certificate/key for mTLS
               :client-certificate (first client-cert-chain)
-              :client-key client-private-key)))
+              :client-key client-private-key
+              :max-send-fragment max-frag)))
       (declare (ignore trust-store))
       ;; Check ALPN result if expected
       (when (shim-config-expect-alpn config)
@@ -468,6 +479,9 @@
            (trust-store (when (or (shim-config-require-any-client-certificate config)
                                   (shim-config-verify-peer config))
                           (load-trust-store config)))
+           ;; Max send fragment (0 means use default)
+           (max-frag (let ((frag (shim-config-max-send-fragment config)))
+                       (if (plusp frag) frag nil)))
            (tls-stream
              (pure-tls:make-tls-server-stream
               stream
@@ -475,7 +489,8 @@
               :key private-key
               :verify verify-mode
               :trust-store trust-store
-              :sni-callback sni-callback)))
+              :sni-callback sni-callback
+              :max-send-fragment max-frag)))
 
       ;; Exchange test data (skip if shim-shuts-down is set)
       ;; Use a large buffer to handle LargePlaintext tests (up to 16KB)

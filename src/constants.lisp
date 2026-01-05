@@ -209,5 +209,13 @@
 (defconstant +max-warning-alerts+ 4
   "Maximum number of consecutive warning alerts before closing connection.")
 
+(defconstant +max-key-updates+ 32
+  "Maximum number of KeyUpdate messages before closing connection.
+   This prevents denial-of-service via excessive rekeying.")
+
+(defconstant +max-empty-records+ 32
+  "Maximum number of consecutive empty records before closing connection.
+   This prevents denial-of-service via excessive empty record flooding.")
+
 (defparameter *default-verify-mode* +verify-required+
   "Default certificate verification mode")

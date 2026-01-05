@@ -127,11 +127,14 @@
   (read-cipher nil :type (or null aead-cipher))
   (write-cipher nil :type (or null aead-cipher))
   (cipher-suite 0 :type fixnum)
-  (stream nil))
+  (stream nil)
+  (max-send-fragment +max-record-size+ :type fixnum))
 
-(defun make-record-layer (stream)
-  "Create a new record layer for the given stream."
-  (%make-record-layer :stream stream))
+(defun make-record-layer (stream &key (max-send-fragment +max-record-size+))
+  "Create a new record layer for the given stream.
+   MAX-SEND-FRAGMENT sets the maximum plaintext size for outgoing records."
+  (%make-record-layer :stream stream
+                      :max-send-fragment max-send-fragment))
 
 (defun record-layer-install-keys (layer direction key iv cipher-suite)
   "Install encryption keys for the specified direction (:read or :write)."
@@ -196,12 +199,12 @@
     (record-layer-write layer +content-type-alert+ data)))
 
 (defun record-layer-write-handshake (layer handshake-data)
-  "Write a handshake record."
-  (record-layer-write layer +content-type-handshake+ handshake-data))
+  "Write a handshake record, fragmenting if necessary."
+  (record-layer-write-fragmented layer +content-type-handshake+ handshake-data))
 
 (defun record-layer-write-application-data (layer data)
-  "Write application data."
-  (record-layer-write layer +content-type-application-data+ data))
+  "Write application data, fragmenting if necessary."
+  (record-layer-write-fragmented layer +content-type-application-data+ data))
 
 (defun record-layer-write-change-cipher-spec (layer)
   "Write a dummy change_cipher_spec record for middlebox compatibility.
@@ -226,10 +229,10 @@
             collect (subseq data start (min (+ start max-size) (length data))))))
 
 (defun record-layer-write-fragmented (layer content-type data)
-  "Write DATA as potentially multiple records, fragmenting if necessary."
-  (let ((max-size (if (record-layer-write-cipher layer)
-                      (- +max-record-size+ +aead-tag-length+ 1)  ; room for tag and content type
-                      +max-record-size+)))
+  "Write DATA as potentially multiple records, fragmenting if necessary.
+   Respects the max-send-fragment setting of the record layer.
+   MAX-SEND-FRAGMENT is the maximum plaintext payload size before encryption."
+  (let ((max-size (record-layer-max-send-fragment layer)))
     (dolist (fragment (fragment-data data max-size))
       (record-layer-write layer content-type fragment))))
 

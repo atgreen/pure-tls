@@ -49,7 +49,15 @@
    (warning-alert-count
     :initform 0
     :accessor tls-stream-warning-alert-count
-    :documentation "Count of consecutive warning alerts received. Reset on app data."))
+    :documentation "Count of consecutive warning alerts received. Reset on app data.")
+   (key-update-count
+    :initform 0
+    :accessor tls-stream-key-update-count
+    :documentation "Count of KeyUpdate messages received. Used to prevent DoS.")
+   (empty-record-count
+    :initform 0
+    :accessor tls-stream-empty-record-count
+    :documentation "Count of consecutive empty records. Used to prevent DoS."))
   (:documentation "A TLS-encrypted stream."))
 
 (defclass tls-client-stream (tls-stream)
@@ -130,6 +138,10 @@
 
 (defun tls-stream-process-key-update (stream key-update)
   "Process a KeyUpdate message, updating read keys and responding if requested."
+  ;; Check for too many key updates (DoS prevention)
+  (incf (tls-stream-key-update-count stream))
+  (when (> (tls-stream-key-update-count stream) +max-key-updates+)
+    (error 'tls-error :message ":TOO_MANY_KEY_UPDATES:"))
   ;; RFC 8446 Section 4.6.3: request_update must be 0 or 1
   ;; "If an implementation receives any other value, it MUST terminate
   ;;  the connection with an illegal_parameter alert."
@@ -211,11 +223,20 @@
           (record-layer-read (tls-stream-record-layer stream))
         (case content-type
           (#.+content-type-application-data+
-           ;; Reset warning alert counter on application data
-           (setf (tls-stream-warning-alert-count stream) 0)
-           (setf (tls-stream-input-buffer stream) data)
-           (setf (tls-stream-input-position stream) 0)
-           t)
+           ;; Check for empty records (DoS prevention)
+           (if (zerop (length data))
+               (progn
+                 (incf (tls-stream-empty-record-count stream))
+                 (when (> (tls-stream-empty-record-count stream) +max-empty-records+)
+                   (error 'tls-error :message ":TOO_MANY_EMPTY_FRAGMENTS:"))
+                 ;; Recursively try for more data
+                 (tls-stream-fill-buffer stream))
+               (progn
+                 ;; Reset counters on non-empty application data
+                 (setf (tls-stream-warning-alert-count stream) 0)
+                 (setf (tls-stream-empty-record-count stream) 0)
+                 (setf (tls-stream-input-buffer stream) data)
+                 (setf (tls-stream-input-position stream) 0))))
           (#.+content-type-alert+
            ;; process-alert will error on most alerts, but returns nil for
            ;; user_canceled warnings which should be ignored
@@ -434,7 +455,8 @@
                                         client-key
                                         close-callback
                                         external-format
-                                        (buffer-size *default-buffer-size*))
+                                        (buffer-size *default-buffer-size*)
+                                        max-send-fragment)
   "Create a TLS client stream over SOCKET.
 
    SOCKET - The underlying TCP stream or socket.
@@ -448,13 +470,16 @@
    CLOSE-CALLBACK - Function called when stream is closed.
    EXTERNAL-FORMAT - If non-NIL, wrap in a flexi-stream.
    BUFFER-SIZE - Size of I/O buffers.
+   MAX-SEND-FRAGMENT - Maximum plaintext size for outgoing records.
 
    Returns the TLS stream, or a flexi-stream if EXTERNAL-FORMAT specified."
   (let* ((stream (make-instance 'tls-client-stream
                                 :stream socket
                                 :close-callback close-callback
                                 :buffer-size buffer-size))
-         (record-layer (make-record-layer socket))
+         (record-layer (make-record-layer socket
+                                          :max-send-fragment (or max-send-fragment
+                                                                 +max-record-size+)))
          (trust-store (tls-context-trust-store context))
          ;; SNI uses sni-hostname if provided, otherwise hostname
          (sni-name (or sni-hostname hostname))
@@ -523,7 +548,8 @@
                                         sni-callback
                                         close-callback
                                         external-format
-                                        (buffer-size *default-buffer-size*))
+                                        (buffer-size *default-buffer-size*)
+                                        max-send-fragment)
   "Create a TLS server stream over SOCKET.
 
    SOCKET - The underlying TCP stream or socket.
@@ -539,13 +565,16 @@
    CLOSE-CALLBACK - Function called when stream is closed.
    EXTERNAL-FORMAT - If non-NIL, wrap in a flexi-stream.
    BUFFER-SIZE - Size of I/O buffers.
+   MAX-SEND-FRAGMENT - Maximum plaintext size for outgoing records.
 
    Returns the TLS stream, or a flexi-stream if EXTERNAL-FORMAT specified."
   (let* ((stream (make-instance 'tls-server-stream
                                 :stream socket
                                 :close-callback close-callback
                                 :buffer-size buffer-size))
-         (record-layer (make-record-layer socket))
+         (record-layer (make-record-layer socket
+                                          :max-send-fragment (or max-send-fragment
+                                                                 +max-record-size+)))
          ;; Get certificate chain (from parameter, context, or file)
          (cert-chain (cond
                        ((listp certificate) certificate)

@@ -55,14 +55,35 @@ The following RFC compliance issues were fixed:
    - `GREASE-Server-TLS13` test now passes
    - File: `src/handshake/server.lisp`
 
+6. **GREASE-Client-TLS13** (RFC 8701) ✅
+   - Client GREASE test now passes
+   - Client already sent GREASE values; test was passing
+
+7. **MaxSendFragment support** ✅
+   - Added configurable max send fragment size to record layer
+   - `:max-send-fragment` parameter on `make-tls-client-stream` and `make-tls-server-stream`
+   - Handshake and application data automatically fragment to respect limit
+   - Files: `src/record/record-layer.lisp`, `src/streams.lisp`, `test/boringssl-shim.lisp`
+
+8. **BadECDSA-TLS13** ✅
+   - TLS 1.3 variants of BadECDSA tests pass (return `:BAD_SIGNATURE:`)
+   - TLS 1.2 variants fail as expected (TLS 1.2 not supported)
+
+9. **TooManyKeyUpdates** ✅
+   - Added key update counter to prevent DoS via excessive rekeying
+   - Limit: 32 KeyUpdate messages before connection termination
+   - File: `src/streams.lisp`, `src/constants.lisp`
+
+10. **SendEmptyRecords** ✅
+    - Added empty record counter to prevent DoS via empty record flooding
+    - Limit: 32 consecutive empty records before connection termination
+    - File: `src/streams.lisp`, `src/constants.lisp`
+
 ### Remaining Gaps
 
-1. **GREASE-Client-TLS13**: Client-side GREASE test still fails (needs investigation)
-2. **MaxSendFragment**: Not enforcing negotiated fragment size limits
-3. **Bad record MAC**: Error mapping may differ from expected
-4. **Bad Finished**: Verification failures may not produce expected alert code
-5. **Bad ECDSA signatures**: Should return `:BAD_SIGNATURE:` not decode errors
-6. **Certificate selection**: Issuer filtering and chain size handling
+1. **Bad record MAC**: Error mapping may differ from expected
+2. **Bad Finished**: Verification failures may not produce expected alert code
+3. **Certificate selection**: Issuer filtering and chain size handling
 
 ---
 
@@ -101,17 +122,17 @@ The following RFC compliance issues were fixed:
 - Peek functionality - Peek-* tests
 - 0-RTT early data tests
 
+### Recently Fixed
+- ✅ `GREASE-Client-TLS13` - Client GREASE passes (was already working)
+- ✅ `SendUserCanceledAlerts-TooMany-TLS13` - Passes (user_canceled handling correct)
+- ✅ `MaxSendFragment-TLS13` - Now fragments records according to limit
+- ✅ `BadECDSA-*-TLS13` - All TLS 1.3 variants pass (return `:BAD_SIGNATURE:`)
+- ✅ `TooManyKeyUpdates` - Added key update counter with 32 limit
+- ✅ `SendEmptyRecords` / `SendEmptyRecords-Async` - Added empty record counter with 32 limit
+
 ### Needs Investigation
-- GREASE handling:
-  - `GREASE-Client-TLS13` (client-side GREASE validation)
-- Alert validation edge cases:
-  - `SendUserCanceledAlerts-TooMany-TLS13` (expected `:TOO_MANY_WARNING_ALERTS:`)
-- Record limits:
-  - `MaxSendFragment-TLS13`
 - Certificate selection behaviors:
   - Several `CertificateSelection-*` cases (issuer filters, chain size)
-- ECDSA signature handling:
-  - `BadECDSA-*` cases expect `:BAD_SIGNATURE:` but receive decode errors
 
 ## Notes
 - TLS 1.2 is not required by RFC 8446. It is only a SHOULD if earlier versions are supported.
