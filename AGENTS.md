@@ -37,13 +37,12 @@ make boringssl-shim  # Builds pure-tls-shim executable
 ```
 
 ### Running BoringSSL Tests
-Requires BoringSSL to be checked out at `~/git/boringssl` (or set `BORINGSSL_DIR`):
+Requires either `BORINGSSL_DIR`/`BORINGSSL_RUNNER` pointing at a BoringSSL checkout, or `runner_test` on `PATH`:
 ```bash
 # Run full test suite
 make boringssl-tests
 
-# Run specific tests using glob patterns
-cd ~/git/boringssl/ssl/test/runner
+# Run specific tests using glob patterns (from the runner dir or with runner_test on PATH)
 go test -v -shim-path=/path/to/pure-tls-shim -allow-unimplemented -test "*Basic*TLS13*"
 go test -v -shim-path=/path/to/pure-tls-shim -allow-unimplemented -test "*ClientAuth*TLS13*"
 

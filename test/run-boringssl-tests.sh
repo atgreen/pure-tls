@@ -9,8 +9,15 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 SHIM_PATH="$PROJECT_DIR/pure-tls-shim"
-BORINGSSL_RUNNER="${BORINGSSL_DIR:-$HOME/git/boringssl}/ssl/test/runner"
 TIMEOUT="${TEST_TIMEOUT:-300}"
+BORINGSSL_RUNNER="${BORINGSSL_RUNNER:-}"
+RUNNER_BIN=""
+
+if [ -n "$BORINGSSL_RUNNER_BIN" ]; then
+    RUNNER_BIN="$BORINGSSL_RUNNER_BIN"
+elif command -v runner_test >/dev/null 2>&1; then
+    RUNNER_BIN="$(command -v runner_test)"
+fi
 
 # Check if shim exists
 if [ ! -x "$SHIM_PATH" ]; then
@@ -19,18 +26,28 @@ if [ ! -x "$SHIM_PATH" ]; then
     exit 1
 fi
 
-# Check if runner exists
-if [ ! -d "$BORINGSSL_RUNNER" ]; then
-    echo "Error: BoringSSL runner not found at $BORINGSSL_RUNNER"
-    echo "Set BORINGSSL_DIR environment variable to your BoringSSL checkout"
-    exit 1
-fi
+if [ -z "$RUNNER_BIN" ]; then
+    if [ -n "$BORINGSSL_RUNNER" ]; then
+        BORINGSSL_RUNNER="$BORINGSSL_RUNNER"
+    elif [ -n "$BORINGSSL_DIR" ]; then
+        BORINGSSL_RUNNER="$BORINGSSL_DIR/ssl/test/runner"
+    fi
 
-# Build runner if needed
-RUNNER_BIN="$BORINGSSL_RUNNER/runner_test"
-if [ ! -f "$RUNNER_BIN" ]; then
-    echo "Building BoringSSL runner..."
-    (cd "$BORINGSSL_RUNNER" && go test -c -o runner_test .)
+    if [ -z "$BORINGSSL_RUNNER" ] || [ ! -d "$BORINGSSL_RUNNER" ]; then
+        echo "Error: BoringSSL runner not found."
+        echo "Provide one of:"
+        echo "  - BORINGSSL_RUNNER (path to ssl/test/runner)"
+        echo "  - BORINGSSL_DIR (path to BoringSSL checkout)"
+        echo "  - runner_test on PATH (or set BORINGSSL_RUNNER_BIN)"
+        exit 1
+    fi
+
+    # Build runner if needed
+    RUNNER_BIN="$BORINGSSL_RUNNER/runner_test"
+    if [ ! -f "$RUNNER_BIN" ]; then
+        echo "Building BoringSSL runner..."
+        (cd "$BORINGSSL_RUNNER" && go test -c -o runner_test .)
+    fi
 fi
 
 echo "=== Running BoringSSL TLS 1.3 Tests ==="
@@ -43,11 +60,19 @@ TMPLOG=$(mktemp)
 trap "rm -f $TMPLOG" EXIT
 
 # Run full test suite with timeout
-cd "$BORINGSSL_RUNNER"
-timeout "$TIMEOUT" go test -v \
-    -shim-path="$SHIM_PATH" \
-    -allow-unimplemented \
-    2>&1 | tee "$TMPLOG" || true
+if [ -n "$BORINGSSL_RUNNER" ]; then
+    cd "$BORINGSSL_RUNNER"
+    timeout "$TIMEOUT" go test -v \
+        -shim-path="$SHIM_PATH" \
+        -allow-unimplemented \
+        2>&1 | tee "$TMPLOG" || true
+else
+    timeout "$TIMEOUT" "$RUNNER_BIN" \
+        -test.v \
+        -shim-path="$SHIM_PATH" \
+        -allow-unimplemented \
+        2>&1 | tee "$TMPLOG" || true
+fi
 
 echo ""
 echo "=== Test Results Summary ==="

@@ -531,6 +531,12 @@ This project includes test files derived from the [OpenSSL](https://github.com/o
 
 These files are used under the Apache License 2.0. Copyright (c) OpenSSL Project Authors.
 
+This project also includes test key material derived from the [BoringSSL](https://boringssl.googlesource.com/boringssl) project:
+
+- `test/certs/boringssl/` - BoringSSL test keys used by the shim and local tests
+
+These files are used under the BoringSSL license. Copyright (c) BoringSSL Authors.
+
 ## License
 
 MIT License

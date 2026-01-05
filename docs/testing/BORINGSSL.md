@@ -153,6 +153,13 @@ Implement a pure-tls shim following `PORTING.md`:
 The shim can be built and run against the BoringSSL test runner:
 
 ```bash
+# Clone BoringSSL
+git clone https://boringssl.googlesource.com/boringssl
+
+# Build the runner test binary (optional, but faster for repeated runs)
+cd boringssl/ssl/test/runner
+go test -c -o runner_test .
+
 # Build the shim
 sbcl --load ~/quicklisp/setup.lisp \
      --eval '(ql:quickload (list :pure-tls :usocket :babel))' \
@@ -160,11 +167,14 @@ sbcl --load ~/quicklisp/setup.lisp \
      --eval '(pure-tls/boringssl-shim::build-shim)'
 
 # Run tests
-cd ~/git/boringssl
-go test -v ./ssl/test/runner \
-    -shim-path ~/git/pure-tls/pure-tls-shim \
-    -allow-unimplemented \
-    -loose-errors
+# Option A: point to a BoringSSL checkout
+export BORINGSSL_DIR=/path/to/boringssl  # or BORINGSSL_RUNNER=/path/to/boringssl/ssl/test/runner
+./test/run-boringssl-tests.sh
+
+# Option B: put a built runner on PATH
+# (from the runner dir: go test -c -o runner_test .)
+export PATH="/path/to/boringssl/ssl/test/runner:$PATH"
+./test/run-boringssl-tests.sh
 ```
 
 **Current Status:**
