@@ -469,14 +469,14 @@ For servers, session tickets are encrypted with a server-side key. You can set a
 
 ### Running the Test Suite
 
-```lisp
+```bash
+# Run all tests (unit, network, BoringSSL)
+make test
+
+# Or from Lisp:
 (asdf:load-system :pure-tls/test)
-
-;; Run all offline tests (crypto, record layer, handshake, certificates)
-(pure-tls/test:run-tests)
-
-;; Run network tests (requires internet)
-(pure-tls/test:run-network-tests)
+(pure-tls/test:run-tests)          ; Offline tests
+(pure-tls/test:run-network-tests)  ; Network tests (requires internet)
 ```
 
 ### Test Coverage
@@ -488,8 +488,24 @@ The test suite validates:
 - **Record layer**: Header format, content types, AEAD nonce construction
 - **X.509 certificates**: ASN.1 parsing, hostname verification, OID handling
 - **Bundled bad certificates**: Offline tests using certificates from [badssl.com](https://github.com/chromium/badssl.com) (expired, self-signed, known malware CAs)
-- **OpenSSL test suite**: Live TLS handshake tests adapted from OpenSSL's ssl-tests (basic handshakes, ALPN, key update, curves)
+- **OpenSSL test suite**: Live TLS handshake tests adapted from OpenSSL's ssl-tests (basic handshakes, ALPN, SNI, key update, curves, mTLS)
+- **BoringSSL test suite**: Protocol compliance testing via shim binary (65% pass rate; failures are TLS 1.2 tests which pure-tls does not implement)
 - **Live validation**: TLS 1.3 connections to major sites (Google, Cloudflare, GitHub, etc.)
+
+### BoringSSL Test Suite
+
+The BoringSSL test runner provides comprehensive protocol compliance testing:
+
+```bash
+# Build the shim binary
+make boringssl-shim
+
+# Run tests (requires BoringSSL checkout)
+export BORINGSSL_DIR=/path/to/boringssl
+make boringssl-tests
+```
+
+The shim implements the BoringSSL test protocol, allowing pure-tls to be tested against 6500+ test cases covering edge cases, malformed messages, and protocol violations.
 
 ### Individual Test Suites
 
@@ -499,6 +515,9 @@ The test suite validates:
 (pure-tls/test:run-handshake-tests)    ; Key schedule, extensions
 (pure-tls/test:run-certificate-tests)  ; X.509 parsing
 (pure-tls/test:run-network-tests)      ; Network tests (requires internet)
+
+;; OpenSSL-adapted tests
+(fiveam:run! 'pure-tls/test::openssl-tests)
 ```
 
 ## Limitations
