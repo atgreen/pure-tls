@@ -292,14 +292,9 @@
       ;; Skip tests that require unsupported curves
       ((uses-unsupported-curve-p server-section client-section)
        :skip)
-      ;; Skip tests that require client certificates (mTLS not yet implemented)
-      ((and client-cert (not (string= client-cert "")))
-       :skip)
-      ;; Skip tests where server requests or requires client certificate
-      ;; (CertificateRequest handling not yet implemented)
-      ((and server-verify (or (string-equal server-verify "Request")
-                              (string-equal server-verify "Require")
-                              (string-equal server-verify "RequestPostHandshake")
+      ;; Skip tests that require post-handshake client authentication
+      ;; (not yet implemented - requires post-handshake CertificateRequest)
+      ((and server-verify (or (string-equal server-verify "RequestPostHandshake")
                               (string-equal server-verify "RequirePostHandshake")))
        :skip)
       ;; Default to pass
@@ -358,13 +353,9 @@
       ((uses-unsupported-curve-p server-section client-section)
        (format nil "Requires unsupported curve (~A)"
                (or server-curves client-curves)))
-      ((and client-cert (not (string= client-cert "")))
-       "Requires client certificate (mTLS not yet implemented)")
-      ((and server-verify (or (string-equal server-verify "Request")
-                              (string-equal server-verify "Require")
-                              (string-equal server-verify "RequestPostHandshake")
+      ((and server-verify (or (string-equal server-verify "RequestPostHandshake")
                               (string-equal server-verify "RequirePostHandshake")))
-       "Server requests client certificate (CertificateRequest handling not yet implemented)")
+       "Requires post-handshake client authentication (not yet implemented)")
       (t nil))))
 
 (defun load-openssl-tests (cnf-file)
@@ -484,8 +475,8 @@
                                       :sni-hostname server-name  ; SNI only, no verification
                                       :verify verify-mode
                                       :context context
-                                      :certificate cert-file
-                                      :key key-file
+                                      :client-certificate cert-file
+                                      :client-key key-file
                                       :alpn-protocols alpn-list)
                                      ;; Client without certificate
                                      (pure-tls:make-tls-client-stream

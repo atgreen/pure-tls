@@ -95,6 +95,7 @@ The OpenSSL test framework is **fully implemented** in `test/openssl-tests.lisp`
 - SNI callbacks (RejectMismatch, IgnoreMismatch)
 - Verification modes (None, Peer, Require)
 - Curve selection (X25519, P-256)
+- Client certificates (mTLS) - Request and Require modes
 
 ### Automatically Skipped
 - Session resumption tests (HandshakeMode=Resume)
@@ -104,7 +105,7 @@ The OpenSSL test framework is **fully implemented** in `test/openssl-tests.lisp`
 - OCSP stapling (CertStatus)
 - Security levels (@SECLEVEL)
 - Non-TLS-1.3 protocol versions
-- Client certificates (mTLS)
+- Post-handshake client authentication (RequestPostHandshake/RequirePostHandshake)
 
 Run tests with:
 ```bash
@@ -142,10 +143,10 @@ Areas to expand for comprehensive testing:
 - **Session resumption / PSK** - OpenSSL tests for ticket-based resumption; our PSK support needs testing (currently auto-skipped)
 - **0-RTT early data** - Currently unsupported in pure-tls (auto-skipped)
 - **Post-handshake authentication** - Currently unsupported in pure-tls (auto-skipped)
-- **mTLS (Mutual TLS)** - Client certificate support needs implementation (auto-skipped)
 - **Server2 context switching** - SNI-based virtual hosting with multiple certificates
 
 ### Implemented
 - ✅ **Protocol version filtering** - Non-TLS-1.3 tests auto-skipped
 - ✅ **Alert validation** - Tests validate RFC-required alert behavior
 - ✅ **Key update** - `21-key-update.cnf` tests pass
+- ✅ **mTLS (Mutual TLS)** - Client certificate support with Request/Require modes

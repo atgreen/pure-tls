@@ -457,7 +457,25 @@
          (record-layer (make-record-layer socket))
          (trust-store (tls-context-trust-store context))
          ;; SNI uses sni-hostname if provided, otherwise hostname
-         (sni-name (or sni-hostname hostname)))
+         (sni-name (or sni-hostname hostname))
+         ;; Load client certificate chain from file if path provided
+         (loaded-certs (cond
+                         ((listp client-certificate) client-certificate)
+                         ((stringp client-certificate) (load-certificate-chain client-certificate))
+                         ((pathnamep client-certificate) (load-certificate-chain client-certificate))
+                         (t nil)))
+         ;; Split: first cert is the client cert, rest are chain certs
+         (client-cert (when loaded-certs (first loaded-certs)))
+         (chain-certs (when loaded-certs (rest loaded-certs)))
+         ;; Load client private key from file if path provided
+         (private-key (cond
+                        ((or (null client-key) (stringp client-key) (pathnamep client-key))
+                         (let ((key-source (or client-key
+                                               (when (stringp client-certificate) client-certificate)
+                                               (when (pathnamep client-certificate) client-certificate))))
+                           (when key-source
+                             (load-private-key key-source))))
+                        (t client-key))))  ; Already an Ironclad key object
     (setf (tls-stream-record-layer stream) record-layer)
     ;; Perform handshake (CertificateVerify is verified during handshake)
     ;; Skip hostname verification if only sni-hostname is provided (no hostname)
@@ -469,8 +487,9 @@
                :verify-mode verify
                :trust-store trust-store
                :skip-hostname-verify (and sni-hostname (null hostname))
-               :client-certificate client-certificate
-               :client-private-key client-key)))
+               :client-certificate client-cert
+               :client-private-key private-key
+               :client-certificate-chain chain-certs)))
       (setf (tls-stream-handshake stream) hs)
       ;; Verify certificate chain and hostname if verification enabled
       (when (and (member verify (list +verify-peer+ +verify-required+))
