@@ -120,6 +120,83 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
          (peer-key (ironclad:make-public-key :secp256r1 :y peer-public-key)))
     (ironclad:diffie-hellman private-key peer-key)))
 
+;;;; secp384r1 (P-384) Implementation
+
+(defun make-secp384r1-key-exchange ()
+  "Generate a new secp384r1 (P-384) key pair for key exchange."
+  (multiple-value-bind (private-key public-key)
+      (ironclad:generate-key-pair :secp384r1)
+    ;; The public key Y slot contains the uncompressed point (04 || x || y)
+    (let ((public-key-bytes (slot-value public-key 'ironclad::y)))
+      (make-key-exchange :group +group-secp384r1+
+                         :private-key private-key
+                         :public-key public-key-bytes))))
+
+;; secp384r1 curve parameters (NIST P-384)
+(defconstant +secp384r1-p+
+  #xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff
+  "The prime p for secp384r1")
+
+(defconstant +secp384r1-a+
+  #xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000fffffffc
+  "The curve parameter a for secp384r1 (equals p - 3)")
+
+(defconstant +secp384r1-b+
+  #xb3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aef
+  "The curve parameter b for secp384r1")
+
+(defun secp384r1-point-on-curve-p (x y)
+  "Check if point (x, y) lies on the secp384r1 curve.
+   Curve equation: y² ≡ x³ + ax + b (mod p)"
+  (let* ((p +secp384r1-p+)
+         (a +secp384r1-a+)
+         (b +secp384r1-b+)
+         ;; Compute y² mod p
+         (y-squared (mod (* y y) p))
+         ;; Compute x³ + ax + b mod p
+         (x-cubed (mod (* x x x) p))
+         (ax (mod (* a x) p))
+         (rhs (mod (+ x-cubed ax b) p)))
+    (= y-squared rhs)))
+
+(defun validate-secp384r1-public-key (peer-public-key)
+  "Validate a secp384r1 public key per RFC 8446 §4.2.8.2.
+   Returns (values x y) if valid, signals error otherwise."
+  ;; Check format: must be uncompressed (04 || x || y), exactly 97 bytes
+  (unless (= (length peer-public-key) 97)
+    (error 'tls-crypto-error
+           :operation "secp384r1 key exchange"
+           :message (format nil "Invalid key length: ~D (expected 97)" (length peer-public-key))))
+  (unless (= (aref peer-public-key 0) #x04)
+    (error 'tls-crypto-error
+           :operation "secp384r1 key exchange"
+           :message "Invalid key format: expected uncompressed point (0x04 prefix)"))
+  ;; Extract x and y coordinates (big-endian, 48 bytes each)
+  (let ((x (ironclad:octets-to-integer peer-public-key :start 1 :end 49))
+        (y (ironclad:octets-to-integer peer-public-key :start 49 :end 97)))
+    ;; Check coordinates are in valid range [1, p-1]
+    (unless (and (< 0 x +secp384r1-p+)
+                 (< 0 y +secp384r1-p+))
+      (error 'tls-crypto-error
+             :operation "secp384r1 key exchange"
+             :message "Point coordinates out of range"))
+    ;; Check point is on curve
+    (unless (secp384r1-point-on-curve-p x y)
+      (error 'tls-crypto-error
+             :operation "secp384r1 key exchange"
+             :message "Point not on curve - possible invalid curve attack"))
+    (values x y)))
+
+(defun secp384r1-compute-shared-secret (key-exchange peer-public-key)
+  "Compute the secp384r1 shared secret from our private key and peer's public key.
+   Validates that the peer's public key is a valid point on the curve."
+  ;; Validate peer public key (signals error if invalid)
+  (validate-secp384r1-public-key peer-public-key)
+  ;; Proceed with ECDH
+  (let* ((private-key (key-exchange-private-key key-exchange))
+         (peer-key (ironclad:make-public-key :secp384r1 :y peer-public-key)))
+    (ironclad:diffie-hellman private-key peer-key)))
+
 ;;;; Generic Key Exchange Operations
 
 (defun generate-key-exchange (group)
@@ -129,6 +206,8 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
      (make-x25519-key-exchange))
     (#.+group-secp256r1+
      (make-secp256r1-key-exchange))
+    (#.+group-secp384r1+
+     (make-secp384r1-key-exchange))
     (otherwise
      (error 'tls-crypto-error
             :operation "key exchange"
@@ -142,6 +221,8 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
        (x25519-compute-shared-secret key-exchange peer-public-key))
       (#.+group-secp256r1+
        (secp256r1-compute-shared-secret key-exchange peer-public-key))
+      (#.+group-secp384r1+
+       (secp384r1-compute-shared-secret key-exchange peer-public-key))
       (otherwise
        (error 'tls-crypto-error
               :operation "compute shared secret"
@@ -173,7 +254,7 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
 ;;;; Supported Groups for ClientHello
 
 (defparameter *supported-groups*
-  (list +group-x25519+ +group-secp256r1+)
+  (list +group-x25519+ +group-secp256r1+ +group-secp384r1+)
   "List of named groups we support, in preference order.")
 
 (defparameter *preferred-group* +group-x25519+
