@@ -245,7 +245,7 @@
            ;; Recursively try to get more data
            (tls-stream-fill-buffer stream))
           (otherwise
-           (error 'tls-error :message (format nil "Unexpected content type: ~D" content-type)))))
+           (error 'tls-error :message (format nil ":UNEXPECTED_RECORD: Unexpected content type: ~D" content-type)))))
     ;; Handle record overflow - send alert and re-signal
     (tls-record-overflow (e)
       (handler-case
