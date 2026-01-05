@@ -177,12 +177,18 @@
                  :state :wait-client-hello))
         (setf (server-handshake-selected-cipher-suite hs) selected)))
     ;; Check for supported_versions extension (required for TLS 1.3)
+    ;; If missing or doesn't include TLS 1.3, send protocol_version alert
+    ;; This helps scanners like TLS-Anvil understand we only support TLS 1.3
     (let ((sv-ext (find-extension extensions +extension-supported-versions+)))
       (unless sv-ext
+        (record-layer-write-alert (server-handshake-record-layer hs)
+                                  +alert-level-fatal+ +alert-protocol-version+)
         (error 'tls-handshake-error
-               :message "Missing supported_versions extension"
+               :message "Missing supported_versions extension (TLS 1.2 not supported)"
                :state :wait-client-hello))
       (unless (member +tls-1.3+ (supported-versions-ext-versions (tls-extension-data sv-ext)))
+        (record-layer-write-alert (server-handshake-record-layer hs)
+                                  +alert-level-fatal+ +alert-protocol-version+)
         (error 'tls-handshake-error
                :message "Client does not support TLS 1.3"
                :state :wait-client-hello)))

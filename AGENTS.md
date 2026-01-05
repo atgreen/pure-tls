@@ -66,7 +66,32 @@ Progress is shown as `failed/unimplemented/done/started/total`:
 - Use `SSLKEYLOGFILE` to capture keys and verify with Wireshark
 - Compare transcript hashes between client and server for key derivation issues
 
+## TLS-Anvil Test Integration (Experimental)
+TLS-Anvil is an RFC compliance test suite for TLS implementations. It runs via podman/docker.
+
+**Current Status**: TLS-Anvil's feature extraction phase probes with TLS 1.2 first, which pure-tls rejects since it only supports TLS 1.3. This causes the scanner to fail before tests can run. Work is needed to either:
+- Send proper `protocol_version` alerts for TLS 1.2 probes
+- Provide a pre-configured profile for TLS 1.3-only servers
+- Use TLS-Anvil's manual configuration options
+
+### Running TLS-Anvil Tests
+```bash
+# Test pure-tls as a server (TLS-Anvil connects to us)
+./test/tls-anvil/run-anvil-tests.sh server
+
+# Use higher test strength for more thorough testing
+STRENGTH=2 ./test/tls-anvil/run-anvil-tests.sh server
+```
+
+### Viewing Results
+Results are saved to `test/tls-anvil/results/<timestamp>/`. Upload `results.zip` to the Anvil Web UI to view detailed test reports.
+
+### Test Components
+- `test/tls-anvil/anvil-server.lisp` - Simple TLS server for Anvil testing
+- `test/tls-anvil/anvil-client.lisp` - Simple TLS client for Anvil testing
+- `test/tls-anvil/run-anvil-tests.sh` - Main test runner script
+
 ## Commit & Pull Request Guidelines
-- Commit subjects are short, imperative, and sentence case (e.g., “Fix ALPN negotiation mismatch handling”).
+- Commit subjects are short, imperative, and sentence case (e.g., "Fix ALPN negotiation mismatch handling").
 - Include a clear description of behavior changes and test coverage in PRs.
 - Link relevant issues and call out any required environment (e.g., internet access for network tests or BoringSSL availability).
