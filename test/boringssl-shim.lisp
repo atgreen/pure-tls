@@ -435,12 +435,18 @@
                    (error "SNI mismatch: expected ~S, got ~S"
                           (shim-config-expect-server-name config) hostname))
                  nil)))
-           ;; Set verify mode if client certificate is required
-           (verify-mode (if (shim-config-require-any-client-certificate config)
-                            pure-tls:+verify-peer+
-                            pure-tls:+verify-none+))
+           ;; Set verify mode based on flags
+           ;; -require-any-client-certificate = +verify-required+ (must provide cert)
+           ;; -verify-peer = +verify-peer+ (request cert, allow anonymous)
+           (verify-mode (cond
+                          ((shim-config-require-any-client-certificate config)
+                           pure-tls:+verify-required+)
+                          ((shim-config-verify-peer config)
+                           pure-tls:+verify-peer+)
+                          (t pure-tls:+verify-none+)))
            ;; Load trust store for client certificate verification
-           (trust-store (when (shim-config-require-any-client-certificate config)
+           (trust-store (when (or (shim-config-require-any-client-certificate config)
+                                  (shim-config-verify-peer config))
                           (load-trust-store config)))
            (tls-stream
              (pure-tls:make-tls-server-stream

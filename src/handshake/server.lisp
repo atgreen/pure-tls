@@ -525,8 +525,11 @@
     (if (null cert-list)
         ;; No certificate provided
         (if (= (server-handshake-verify-mode hs) +verify-required+)
-            (error 'tls-certificate-error
-                   :message "Client certificate required but not provided")
+            (progn
+              (record-layer-write-alert (server-handshake-record-layer hs)
+                                        +alert-level-fatal+ +alert-certificate-required+)
+              (error 'tls-certificate-error
+                     :message ":PEER_DID_NOT_RETURN_A_CERTIFICATE: Client certificate required but not provided"))
             ;; verify-peer mode: certificate optional, proceed
             (setf (server-handshake-state hs) :wait-client-finished))
         ;; Parse and store the certificate chain
@@ -781,8 +784,10 @@
          (multiple-value-bind (message raw-bytes)
              (server-read-handshake-message hs)
            (unless (= (handshake-message-type message) +handshake-certificate+)
+             (record-layer-write-alert (server-handshake-record-layer hs)
+                                       +alert-level-fatal+ +alert-unexpected-message+)
              (error 'tls-handshake-error
-                    :message "Expected client Certificate"
+                    :message ":UNEXPECTED_MESSAGE: Expected client Certificate"
                     :state :wait-client-certificate))
            (process-client-certificate hs message raw-bytes)))
 
