@@ -69,10 +69,15 @@ Progress is shown as `failed/unimplemented/done/started/total`:
 ## TLS-Anvil Test Integration (Experimental)
 TLS-Anvil is an RFC compliance test suite for TLS implementations. It runs via podman/docker.
 
-**Current Status**: TLS-Anvil's feature extraction phase probes with TLS 1.2 first, which pure-tls rejects since it only supports TLS 1.3. This causes the scanner to fail before tests can run. Work is needed to either:
-- Send proper `protocol_version` alerts for TLS 1.2 probes
-- Provide a pre-configured profile for TLS 1.3-only servers
-- Use TLS-Anvil's manual configuration options
+**Current Status**: TLS-Anvil's TLS-Scanner uses a probing strategy that doesn't work well with TLS 1.3-only servers:
+1. Scanner sends TLS 1.2 probes (without `supported_versions` extension) - pure-tls responds with `protocol_version` alert (code 70)
+2. Scanner sends various cipher suite probes to enumerate server support - these also fail for TLS 1.2
+3. Scanner may eventually send TLS 1.3 probes, but times out before completing feature extraction
+
+The scanner needs to successfully complete handshakes to determine the server's capabilities. Since pure-tls only supports TLS 1.3, most probes fail immediately. Potential workarounds:
+- Pre-configure a scan profile that skips TLS 1.2 probing
+- Use TLS-Anvil's manual configuration to specify TLS 1.3-only mode
+- Wait for TLS-Anvil updates to better handle TLS 1.3-only servers
 
 ### Running TLS-Anvil Tests
 ```bash

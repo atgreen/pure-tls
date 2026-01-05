@@ -109,15 +109,18 @@
                        :type +extension-signature-algorithms+
                        :data (make-signature-algorithms-ext
                               :algorithms (supported-signature-algorithms-tls13)))
-                      ;; key_share
-                      ;; Note: GREASE key_share entries cause timeouts in the test runner.
-                      ;; This needs more investigation to understand why the handshake
-                      ;; hangs when we include a GREASE key share entry.
+                      ;; key_share (with GREASE entry per RFC 8701)
                       (make-tls-extension
                        :type +extension-key-share+
                        :data (make-key-share-ext
                               :client-shares
                               (list
+                               ;; GREASE key share entry (RFC 8701 §3.1)
+                               ;; "key_exchange SHOULD be at least one byte"
+                               (make-key-share-entry
+                                :group grease-group
+                                :key-exchange (random-bytes 1))
+                               ;; Real key share
                                (make-key-share-entry
                                 :group (key-exchange-group key-exchange)
                                 :key-exchange (key-exchange-public-key key-exchange))))))))
@@ -613,11 +616,14 @@
       (let ((public-key (ironclad:make-public-key :rsa
                           :n (parse-rsa-public-key-n public-key-der)
                           :e (parse-rsa-public-key-e public-key-der))))
-        (ironclad:verify-signature public-key content signature
-                                   :pss hash-algo))
+        (unless (ironclad:verify-signature public-key content signature
+                                           :pss hash-algo)
+          (error 'tls-handshake-error
+                 :message ":BAD_SIGNATURE:")))
     (error (e)
+      (declare (ignore e))
       (error 'tls-handshake-error
-             :message (format nil "RSA-PSS signature verification failed: ~A" e)))))
+             :message ":BAD_SIGNATURE:"))))
 
 (defun verify-rsa-pkcs1-signature (public-key-der content signature hash-algo)
   "Verify an RSA PKCS#1 v1.5 signature."
@@ -625,11 +631,14 @@
       (let ((public-key (ironclad:make-public-key :rsa
                           :n (parse-rsa-public-key-n public-key-der)
                           :e (parse-rsa-public-key-e public-key-der))))
-        (ironclad:verify-signature public-key content signature
-                                   :pkcs1v15 hash-algo))
+        (unless (ironclad:verify-signature public-key content signature
+                                           :pkcs1v15 hash-algo)
+          (error 'tls-handshake-error
+                 :message ":BAD_SIGNATURE:")))
     (error (e)
+      (declare (ignore e))
       (error 'tls-handshake-error
-             :message (format nil "RSA PKCS#1 signature verification failed: ~A" e)))))
+             :message ":BAD_SIGNATURE:"))))
 
 (defun verify-ecdsa-signature (public-key-der content signature hash-algo key-algorithm)
   "Verify an ECDSA signature."
@@ -652,20 +661,26 @@
              ;; Make the public key
              (public-key (make-ecdsa-public-key curve public-key-der)))
         ;; Use ironclad:make-signature with the curve name and byte arrays
-        (ironclad:verify-signature public-key hash
-                                   (ironclad:make-signature curve :r r-bytes :s s-bytes)))
+        (unless (ironclad:verify-signature public-key hash
+                                           (ironclad:make-signature curve :r r-bytes :s s-bytes))
+          (error 'tls-handshake-error
+                 :message ":BAD_SIGNATURE:")))
     (error (e)
+      (declare (ignore e))
       (error 'tls-handshake-error
-             :message (format nil "ECDSA signature verification failed: ~A" e)))))
+             :message ":BAD_SIGNATURE:"))))
 
 (defun verify-ed25519-signature (public-key-der content signature)
   "Verify an Ed25519 signature."
   (handler-case
       (let ((public-key (ironclad:make-public-key :ed25519 :y public-key-der)))
-        (ironclad:verify-signature public-key content signature))
+        (unless (ironclad:verify-signature public-key content signature)
+          (error 'tls-handshake-error
+                 :message ":BAD_SIGNATURE:")))
     (error (e)
+      (declare (ignore e))
       (error 'tls-handshake-error
-             :message (format nil "Ed25519 signature verification failed: ~A" e)))))
+             :message ":BAD_SIGNATURE:"))))
 
 (defun ecdsa-curve-from-algorithm (key-algorithm)
   "Determine the ECDSA curve from the key algorithm OID."
@@ -847,8 +862,9 @@
     (when (asn1-sequence-p parsed)
       (asn1-node-value (second (asn1-children parsed))))))
 
-(defun process-certificate-verify (hs message)
+(defun process-certificate-verify (hs message raw-bytes)
   "Process CertificateVerify message.
+   RAW-BYTES are the serialized message bytes for updating transcript after verification.
    Verifies the signature AND performs full chain/hostname verification
    when verify-mode is +verify-peer+ or +verify-required+."
   (let* ((cert-verify (handshake-message-body message))
@@ -862,15 +878,17 @@
     ;; Must have a certificate to verify
     (unless cert
       (error 'tls-handshake-error
-             :message "No certificate to verify CertificateVerify signature"))
+             :message ":PEER_DID_NOT_RETURN_A_CERTIFICATE:"))
     ;; Get the transcript hash at this point (excludes CertificateVerify)
     (let* ((ks (client-handshake-key-schedule hs))
            (transcript-hash (key-schedule-transcript-hash-value ks))
-      (content (make-certificate-verify-content transcript-hash)))
+           (content (make-certificate-verify-content transcript-hash)))
       ;; Verify the signature (proves server possesses the private key)
       (verify-certificate-verify-signature
        cert algorithm signature content
        :allowed-algorithms (supported-signature-algorithms-tls13)))
+    ;; NOW update transcript with CertificateVerify (after verification)
+    (client-handshake-update-transcript hs raw-bytes)
     ;; Now perform full certificate verification if required
     ;; This prevents bypass when using perform-client-handshake directly
     (when (member verify-mode (list +verify-peer+ +verify-required+))
@@ -904,8 +922,14 @@
             cipher-suite)))
     ;; Verify
     (unless (constant-time-equal received-verify-data expected-verify-data)
+      ;; Send decrypt_error alert before signaling error
+      (handler-case
+          (record-layer-write-alert (client-handshake-record-layer hs)
+                                    +alert-level-fatal+
+                                    +alert-decrypt-error+)
+        (error () nil))
       (error 'tls-handshake-error
-             :message "Server Finished verification failed"
+             :message ":DIGEST_CHECK_FAILED: Server Finished verification failed"
              :state :wait-finished))
     ;; NOW update transcript with server Finished (after verification)
     (client-handshake-update-transcript hs raw-bytes)
@@ -1061,7 +1085,7 @@
                    (record-layer-read (client-handshake-record-layer hs))
                  ;; Handle alerts
                  (when (= content-type +content-type-alert+)
-                   (process-alert data))
+                   (process-alert data (client-handshake-record-layer hs)))
                  ;; Skip change_cipher_spec (compatibility) - just continue loop
                  (unless (= content-type +content-type-change-cipher-spec+)
                    ;; Must be handshake
@@ -1169,12 +1193,14 @@
                        :message "Expected CertificateRequest, Certificate or Finished"
                        :state :wait-cert-or-finished)))))
         (:wait-certificate-verify
-         (let ((message (read-handshake-message hs)))
+         ;; Don't update transcript yet - we need to verify signature first, THEN update
+         (multiple-value-bind (message raw-bytes)
+             (read-handshake-message hs :update-transcript nil)
            (unless (= (handshake-message-type message) +handshake-certificate-verify+)
              (error 'tls-handshake-error
                     :message "Expected CertificateVerify"
                     :state :wait-certificate-verify))
-           (process-certificate-verify hs message)))
+           (process-certificate-verify hs message raw-bytes)))
         (:wait-finished
          ;; Don't update transcript yet - we need to verify first, THEN update
          (multiple-value-bind (message raw-bytes)
@@ -1203,7 +1229,7 @@
                    (record-layer-read (client-handshake-record-layer hs))
                  ;; Handle alerts
                  (when (= content-type +content-type-alert+)
-                   (process-alert data))
+                   (process-alert data (client-handshake-record-layer hs)))
                  ;; Skip change_cipher_spec (compatibility) - just continue loop
                  (unless (= content-type +content-type-change-cipher-spec+)
                    ;; Must be handshake

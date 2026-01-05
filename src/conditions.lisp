@@ -172,7 +172,7 @@
   ()
   (:report (lambda (condition stream)
              (declare (ignore condition))
-             (format stream "TLS MAC verification failed")))
+             (format stream ":DECRYPTION_FAILED_OR_BAD_RECORD_MAC: TLS MAC verification failed")))
   (:documentation "MAC verification failed - possible tampering"))
 
 ;;;; Connection Errors

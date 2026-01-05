@@ -45,7 +45,11 @@
    (close-callback
     :initarg :close-callback
     :initform nil
-    :accessor tls-stream-close-callback))
+    :accessor tls-stream-close-callback)
+   (warning-alert-count
+    :initform 0
+    :accessor tls-stream-warning-alert-count
+    :documentation "Count of consecutive warning alerts received. Reset on app data."))
   (:documentation "A TLS-encrypted stream."))
 
 (defclass tls-client-stream (tls-stream)
@@ -126,6 +130,17 @@
 
 (defun tls-stream-process-key-update (stream key-update)
   "Process a KeyUpdate message, updating read keys and responding if requested."
+  ;; RFC 8446 Section 4.6.3: request_update must be 0 or 1
+  ;; "If an implementation receives any other value, it MUST terminate
+  ;;  the connection with an illegal_parameter alert."
+  (let ((request-update (key-update-request-update key-update)))
+    (unless (or (= request-update +key-update-not-requested+)
+                (= request-update +key-update-requested+))
+      (record-layer-write-alert (tls-stream-record-layer stream)
+                                +alert-level-fatal+
+                                +alert-illegal-parameter+)
+      (error 'tls-error
+             :message (format nil "Invalid KeyUpdate request_update value: ~D" request-update))))
   (let* ((ks (tls-stream-get-key-schedule stream))
          (cipher-suite (tls-stream-get-cipher-suite stream))
          (is-client (tls-stream-is-client-p stream)))
@@ -196,12 +211,25 @@
           (record-layer-read (tls-stream-record-layer stream))
         (case content-type
           (#.+content-type-application-data+
+           ;; Reset warning alert counter on application data
+           (setf (tls-stream-warning-alert-count stream) 0)
            (setf (tls-stream-input-buffer stream) data)
            (setf (tls-stream-input-position stream) 0)
            t)
           (#.+content-type-alert+
-           (process-alert data)
-           nil)
+           ;; process-alert will error on most alerts, but returns nil for
+           ;; user_canceled warnings which should be ignored
+           (process-alert data (tls-stream-record-layer stream))
+           ;; If we get here, the alert was ignored (user_canceled)
+           ;; Track consecutive warning alerts to prevent DoS
+           (incf (tls-stream-warning-alert-count stream))
+           (when (> (tls-stream-warning-alert-count stream) +max-warning-alerts+)
+             (record-layer-write-alert (tls-stream-record-layer stream)
+                                       +alert-level-fatal+
+                                       +alert-unexpected-message+)
+             (error 'tls-error :message ":TOO_MANY_WARNING_ALERTS:"))
+           ;; Recursively try for more data
+           (tls-stream-fill-buffer stream))
           (#.+content-type-handshake+
            ;; Post-handshake messages (e.g., NewSessionTicket, KeyUpdate)
            (let ((msg (parse-handshake-message data)))
@@ -224,6 +252,14 @@
           (record-layer-write-alert (tls-stream-record-layer stream)
                                     +alert-level-fatal+
                                     +alert-record-overflow+)
+        (error () nil))  ; Ignore errors during alert send
+      (error e))
+    ;; Handle MAC verification failure - send alert and re-signal
+    (tls-mac-error (e)
+      (handler-case
+          (record-layer-write-alert (tls-stream-record-layer stream)
+                                    +alert-level-fatal+
+                                    +alert-bad-record-mac+)
         (error () nil))  ; Ignore errors during alert send
       (error e))))
 

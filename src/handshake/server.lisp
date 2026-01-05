@@ -166,19 +166,10 @@
       (error 'tls-handshake-error
              :message "No certificate available for this hostname"
              :state :wait-client-hello))
-    ;; Select cipher suite (first mutually supported)
-    (let ((client-suites (client-hello-cipher-suites client-hello))
-          (server-suites (server-handshake-cipher-suites hs)))
-      (let ((selected (find-if (lambda (s) (member s client-suites))
-                               server-suites)))
-        (unless selected
-          (error 'tls-handshake-error
-                 :message "No common cipher suite"
-                 :state :wait-client-hello))
-        (setf (server-handshake-selected-cipher-suite hs) selected)))
     ;; Check for supported_versions extension (required for TLS 1.3)
     ;; If missing or doesn't include TLS 1.3, send protocol_version alert
     ;; This helps scanners like TLS-Anvil understand we only support TLS 1.3
+    ;; Must check this BEFORE cipher suite selection to give correct error
     (let ((sv-ext (find-extension extensions +extension-supported-versions+)))
       (unless sv-ext
         (record-layer-write-alert (server-handshake-record-layer hs)
@@ -192,6 +183,27 @@
         (error 'tls-handshake-error
                :message "Client does not support TLS 1.3"
                :state :wait-client-hello)))
+    ;; RFC 8446 Section 4.1.2: legacy_compression_methods MUST contain exactly
+    ;; one byte set to zero (null compression)
+    (let ((compression-methods (client-hello-legacy-compression-methods client-hello)))
+      (unless (and compression-methods
+                   (= (length compression-methods) 1)
+                   (= (aref compression-methods 0) 0))
+        (record-layer-write-alert (server-handshake-record-layer hs)
+                                  +alert-level-fatal+ +alert-illegal-parameter+)
+        (error 'tls-handshake-error
+               :message "TLS 1.3 requires legacy_compression_methods to be [0]"
+               :state :wait-client-hello)))
+    ;; Select cipher suite (first mutually supported)
+    (let ((client-suites (client-hello-cipher-suites client-hello))
+          (server-suites (server-handshake-cipher-suites hs)))
+      (let ((selected (find-if (lambda (s) (member s client-suites))
+                               server-suites)))
+        (unless selected
+          (error 'tls-handshake-error
+                 :message "No common cipher suite"
+                 :state :wait-client-hello))
+        (setf (server-handshake-selected-cipher-suite hs) selected)))
     ;; Capture client's signature algorithm preferences (may be nil if missing)
     (let ((sig-ext (find-extension extensions +extension-signature-algorithms+)))
       (when sig-ext
@@ -575,8 +587,14 @@
                                 cipher-suite)))
     ;; Verify
     (unless (constant-time-equal received-verify-data expected-verify-data)
+      ;; Send decrypt_error alert before signaling error
+      (handler-case
+          (record-layer-write-alert (server-handshake-record-layer hs)
+                                    +alert-level-fatal+
+                                    +alert-decrypt-error+)
+        (error () nil))
       (error 'tls-handshake-error
-             :message "Client Finished verification failed"
+             :message ":DIGEST_CHECK_FAILED: Client Finished verification failed"
              :state :wait-client-finished))
     ;; Update transcript AFTER verification
     (server-handshake-update-transcript hs raw-bytes)
@@ -623,13 +641,19 @@
     (let ((full-ticket (concat-octet-vectors
                         (encode-uint32-be age-add)
                         (encode-uint32-be ticket-lifetime)
-                        ticket-data)))
+                        ticket-data))
+          ;; Include GREASE extension per RFC 8701 Section 4.1
+          ;; "Servers SHOULD select one or more GREASE extension values and
+          ;;  advertise them in... NewSessionTicket extensions"
+          (grease-ext-type (random-grease-value *grease-extension-values*)))
       (make-new-session-ticket
        :ticket-lifetime ticket-lifetime
        :ticket-age-add age-add
        :ticket-nonce nonce
        :ticket full-ticket
-       :extensions nil))))
+       :extensions (list (make-tls-extension
+                          :type grease-ext-type
+                          :data (make-grease-ext :data (octet-vector))))))))
 
 (defun send-new-session-ticket (hs)
   "Send a NewSessionTicket message to enable session resumption.
@@ -660,7 +684,7 @@
                    (record-layer-read (server-handshake-record-layer hs))
                  ;; Handle alerts
                  (when (= content-type +content-type-alert+)
-                   (process-alert data))
+                   (process-alert data (server-handshake-record-layer hs)))
                  ;; Skip change_cipher_spec (compatibility) - just continue loop
                  (unless (= content-type +content-type-change-cipher-spec+)
                    ;; Must be handshake

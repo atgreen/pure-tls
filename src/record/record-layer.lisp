@@ -220,14 +220,38 @@
 
 ;;;; Alert Processing
 
-(defun process-alert (content)
-  "Process an alert record and signal appropriate condition."
+(defun process-alert (content &optional record-layer)
+  "Process an alert record and signal appropriate condition.
+   RECORD-LAYER, if provided, is used to send response alerts before erroring."
   (when (< (length content) 2)
+    ;; Send decode_error alert for malformed alerts
+    (when record-layer
+      (handler-case
+          (record-layer-write-alert record-layer +alert-level-fatal+ +alert-decode-error+)
+        (error () nil)))
     (error 'tls-decode-error :message "Alert too short"))
   (let ((level (aref content 0))
         (description (aref content 1)))
     ;; close_notify is a clean shutdown
     (when (= description +alert-close-notify+)
       (error 'tls-connection-closed :clean t))
-    ;; All other alerts signal an error
+    ;; RFC 8446 Section 6: In TLS 1.3, all alerts except close_notify and
+    ;; user_canceled MUST be sent at fatal level.
+    (when (= level +alert-level-warning+)
+      (cond
+        ;; user_canceled warning is allowed in TLS 1.3 - ignore it
+        ((= description +alert-user-canceled+)
+         (return-from process-alert nil))
+        ;; All other warning alerts are forbidden in TLS 1.3
+        (t
+         ;; Send decode_error alert for invalid warning alerts (per BoringSSL expectation)
+         (when record-layer
+           (handler-case
+               (record-layer-write-alert record-layer +alert-level-fatal+ +alert-decode-error+)
+             (error () nil)))
+         ;; Treat forbidden warning alerts as fatal protocol error
+         (error 'tls-error
+                :message (format nil ":BAD_ALERT: Invalid warning-level alert in TLS 1.3: ~A"
+                                (alert-description-name description))))))
+    ;; All other alerts (fatal level) signal an error
     (error 'tls-alert-error :level level :description description)))

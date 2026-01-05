@@ -183,9 +183,9 @@
 (defconstant +max-record-size+ 16384
   "Maximum size of a TLS record payload (2^14)")
 
-(defconstant +max-record-size-with-padding+ 16656
-  "Maximum encrypted record size per RFC 8446 §5.2:
-   2^14 + 1 (content type) + 255 (max padding) + 16 (auth tag) = 16656")
+(defconstant +max-record-size-with-padding+ 16640
+  "Maximum encrypted record size per RFC 8446 §5.4:
+   'The length MUST NOT exceed 2^14 + 256 bytes.' = 16640")
 
 ;;;; AEAD Constants
 
@@ -205,6 +205,9 @@
 
 (defparameter *default-buffer-size* 4096
   "Default buffer size for TLS streams")
+
+(defconstant +max-warning-alerts+ 4
+  "Maximum number of consecutive warning alerts before closing connection.")
 
 (defparameter *default-verify-mode* +verify-required+
   "Default certificate verification mode")

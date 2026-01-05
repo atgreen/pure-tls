@@ -48,8 +48,8 @@
   "Verify record size limit constants"
   (is (= pure-tls::+max-record-size+ 16384)
       "Max record size should be 2^14 (16384)")
-  (is (= pure-tls::+max-record-size-with-padding+ 16656)
-      "Max encrypted record should be 2^14 + 1 + 255 + 16 (16656) per RFC 8446 §5.2"))
+  (is (= pure-tls::+max-record-size-with-padding+ 16640)
+      "Max encrypted record should be 2^14 + 256 (16640) per RFC 8446 §5.4"))
 
 ;;;; AEAD Nonce Construction (RFC 8446 Section 5.3)
 
