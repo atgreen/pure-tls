@@ -122,13 +122,17 @@
 
 ;;;; Record Encryption/Decryption
 
+(defconstant +max-ccs-messages+ 32
+  "Maximum number of change_cipher_spec messages allowed (DoS protection).")
+
 (defstruct (record-layer (:constructor %make-record-layer))
   "TLS record layer state."
   (read-cipher nil :type (or null aead-cipher))
   (write-cipher nil :type (or null aead-cipher))
   (cipher-suite 0 :type fixnum)
   (stream nil)
-  (max-send-fragment +max-record-size+ :type fixnum))
+  (max-send-fragment +max-record-size+ :type fixnum)
+  (ccs-count 0 :type fixnum))
 
 (defun make-record-layer (stream &key (max-send-fragment +max-record-size+))
   "Create a new record layer for the given stream.
@@ -153,6 +157,12 @@
          (cipher (record-layer-read-cipher layer)))
     ;; Handle change_cipher_spec (ignored in TLS 1.3 but may be sent)
     (when (= content-type +content-type-change-cipher-spec+)
+      ;; Count CCS messages to prevent DoS
+      (incf (record-layer-ccs-count layer))
+      (when (> (record-layer-ccs-count layer) +max-ccs-messages+)
+        (record-layer-write-alert layer +alert-level-fatal+ +alert-unexpected-message+)
+        (error 'tls-handshake-error
+               :message ":TOO_MANY_EMPTY_FRAGMENTS: Too many change_cipher_spec messages"))
       ;; Just return and let caller handle/ignore
       (return-from record-layer-read
         (values content-type fragment)))

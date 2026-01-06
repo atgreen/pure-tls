@@ -71,7 +71,8 @@
   (psk nil :type (or null string))  ; PSK mode
   (channel-id nil :type boolean)  ; Channel ID
   (require-any-client-certificate nil :type boolean)  ; Require client cert (mTLS)
-  (max-send-fragment 0 :type fixnum))  ; Max send fragment size (0 = default)
+  (max-send-fragment 0 :type fixnum)  ; Max send fragment size (0 = default)
+  (max-cert-list 0 :type fixnum))  ; Max certificate list size (0 = default)
 
 ;;;; Argument Parsing
 (defun parse-args (args)
@@ -264,6 +265,13 @@
                   (setf (shim-config-max-send-fragment config)
                         (parse-integer (elt args i)))))
 
+               ;; Max certificate list size
+               ((string= arg "-max-cert-list")
+                (incf i)
+                (when (< i (length args))
+                  (setf (shim-config-max-cert-list config)
+                        (parse-integer (elt args i)))))
+
                ;; Skip unknown flags but continue
                (t
                 ;; Check if next arg is a value for this flag
@@ -392,7 +400,9 @@
    STREAM is the raw TCP stream from usocket:socket-stream."
   (multiple-value-bind (client-cert-chain client-private-key)
       (load-credentials config)
-    (let* ((trust-store (load-trust-store config))
+    (let ((pure-tls:*max-certificate-list-size*
+           (shim-config-max-cert-list config)))
+      (let* ((trust-store (load-trust-store config))
            (alpn (parse-alpn-protocols (shim-config-advertise-alpn config)))
            (hostname (or (shim-config-host-name config) "localhost"))
            (max-frag (let ((frag (shim-config-max-send-fragment config)))
@@ -450,7 +460,7 @@
             (unless (pure-tls::tls-connection-closed-clean-p e)
               (error "Expected clean close_notify, got unclean shutdown")))))
       (close tls-stream)
-      +exit-success+)))
+      +exit-success+))))
 
 (defun run-server-test (config stream)
   "Run TLS server test against the runner.
@@ -459,7 +469,9 @@
     (unless (and cert-chain private-key)
       (error "Server test requires certificate and key"))
 
-    (let* ((sni-callback
+    (let ((pure-tls:*max-certificate-list-size*
+           (shim-config-max-cert-list config)))
+      (let* ((sni-callback
              (when (shim-config-expect-server-name config)
                (lambda (hostname)
                  (unless (string= hostname (shim-config-expect-server-name config))
@@ -526,7 +538,7 @@
             (unless (pure-tls::tls-connection-closed-clean-p e)
               (error "Expected clean close_notify, got unclean shutdown")))))
       (close tls-stream)
-      +exit-success+)))
+      +exit-success+))))
 
 ;;;; Main Entry Point
 (defun main (&optional (args (uiop:command-line-arguments)))

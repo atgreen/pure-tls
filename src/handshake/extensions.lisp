@@ -178,11 +178,18 @@
       ;; ClientHello: list of entries
       (t
        (let ((shares-data (buffer-read-vector16 buf))
-             (shares nil))
+             (shares nil)
+             (seen-groups nil))
          (let ((shares-buf (make-tls-buffer shares-data)))
            (loop while (plusp (buffer-remaining shares-buf))
                  do (let* ((group (buffer-read-uint16 shares-buf))
                            (key-exchange (buffer-read-vector16 shares-buf)))
+                      ;; RFC 8446 Section 4.2.8: Clients MUST NOT offer multiple
+                      ;; KeyShareEntry values for the same group
+                      (when (member group seen-groups)
+                        (error 'tls-handshake-error
+                               :message ":DUPLICATE_KEY_SHARE: Multiple key shares for same group"))
+                      (push group seen-groups)
                       (push (make-key-share-entry :group group
                                                   :key-exchange key-exchange)
                             shares))))

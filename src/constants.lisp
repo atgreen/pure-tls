@@ -222,3 +222,8 @@
 
 (defparameter *default-verify-mode* +verify-required+
   "Default certificate verification mode")
+
+(defparameter *max-certificate-list-size* 0
+  "Maximum size in bytes for certificate list in Certificate message.
+   0 means no limit. Set to a positive value to enforce a limit.
+   Used to prevent DoS via excessively large certificate chains.")

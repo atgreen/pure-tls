@@ -101,6 +101,7 @@
    ;; Configuration
    #:*default-buffer-size*
    #:*default-verify-mode*
+   #:*max-certificate-list-size*
 
    ;; Session resumption
    #:*session-ticket-cache*

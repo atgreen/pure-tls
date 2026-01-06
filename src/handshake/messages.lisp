@@ -206,6 +206,11 @@
      :certificate-list
      (let ((certs-data (buffer-read-vector24 buf))
            (certs nil))
+       ;; Check certificate list size limit
+       (when (and (plusp *max-certificate-list-size*)
+                  (> (length certs-data) *max-certificate-list-size*))
+         (error 'tls-handshake-error
+                :message ":EXCESSIVE_MESSAGE_SIZE: Certificate list too large"))
        (let ((cert-buf (make-tls-buffer certs-data)))
          (loop while (plusp (buffer-remaining cert-buf))
                do (let ((cert-data (buffer-read-vector24 cert-buf))
@@ -266,6 +271,11 @@
 
 (defun parse-finished (data hash-length)
   "Parse a Finished message from bytes."
+  ;; Finished message must be exactly hash-length bytes (RFC 8446 Section 4.4.4)
+  (unless (= (length data) hash-length)
+    (error 'tls-handshake-error
+           :message (format nil ":DECODE_ERROR: Finished message wrong length: expected ~D, got ~D"
+                           hash-length (length data))))
   (make-finished-message
    :verify-data (subseq data 0 hash-length)))
 
