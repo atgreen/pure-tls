@@ -622,6 +622,40 @@
       (when (= (client-handshake-verify-mode hs) +verify-required+)
         (error 'tls-certificate-error
                :message "Server did not provide a certificate")))
+    ;; Validate per-certificate extensions
+    ;; RFC 8446 Section 4.4.2: Only status_request and signed_certificate_timestamp
+    ;; are valid, and only if the client requested them in ClientHello
+    (dolist (entry cert-list)
+      (dolist (ext (certificate-entry-extensions entry))
+        (let ((ext-type (tls-extension-type ext)))
+          (cond
+            ;; status_request (OCSP) - we don't request it, so reject
+            ((= ext-type +extension-status-request+)
+             (let ((ocsp-data (tls-extension-data ext)))
+               ;; Even if we requested OCSP, empty response is invalid
+               (when (or (null ocsp-data) (zerop (length ocsp-data)))
+                 (record-layer-write-alert (client-handshake-record-layer hs)
+                                           +alert-level-fatal+ +alert-decode-error+)
+                 (error 'tls-handshake-error
+                        :message ":DECODE_ERROR: Empty OCSP response in certificate")))
+             ;; We don't request OCSP, so this is unsolicited
+             (record-layer-write-alert (client-handshake-record-layer hs)
+                                       +alert-level-fatal+ +alert-unsupported-extension+)
+             (error 'tls-handshake-error
+                    :message ":UNSUPPORTED_EXTENSION: Unsolicited OCSP response in certificate"))
+            ;; signed_certificate_timestamp (SCT) - we don't request it, so reject
+            ((= ext-type +extension-signed-certificate-timestamp+)
+             (record-layer-write-alert (client-handshake-record-layer hs)
+                                       +alert-level-fatal+ +alert-unsupported-extension+)
+             (error 'tls-handshake-error
+                    :message ":UNSUPPORTED_EXTENSION: Unsolicited SCT in certificate"))
+            ;; Any other extension is unknown/forbidden
+            (t
+             (record-layer-write-alert (client-handshake-record-layer hs)
+                                       +alert-level-fatal+ +alert-unsupported-extension+)
+             (error 'tls-handshake-error
+                    :message (format nil ":UNSUPPORTED_EXTENSION: Unknown extension ~D in certificate"
+                                    ext-type)))))))
     ;; Parse and store the entire certificate chain
     (when cert-list
       (let ((parsed-chain
