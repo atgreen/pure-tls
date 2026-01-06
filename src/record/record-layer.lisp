@@ -75,12 +75,14 @@
         (error 'tls-decode-error
                :message (format nil ":WRONG_VERSION_NUMBER: Invalid content type ~D (not a valid TLS record)"
                                 content-type)))
-      ;; Per RFC 8446 Section 5.1:
-      ;; "Implementations SHOULD NOT enforce this restriction [version checking],
-      ;;  as otherwise they may reject compliant peers."
-      ;; We accept any version value for maximum compatibility.
-      ;; The version field is essentially ignored in TLS 1.3 but we preserve
-      ;; it in the record structure for potential debugging use.
+      ;; RFC 8446 Section 5.1: legacy_record_version MUST be 0x0303 for
+      ;; all TLS 1.3 records (except initial ClientHello which MAY use 0x0301).
+      ;; Accept 0x0300-0x0303 (SSL 3.0 through TLS 1.2) as valid versions.
+      ;; Reject clearly invalid/garbage versions.
+      (unless (and (>= version #x0300) (<= version #x0303))
+        (error 'tls-decode-error
+               :message (format nil ":WRONG_VERSION_NUMBER: Invalid record version 0x~4,'0X"
+                               version)))
       ;; Validate length
       (when (> length +max-record-size-with-padding+)
         (error 'tls-record-overflow :size length))
@@ -166,26 +168,36 @@
       ;; Just return and let caller handle/ignore
       (return-from record-layer-read
         (values content-type fragment)))
-    ;; If encrypted, decrypt
-    (if (and cipher (= content-type +content-type-application-data+))
-        (let ((header (octet-vector content-type
-                                    (ldb (byte 8 8) (tls-record-version record))
-                                    (ldb (byte 8 0) (tls-record-version record))
-                                    (ldb (byte 8 8) (length fragment))
-                                    (ldb (byte 8 0) (length fragment)))))
-          ;; tls13-decrypt-record returns (plaintext, content-type)
-          ;; We need to return (content-type, plaintext)
-          ;; Catch record overflow to send alert before re-raising
-          (handler-bind ((tls-record-overflow
-                           (lambda (c)
-                             (declare (ignore c))
-                             (record-layer-write-alert layer
-                                                       +alert-level-fatal+
-                                                       +alert-record-overflow+))))
-            (multiple-value-bind (plaintext inner-content-type)
-                (tls13-decrypt-record cipher fragment header)
-              (values inner-content-type plaintext))))
-        (values content-type fragment))))
+    ;; If encryption is established, all records MUST be encrypted (content-type 23)
+    ;; RFC 8446 Section 5.1: After the handshake keys are installed, all records
+    ;; except CCS must use the encrypted record format (application_data wrapper)
+    (when cipher
+      (unless (= content-type +content-type-application-data+)
+        (record-layer-write-alert layer +alert-level-fatal+ +alert-unexpected-message+)
+        (error 'tls-handshake-error
+               :message (format nil ":UNEXPECTED_RECORD: Expected encrypted record (23), got ~D"
+                               content-type)))
+      ;; Decrypt the record
+      (let ((header (octet-vector content-type
+                                  (ldb (byte 8 8) (tls-record-version record))
+                                  (ldb (byte 8 0) (tls-record-version record))
+                                  (ldb (byte 8 8) (length fragment))
+                                  (ldb (byte 8 0) (length fragment)))))
+        ;; tls13-decrypt-record returns (plaintext, content-type)
+        ;; We need to return (content-type, plaintext)
+        ;; Catch record overflow to send alert before re-raising
+        (handler-bind ((tls-record-overflow
+                         (lambda (c)
+                           (declare (ignore c))
+                           (record-layer-write-alert layer
+                                                     +alert-level-fatal+
+                                                     +alert-record-overflow+))))
+          (multiple-value-bind (plaintext inner-content-type)
+              (tls13-decrypt-record cipher fragment header)
+            (return-from record-layer-read
+              (values inner-content-type plaintext))))))
+    ;; No encryption - return plaintext record
+    (values content-type fragment)))
 
 (defun record-layer-write (layer content-type data)
   "Write and potentially encrypt a record to the record layer."
