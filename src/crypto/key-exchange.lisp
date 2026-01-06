@@ -112,13 +112,17 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
 
 (defun secp256r1-compute-shared-secret (key-exchange peer-public-key)
   "Compute the secp256r1 shared secret from our private key and peer's public key.
-   Validates that the peer's public key is a valid point on the curve."
+   Validates that the peer's public key is a valid point on the curve.
+   Returns the x-coordinate of the shared point (32 bytes) per RFC 8446 Section 7.4.2."
   ;; Validate peer public key (signals error if invalid)
   (validate-secp256r1-public-key peer-public-key)
   ;; Proceed with ECDH
   (let* ((private-key (key-exchange-private-key key-exchange))
-         (peer-key (ironclad:make-public-key :secp256r1 :y peer-public-key)))
-    (ironclad:diffie-hellman private-key peer-key)))
+         (peer-key (ironclad:make-public-key :secp256r1 :y peer-public-key))
+         (shared-point (ironclad:diffie-hellman private-key peer-key)))
+    ;; Ironclad returns the full uncompressed point (0x04 || x || y)
+    ;; TLS 1.3 requires only the x-coordinate as the shared secret
+    (subseq shared-point 1 33)))
 
 ;;;; secp384r1 (P-384) Implementation
 
@@ -189,13 +193,17 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
 
 (defun secp384r1-compute-shared-secret (key-exchange peer-public-key)
   "Compute the secp384r1 shared secret from our private key and peer's public key.
-   Validates that the peer's public key is a valid point on the curve."
+   Validates that the peer's public key is a valid point on the curve.
+   Returns the x-coordinate of the shared point (48 bytes) per RFC 8446 Section 7.4.2."
   ;; Validate peer public key (signals error if invalid)
   (validate-secp384r1-public-key peer-public-key)
   ;; Proceed with ECDH
   (let* ((private-key (key-exchange-private-key key-exchange))
-         (peer-key (ironclad:make-public-key :secp384r1 :y peer-public-key)))
-    (ironclad:diffie-hellman private-key peer-key)))
+         (peer-key (ironclad:make-public-key :secp384r1 :y peer-public-key))
+         (shared-point (ironclad:diffie-hellman private-key peer-key)))
+    ;; Ironclad returns the full uncompressed point (0x04 || x || y)
+    ;; TLS 1.3 requires only the x-coordinate as the shared secret
+    (subseq shared-point 1 49)))
 
 ;;;; Generic Key Exchange Operations
 
