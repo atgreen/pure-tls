@@ -26,16 +26,24 @@
   "Return T if ext-type is a TLS 1.2-only extension forbidden in TLS 1.3.
    Per RFC 8446, these extensions MUST NOT be sent in TLS 1.3 handshakes."
   (or (= ext-type +extension-extended-master-secret+)
-      (= ext-type +extension-renegotiation-info+)))
+      (= ext-type +extension-renegotiation-info+)
+      (= ext-type +extension-next-protocol-negotiation+)))
 
 (defun parse-extensions (data &key validate-tls13)
   "Parse a list of extensions from bytes.
    If VALIDATE-TLS13 is true, reject TLS 1.2-only extensions with an error."
   (let ((buf (make-tls-buffer data))
-        (extensions nil))
+        (extensions nil)
+        (seen-types nil))
     (loop while (plusp (buffer-remaining buf))
           do (let* ((ext-type (buffer-read-uint16 buf))
                     (ext-data (buffer-read-vector16 buf)))
+               ;; RFC 8446 Section 4.2: There MUST NOT be more than one extension
+               ;; of the same type in a given extension block
+               (when (member ext-type seen-types)
+                 (error 'tls-handshake-error
+                        :message ":DUPLICATE_EXTENSION: Duplicate extension type"))
+               (push ext-type seen-types)
                ;; Check for TLS 1.2-only extensions when validating
                (when (and validate-tls13 (tls12-only-extension-p ext-type))
                  (error 'tls-handshake-error

@@ -104,16 +104,30 @@
 (defun parse-server-hello (data)
   "Parse a ServerHello from bytes."
   (let ((buf (make-tls-buffer data)))
-    (make-server-hello
-     :legacy-version (buffer-read-uint16 buf)
-     :random (buffer-read-octets buf 32)
-     :legacy-session-id-echo (buffer-read-vector8 buf)
-     :cipher-suite (buffer-read-uint16 buf)
-     :legacy-compression-method (buffer-read-octet buf)
-     ;; Validate that TLS 1.2-only extensions are not present
-     :extensions (when (plusp (buffer-remaining buf))
-                   (parse-extensions (buffer-read-vector16 buf)
-                                    :validate-tls13 t)))))
+    (let* ((legacy-version (buffer-read-uint16 buf))
+           (random (buffer-read-octets buf 32))
+           (session-id (buffer-read-vector8 buf))
+           (cipher-suite (buffer-read-uint16 buf))
+           (compression-method (buffer-read-octet buf)))
+      ;; RFC 8446 Section 4.1.3: legacy_version MUST be 0x0303
+      (unless (= legacy-version +tls-1.2+)
+        (error 'tls-handshake-error
+               :message (format nil ":DECODE_ERROR: ServerHello legacy_version must be 0x0303, got 0x~4,'0X"
+                               legacy-version)))
+      ;; RFC 8446 Section 4.1.3: legacy_session_id_echo is 0..32 bytes
+      (when (> (length session-id) 32)
+        (error 'tls-handshake-error
+               :message ":DECODE_ERROR: ServerHello session_id too long (max 32 bytes)"))
+      (make-server-hello
+       :legacy-version legacy-version
+       :random random
+       :legacy-session-id-echo session-id
+       :cipher-suite cipher-suite
+       :legacy-compression-method compression-method
+       ;; Validate that TLS 1.2-only extensions are not present
+       :extensions (when (plusp (buffer-remaining buf))
+                     (parse-extensions (buffer-read-vector16 buf)
+                                      :validate-tls13 t))))))
 
 (defun serialize-server-hello (hello)
   "Serialize a ServerHello to bytes."

@@ -90,6 +90,7 @@
 (defconstant +extension-padding+ 21)
 ;; TLS 1.2-only extensions (forbidden in TLS 1.3 per RFC 8446)
 (defconstant +extension-extended-master-secret+ 23)
+(defconstant +extension-next-protocol-negotiation+ 13172)  ; 0x3374 - NPN, superseded by ALPN
 (defconstant +extension-renegotiation-info+ 65281)  ; 0xFF01
 (defconstant +extension-pre-shared-key+ 41)
 (defconstant +extension-early-data+ 42)

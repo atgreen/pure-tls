@@ -535,6 +535,13 @@
                    :message (format nil ":UNSUPPORTED_EXTENSION: Extension ~D not allowed in EncryptedExtensions"
                                     ext-type)))
           (when (= ext-type +extension-server-name+)
+            ;; RFC 8446: Server MUST NOT send server_name unless client sent it
+            (unless (client-handshake-hostname hs)
+              (record-layer-write-alert (client-handshake-record-layer hs)
+                                        +alert-level-fatal+
+                                        +alert-unsupported-extension+)
+              (error 'tls-decode-error
+                     :message ":UNSUPPORTED_EXTENSION: Unsolicited server_name extension"))
             (let ((sni (tls-extension-data ext)))
               (when (and (server-name-ext-p sni)
                          (server-name-ext-host-name sni))
