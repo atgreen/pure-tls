@@ -756,6 +756,22 @@
         (error 'tls-handshake-error
                :message ":NO_COMMON_SIGNATURE_ALGORITHMS:"))))
 
+(defun signature-algorithm-expected-curve (algorithm)
+  "Return the expected ECDSA curve for a signature algorithm, or NIL if not ECDSA."
+  (case algorithm
+    (#.+sig-ecdsa-secp256r1-sha256+ :secp256r1)
+    (#.+sig-ecdsa-secp384r1-sha384+ :secp384r1)
+    (#.+sig-ecdsa-secp521r1-sha512+ :secp521r1)
+    (otherwise nil)))
+
+(defun key-algorithm-curve (key-algorithm)
+  "Return the curve for an EC key algorithm, or NIL if not EC."
+  (cond
+    ((member key-algorithm '(:ecdsa-p256 :secp256r1 :prime256v1 :ec-public-key)) :secp256r1)
+    ((member key-algorithm '(:ecdsa-p384 :secp384r1)) :secp384r1)
+    ((member key-algorithm '(:ecdsa-p521 :secp521r1)) :secp521r1)
+    (t nil)))
+
 (defun verify-certificate-verify-signature (cert algorithm signature content
                                            &key allowed-algorithms)
   "Verify the CertificateVerify signature using the certificate's public key.
@@ -763,7 +779,13 @@
   (let* ((public-key-info (x509-certificate-subject-public-key-info cert))
          (key-algorithm (getf public-key-info :algorithm))
          (key-type (signature-key-type-from-public-algorithm key-algorithm))
-         (public-key-bytes (getf public-key-info :public-key)))
+         (public-key-bytes (getf public-key-info :public-key))
+         (key-usage (certificate-key-usage cert)))
+    ;; RFC 8446 Section 4.4.2.2: Certificate MUST allow digitalSignature key usage
+    ;; if the keyUsage extension is present
+    (when (and key-usage (not (member :digital-signature key-usage)))
+      (error 'tls-handshake-error
+             :message ":KEY_USAGE_BIT_INCORRECT: Certificate lacks digitalSignature key usage"))
     (unless (signature-algorithm-allowed-p algorithm)
       (error 'tls-handshake-error
              :message ":WRONG_SIGNATURE_TYPE: unsupported signature algorithm"))
@@ -781,6 +803,14 @@
                      (eql required-key-type key-type))
           (error 'tls-handshake-error
                  :message ":WRONG_SIGNATURE_TYPE: signature type mismatch")))
+      ;; For ECDSA, verify that certificate curve matches signature algorithm curve
+      (when (eql sig-type :ecdsa)
+        (let ((expected-curve (signature-algorithm-expected-curve algorithm))
+              (cert-curve (key-algorithm-curve key-algorithm)))
+          (when (and expected-curve cert-curve
+                     (not (eql expected-curve cert-curve)))
+            (error 'tls-handshake-error
+                   :message ":WRONG_SIGNATURE_TYPE: ECDSA curve mismatch"))))
       ;; Verify based on key type
       (cond
         ;; RSA-PSS signatures
