@@ -257,8 +257,12 @@
     (error 'tls-error :message ":BAD_ALERT: Alert record too long"))
   (let ((level (aref content 0))
         (description (aref content 1)))
-    ;; close_notify is a clean shutdown
+    ;; close_notify is a clean shutdown; respond with our own close_notify if possible
     (when (= description +alert-close-notify+)
+      (when record-layer
+        (handler-case
+            (record-layer-write-alert record-layer +alert-level-warning+ +alert-close-notify+)
+          (error () nil)))
       (error 'tls-connection-closed :clean t))
     ;; Check for invalid alert level or unknown alert description
     ;; Valid alert levels are 1 (warning) and 2 (fatal)

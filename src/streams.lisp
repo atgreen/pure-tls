@@ -193,9 +193,11 @@
                                    +key-update-not-requested+)))
          (msg-bytes (serialize-key-update msg))
          (handshake-msg (wrap-handshake-message +handshake-key-update+ msg-bytes)))
-    ;; Send the KeyUpdate message
+    ;; Send the KeyUpdate message and flush immediately
+    ;; This ensures the peer receives our response before we try to read more
     (record-layer-write (tls-stream-record-layer stream)
                         +content-type-handshake+ handshake-msg)
+    (force-output (tls-stream-underlying-stream stream))
     ;; Update our traffic secret (write keys)
     (if is-client
         ;; We're client, updating our write keys
@@ -253,6 +255,12 @@
            (tls-stream-fill-buffer stream))
           (#.+content-type-handshake+
            ;; Post-handshake messages (e.g., NewSessionTicket, KeyUpdate)
+           (when (zerop (length data))
+             (record-layer-write-alert (tls-stream-record-layer stream)
+                                       +alert-level-fatal+
+                                       +alert-decode-error+)
+             (error 'tls-decode-error
+                    :message ":DECODE_ERROR: Zero-length handshake record"))
            (let ((msg (parse-handshake-message data)))
              (case (handshake-message-type msg)
                (#.+handshake-key-update+

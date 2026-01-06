@@ -421,13 +421,64 @@
   "Process EncryptedExtensions message."
   (let* ((ee (handshake-message-body message))
          (extensions (encrypted-extensions-extensions ee)))
+    ;; Validate extensions: only allow those permitted in EncryptedExtensions.
+    ;; RFC 8446 restricts EE to extensions not in ServerHello and only those
+    ;; defined for EE. We currently support ALPN and server_name (empty).
+    (let ((seen (make-hash-table :test 'eql)))
+      (dolist (ext extensions)
+        (let ((ext-type (tls-extension-type ext)))
+          (when (gethash ext-type seen)
+            (record-layer-write-alert (client-handshake-record-layer hs)
+                                      +alert-level-fatal+
+                                      +alert-illegal-parameter+)
+            (error 'tls-decode-error
+                   :message ":DECODE_ERROR: Duplicate extension in EncryptedExtensions"))
+          (setf (gethash ext-type seen) t)
+          (unless (member ext-type (list +extension-application-layer-protocol-negotiation+
+                                         +extension-server-name+))
+            (record-layer-write-alert (client-handshake-record-layer hs)
+                                      +alert-level-fatal+
+                                      +alert-unsupported-extension+)
+            (error 'tls-decode-error
+                   :message (format nil ":UNSUPPORTED_EXTENSION: Extension ~D not allowed in EncryptedExtensions"
+                                    ext-type)))
+          (when (= ext-type +extension-server-name+)
+            (let ((sni (tls-extension-data ext)))
+              (when (and (server-name-ext-p sni)
+                         (server-name-ext-host-name sni))
+                (record-layer-write-alert (client-handshake-record-layer hs)
+                                          +alert-level-fatal+
+                                          +alert-illegal-parameter+)
+                (error 'tls-decode-error
+                       :message ":ILLEGAL_PARAMETER: server_name in EncryptedExtensions must be empty")))))))
     ;; Process ALPN if present
-    (let ((alpn-ext (find-extension extensions +extension-application-layer-protocol-negotiation+)))
+    (let ((alpn-ext (find-extension extensions
+                                    +extension-application-layer-protocol-negotiation+)))
       (when alpn-ext
         (let* ((alpn-data (tls-extension-data alpn-ext))
                (protocols (alpn-ext-protocol-list alpn-data)))
           (when protocols
-            (setf (client-handshake-selected-alpn hs) (first protocols))))))
+            (when (/= (length protocols) 1)
+              (record-layer-write-alert (client-handshake-record-layer hs)
+                                        +alert-level-fatal+
+                                        +alert-illegal-parameter+)
+              (error 'tls-decode-error
+                     :message ":ILLEGAL_PARAMETER: ALPN in EncryptedExtensions must select exactly one protocol"))
+            (let* ((selected (first protocols))
+                   (offered (client-handshake-alpn-protocols hs)))
+              (when (and (null offered) selected)
+                (record-layer-write-alert (client-handshake-record-layer hs)
+                                          +alert-level-fatal+
+                                          +alert-illegal-parameter+)
+                (error 'tls-decode-error
+                       :message ":ILLEGAL_PARAMETER: ALPN returned but not offered"))
+              (when (and offered (not (member selected offered :test #'string=)))
+                (record-layer-write-alert (client-handshake-record-layer hs)
+                                          +alert-level-fatal+
+                                          +alert-illegal-parameter+)
+                (error 'tls-decode-error
+                       :message ":ILLEGAL_PARAMETER: ALPN selected protocol not offered by client"))
+              (setf (client-handshake-selected-alpn hs) selected))))))
     ;; In PSK mode with resumption, server skips Certificate/CertificateVerify
     ;; Otherwise, expect Certificate next
     (setf (client-handshake-state hs) :wait-cert-or-finished)))
