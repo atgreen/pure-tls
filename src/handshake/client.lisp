@@ -51,6 +51,7 @@
   (hello-retry-count 0 :type fixnum)  ; Prevent infinite HRR loops
   (hrr-cookie nil :type (or null octet-vector))  ; Cookie from HRR
   (hrr-selected-group nil)  ; Group requested by server in HRR
+  (offered-key-share-groups nil :type list)  ; Groups we've offered key shares for
   ;; Session resumption (PSK)
   (offered-psk nil)  ; session-ticket if we offered a PSK
   (psk-accepted nil :type boolean)  ; T if server accepted our PSK
@@ -87,6 +88,8 @@
          ;; Generate key share for requested group (from HRR) or preferred group
          (key-share-group (or requested-group *preferred-group*))
          (key-exchange (generate-key-exchange key-share-group))
+         ;; Track which groups we've offered (for HRR validation)
+         (_ (push key-share-group (client-handshake-offered-key-share-groups hs)))
          ;; Build extensions
          ;; GREASE values for protocol robustness (RFC 8701)
          (grease-version (random-grease-value *grease-extension-values*))
@@ -254,10 +257,12 @@
 (defun process-hello-retry-request (hs server-hello hrr-raw-bytes)
   "Process a HelloRetryRequest and send a new ClientHello.
    Returns T to indicate the handshake should continue waiting for ServerHello."
-  ;; Check for infinite HRR loop
+  ;; Check for infinite HRR loop - RFC 8446 Section 4.1.4
   (when (>= (client-handshake-hello-retry-count hs) 1)
+    (record-layer-write-alert (client-handshake-record-layer hs)
+                              +alert-level-fatal+ +alert-unexpected-message+)
     (error 'tls-handshake-error
-           :message "Received multiple HelloRetryRequests"
+           :message ":UNEXPECTED_MESSAGE: Received multiple HelloRetryRequests"
            :state :wait-server-hello))
   (incf (client-handshake-hello-retry-count hs))
   ;; RFC 8446 Section 4.1.3: legacy_compression_method MUST be 0
@@ -272,8 +277,10 @@
     ;; Get the selected cipher suite (needed for hash algorithm)
     (let ((cipher-suite (server-hello-cipher-suite server-hello)))
       (unless (member cipher-suite (client-handshake-cipher-suites hs))
+        (record-layer-write-alert (client-handshake-record-layer hs)
+                                  +alert-level-fatal+ +alert-illegal-parameter+)
         (error 'tls-handshake-error
-               :message "Server selected unsupported cipher suite in HRR"
+               :message ":ILLEGAL_PARAMETER: Server selected unsupported cipher suite in HRR"
                :state :wait-server-hello))
       (setf (client-handshake-selected-cipher-suite hs) cipher-suite))
 
@@ -284,8 +291,17 @@
           (when selected-group
             ;; Verify we support this group
             (unless (member selected-group *supported-groups*)
+              (record-layer-write-alert (client-handshake-record-layer hs)
+                                        +alert-level-fatal+ +alert-illegal-parameter+)
               (error 'tls-handshake-error
-                     :message "Server requested unsupported key exchange group"
+                     :message ":ILLEGAL_PARAMETER: Server requested unsupported key exchange group"
+                     :state :wait-server-hello))
+            ;; RFC 8446 Section 4.1.4: HRR requesting a group we already offered is unnecessary
+            (when (member selected-group (client-handshake-offered-key-share-groups hs))
+              (record-layer-write-alert (client-handshake-record-layer hs)
+                                        +alert-level-fatal+ +alert-illegal-parameter+)
+              (error 'tls-handshake-error
+                     :message ":ILLEGAL_PARAMETER: HelloRetryRequest for already-offered key share group"
                      :state :wait-server-hello))
             (setf (client-handshake-hrr-selected-group hs) selected-group)))))
 
@@ -340,8 +356,19 @@
     ;; Get selected cipher suite
     (let ((cipher-suite (server-hello-cipher-suite server-hello)))
       (unless (member cipher-suite (client-handshake-cipher-suites hs))
+        (record-layer-write-alert (client-handshake-record-layer hs)
+                                  +alert-level-fatal+ +alert-illegal-parameter+)
         (error 'tls-handshake-error
                :message ":WRONG_CIPHER_RETURNED: Server selected unsupported cipher suite"
+               :state :wait-server-hello))
+      ;; RFC 8446 Section 4.1.4: Cipher suite in ServerHello must match HRR
+      (when (and (> (client-handshake-hello-retry-count hs) 0)
+                 (client-handshake-selected-cipher-suite hs)
+                 (not (= cipher-suite (client-handshake-selected-cipher-suite hs))))
+        (record-layer-write-alert (client-handshake-record-layer hs)
+                                  +alert-level-fatal+ +alert-illegal-parameter+)
+        (error 'tls-handshake-error
+               :message ":WRONG_CIPHER_RETURNED: ServerHello cipher suite differs from HelloRetryRequest"
                :state :wait-server-hello))
       (setf (client-handshake-selected-cipher-suite hs) cipher-suite))
     ;; Process key_share extension
