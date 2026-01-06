@@ -108,3 +108,49 @@ jobs:
             --eval '(format t "~%Platform: ~A~%" (lisp-implementation-type))' \
             --eval '(format t "Windows cert store: ~A~%" pure-tls:*use-windows-certificate-store*)' \
             --eval '(unless (pure-tls/test:run-network-tests) (uiop:quit 1))'
+
+  # BoringSSL regression tests (Linux only)
+  boringssl:
+    runs-on: ubuntu-latest
+    name: BoringSSL Regression Tests
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install SBCL and ocicl
+        run: |
+          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          echo "eval \"\$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)\"" >> ~/.bashrc
+          brew install sbcl ocicl
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Clone BoringSSL
+        run: |
+          git clone --depth 1 https://boringssl.googlesource.com/boringssl ~/boringssl
+
+      - name: Setup ocicl and fetch dependencies
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          ocicl setup > ~/.sbclrc
+          ocicl install
+
+      - name: Setup ASDF
+        run: |
+          mkdir -p ~/.config/common-lisp/source-registry.conf.d/
+          echo '(:tree "'"$PWD"'")' > ~/.config/common-lisp/source-registry.conf.d/pure-tls.conf
+
+      - name: Build BoringSSL test shim
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          make boringssl-shim
+
+      - name: Check for regressions
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          BORINGSSL_DIR=~/boringssl ./test/track-regressions.sh --compare

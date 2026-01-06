@@ -14,9 +14,9 @@ SBCL := sbcl --noinform --non-interactive
 #           (push (truename ".") asdf:*central-registry*))
 SETUP := 1
 
-.PHONY: all test check all-tests unit-tests network-tests boringssl-tests boringssl-shim load clean help
+.PHONY: all test check all-tests unit-tests network-tests boringssl-tests boringssl-shim load clean help save-test-baseline check-regressions
 
-all: test
+all: help
 
 help:
 	@echo "pure-tls Makefile targets:"
@@ -27,6 +27,8 @@ help:
 	@echo "  network-tests   - Run network integration tests (requires internet)"
 	@echo "  boringssl-shim  - Build the BoringSSL test shim"
 	@echo "  boringssl-tests - Run BoringSSL TLS 1.3 test suite"
+	@echo "  save-test-baseline - Save current BoringSSL test results as baseline"
+	@echo "  check-regressions  - Run BoringSSL tests and check for regressions"
 	@echo "  load            - Load pure-tls and verify compilation"
 	@echo "  connect         - Run connection test against example.com"
 	@echo "  verify          - Run certificate verification tests"
@@ -88,6 +90,16 @@ pure-tls-shim:
 boringssl-tests: pure-tls-shim
 	@echo "=== Running BoringSSL Tests ==="
 	./test/run-boringssl-tests.sh
+
+# Save BoringSSL test results as baseline for regression detection
+save-test-baseline: pure-tls-shim
+	@echo "=== Saving BoringSSL Test Baseline ==="
+	./test/track-regressions.sh --save-baseline
+
+# Run BoringSSL tests and check for regressions against baseline
+check-regressions: pure-tls-shim
+	@echo "=== Checking for Test Regressions ==="
+	./test/track-regressions.sh --compare
 
 # Clean compiled files
 clean:
