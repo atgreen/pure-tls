@@ -469,8 +469,10 @@
              (server-public (key-share-entry-key-exchange server-share)))
         ;; Verify server used our offered group
         (unless (= server-group (key-exchange-group (client-handshake-key-exchange hs)))
+          (record-layer-write-alert (client-handshake-record-layer hs)
+                                    +alert-level-fatal+ +alert-illegal-parameter+)
           (error 'tls-handshake-error
-                 :message "Server used different key exchange group"
+                 :message ":WRONG_CURVE: Server used different key exchange group"
                  :state :wait-server-hello))
         ;; Check for PSK acceptance
         (let ((psk-ext (find-extension extensions +extension-pre-shared-key+)))
@@ -525,7 +527,13 @@
               (record-layer-install-keys
                (client-handshake-record-layer hs)
                :write key iv
-               (client-handshake-selected-cipher-suite hs)))))))
+               (client-handshake-selected-cipher-suite hs)))
+            ;; Send CCS immediately after installing handshake keys, before any
+            ;; encrypted records. RFC 8446 Appendix D.4 requires CCS to be sent
+            ;; before other encrypted messages.
+            (unless (client-handshake-ccs-sent hs)
+              (record-layer-write-change-cipher-spec (client-handshake-record-layer hs))
+              (setf (client-handshake-ccs-sent hs) t))))))
     (setf (client-handshake-state hs) :wait-encrypted-extensions)))
 
 ;;;; Encrypted Extensions Processing
@@ -1425,12 +1433,29 @@
     ;; Optionally update transcript with raw message bytes
     (when update-transcript
       (client-handshake-update-transcript hs message-bytes))
-    ;; Parse the message and return both parsed message and raw bytes
-    (values (parse-handshake-message message-bytes
-                                     :hash-length (when (client-handshake-selected-cipher-suite hs)
-                                                    (cipher-suite-hash-length
-                                                     (client-handshake-selected-cipher-suite hs))))
-            message-bytes)))
+    ;; Parse the message with proper error handling for alerts
+    (handler-bind
+        ((tls-handshake-error
+           (lambda (e)
+             (declare (ignore e))
+             ;; Send decode_error for parsing/protocol errors
+             (ignore-errors
+               (record-layer-write-alert (client-handshake-record-layer hs)
+                                         +alert-level-fatal+ +alert-decode-error+))))
+         (tls-decode-error
+           (lambda (e)
+             ;; Send appropriate alert based on error type
+             (ignore-errors
+               (record-layer-write-alert (client-handshake-record-layer hs)
+                                         +alert-level-fatal+
+                                         (if (search ":UNSUPPORTED_EXTENSION:" (tls-error-message e))
+                                             +alert-unsupported-extension+
+                                             +alert-decode-error+))))))
+      (values (parse-handshake-message message-bytes
+                                       :hash-length (when (client-handshake-selected-cipher-suite hs)
+                                                      (cipher-suite-hash-length
+                                                       (client-handshake-selected-cipher-suite hs))))
+              message-bytes))))
 
 (defun perform-client-handshake (record-layer &key hostname alpn-protocols
                                                    (verify-mode +verify-required+)
@@ -1462,7 +1487,15 @@
       (case (client-handshake-state hs)
         (:wait-server-hello
          (let* ((raw-message (read-raw-handshake-message hs))
-                (message (parse-handshake-message raw-message)))
+                (message (handler-bind
+                             ((tls-handshake-error
+                                (lambda (e)
+                                  (declare (ignore e))
+                                  ;; Send decode_error for parsing/protocol errors
+                                  (ignore-errors
+                                    (record-layer-write-alert (client-handshake-record-layer hs)
+                                                              +alert-level-fatal+ +alert-decode-error+)))))
+                           (parse-handshake-message raw-message))))
            (unless (= (handshake-message-type message) +handshake-server-hello+)
              (record-layer-write-alert (client-handshake-record-layer hs)
                                        +alert-level-fatal+ +alert-unexpected-message+)
