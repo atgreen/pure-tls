@@ -267,6 +267,43 @@
     (is (= (length (pure-tls::key-exchange-public-key kex)) 65)
         "secp256r1 uncompressed public key should be 65 bytes")))
 
+;;;; HelloRetryRequest Tests
+
+(test hello-retry-request-magic-random
+  "Test that HRR is detected by magic random value"
+  (let* ((hrr-random pure-tls::+hello-retry-request-random+)
+         (normal-random (pure-tls::random-bytes 32))
+         ;; Create a mock ServerHello with HRR random
+         (hrr-hello (pure-tls::make-server-hello
+                     :legacy-version pure-tls::+tls-1.2+
+                     :random hrr-random
+                     :legacy-session-id-echo (make-array 0 :element-type '(unsigned-byte 8))
+                     :cipher-suite pure-tls::+tls-aes-128-gcm-sha256+
+                     :legacy-compression-method 0
+                     :extensions nil))
+         ;; Create a normal ServerHello
+         (normal-hello (pure-tls::make-server-hello
+                        :legacy-version pure-tls::+tls-1.2+
+                        :random normal-random
+                        :legacy-session-id-echo (make-array 0 :element-type '(unsigned-byte 8))
+                        :cipher-suite pure-tls::+tls-aes-128-gcm-sha256+
+                        :legacy-compression-method 0
+                        :extensions nil)))
+    (is (pure-tls::hello-retry-request-p hrr-hello)
+        "ServerHello with magic random should be detected as HRR")
+    (is (not (pure-tls::hello-retry-request-p normal-hello))
+        "Normal ServerHello should not be detected as HRR")))
+
+(test hello-retry-request-key-share-serialization
+  "Test that HRR key_share extension serializes correctly (just selected_group)"
+  (let* ((ext (pure-tls::make-key-share-ext :selected-group pure-tls::+group-x25519+))
+         (serialized (pure-tls::serialize-key-share-extension ext)))
+    ;; HRR key_share should be just 2 bytes (the group)
+    (is (= (length serialized) 2)
+        "HRR key_share should be 2 bytes (just the group)")
+    (is (= (pure-tls::decode-uint16 serialized 0) pure-tls::+group-x25519+)
+        "Serialized group should match")))
+
 ;;;; Test Runner
 
 (defun run-handshake-tests ()

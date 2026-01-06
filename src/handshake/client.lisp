@@ -233,9 +233,8 @@
     (client-handshake-update-transcript hs message)
     ;; Send ClientHello
     (record-layer-write-handshake (client-handshake-record-layer hs) message)
-    ;; Send dummy CCS for middlebox compatibility (RFC 8446 Appendix D.4)
-    ;; This must be sent immediately after ClientHello
-    (record-layer-write-change-cipher-spec (client-handshake-record-layer hs))
+    ;; Note: CCS for middlebox compatibility is sent later, in send-client-finished,
+    ;; after we confirm TLS 1.3 was negotiated
     (setf (client-handshake-state hs) :wait-server-hello)))
 
 ;;;; HelloRetryRequest Processing
@@ -1053,6 +1052,9 @@
    If client auth was requested, sends Certificate (and CertificateVerify if we have a cert)."
   (let* ((ks (client-handshake-key-schedule hs))
          (cipher-suite (client-handshake-selected-cipher-suite hs)))
+    ;; Send dummy CCS for middlebox compatibility (RFC 8446 Appendix D.4)
+    ;; This is sent after ServerHello confirms TLS 1.3, before our encrypted messages
+    (record-layer-write-change-cipher-spec (client-handshake-record-layer hs))
     ;; Client handshake write keys were already installed after ServerHello processing
     ;; If server requested client auth, send Certificate (+ CertificateVerify if we have one)
     (when (client-handshake-certificate-requested hs)

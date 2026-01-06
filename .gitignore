@@ -24,10 +24,9 @@ test-load.lisp
 test-*.lisp
 RCS
 
-# Audit reports
-*-AUDIT.md
-*-REVIEW.md
-*-REVIEW.md.bak
+# Markdown files in top level (except README.md)
+/*.md
+!/README.md
 
 # Build artifacts
 pure-tls-shim

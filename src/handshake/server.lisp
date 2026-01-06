@@ -62,6 +62,10 @@
   (ticket-nonce-counter 0 :type fixnum)  ; Counter for ticket nonces
   ;; Message buffer for reassembling fragmented handshake messages
   (message-buffer nil :type (or null octet-vector))
+  ;; HelloRetryRequest state
+  (hello-retry-sent nil :type boolean)  ; T if we've sent HRR
+  (hrr-selected-group nil)              ; Group we requested in HRR
+  (first-client-hello-hash nil :type (or null octet-vector))  ; Hash of CH1 for transcript
   ;; State machine state
   (state :start))
 
@@ -230,36 +234,57 @@
               (setf (server-handshake-psk-accepted hs) t)
               (setf (server-handshake-accepted-psk hs) accepted-psk)
               (setf (server-handshake-selected-psk-index hs) selected-psk-index)))))
-      ;; Process key_share extension
-      (let ((ks-ext (find-extension extensions +extension-key-share+)))
-        (unless ks-ext
-          (error 'tls-handshake-error
-                 :message "Missing key_share extension"
-                 :state :wait-client-hello))
-        (let* ((ks-data (tls-extension-data ks-ext))
-               (client-shares (key-share-ext-client-shares ks-data))
-               ;; Find first share for a group we support
-               (our-groups '(#.+group-x25519+ #.+group-secp256r1+))
-               (selected-share (find-if (lambda (share)
-                                          (member (key-share-entry-group share) our-groups))
-                                        client-shares)))
-          (unless selected-share
-            (error 'tls-handshake-error
-                   :message "No common key exchange group"
-                   :state :wait-client-hello))
-          ;; Generate our key pair and compute shared secret
-          (let* ((group (key-share-entry-group selected-share))
-                 (client-public (key-share-entry-key-exchange selected-share))
-                 (key-exchange (generate-key-exchange group)))
-            (setf (server-handshake-key-exchange hs) key-exchange)
-            ;; Compute shared secret
-            (let ((shared-secret (compute-shared-secret key-exchange client-public)))
-              ;; Initialize key schedule
-              (let ((ks (make-key-schedule-state (server-handshake-selected-cipher-suite hs))))
-                ;; Use PSK if accepted, otherwise nil (for regular handshake)
-                (key-schedule-init ks accepted-psk)
-                (key-schedule-derive-handshake-secret ks shared-secret)
-                (setf (server-handshake-key-schedule hs) ks)))))))
+      ;; Process key_share extension (may trigger HelloRetryRequest)
+      (let* ((ks-ext (find-extension extensions +extension-key-share+))
+             (sg-ext (find-extension extensions +extension-supported-groups+))
+             (our-groups (list +group-x25519+ +group-secp256r1+ +group-secp384r1+))
+             (client-shares (when ks-ext
+                              (key-share-ext-client-shares (tls-extension-data ks-ext))))
+             ;; Find first share for a group we support
+             (selected-share (find-if (lambda (share)
+                                        (member (key-share-entry-group share) our-groups))
+                                      client-shares)))
+        (cond
+          ;; Happy path: client offered a key share we can use
+          (selected-share
+           (let* ((group (key-share-entry-group selected-share))
+                  (client-public (key-share-entry-key-exchange selected-share))
+                  (key-exchange (generate-key-exchange group)))
+             (setf (server-handshake-key-exchange hs) key-exchange)
+             ;; Compute shared secret
+             (let ((shared-secret (compute-shared-secret key-exchange client-public)))
+               ;; Initialize key schedule
+               (let ((ks (make-key-schedule-state (server-handshake-selected-cipher-suite hs))))
+                 ;; Use PSK if accepted, otherwise nil (for regular handshake)
+                 (key-schedule-init ks accepted-psk)
+                 (key-schedule-derive-handshake-secret ks shared-secret)
+                 (setf (server-handshake-key-schedule hs) ks)))))
+          ;; Need HelloRetryRequest: no usable key_share
+          (t
+           ;; RFC 8446: Only one HRR allowed
+           (when (server-handshake-hello-retry-sent hs)
+             (record-layer-write-alert (server-handshake-record-layer hs)
+                                       +alert-level-fatal+ +alert-illegal-parameter+)
+             (error 'tls-handshake-error
+                    :message ":ILLEGAL_PARAMETER: Second ClientHello missing requested key_share"
+                    :state :wait-client-hello))
+           ;; Find a group from supported_groups that we also support
+           (let* ((client-groups (when sg-ext
+                                   (supported-groups-ext-groups (tls-extension-data sg-ext))))
+                  (common-group (find-if (lambda (g) (member g our-groups))
+                                         client-groups)))
+             (unless common-group
+               ;; No common group at all - fatal error
+               (record-layer-write-alert (server-handshake-record-layer hs)
+                                         +alert-level-fatal+ +alert-handshake-failure+)
+               (error 'tls-handshake-error
+                      :message ":HANDSHAKE_FAILURE_ON_CLIENT_HELLO: No common key exchange group"
+                      :state :wait-client-hello))
+             ;; Request the client to retry with this group
+             (setf (server-handshake-hrr-selected-group hs) common-group)
+             (setf (server-handshake-state hs) :send-hello-retry-request)
+             ;; Return early - don't process ALPN etc. yet
+             (return-from process-client-hello nil))))))
     ;; Handle ALPN per RFC 7301
     ;; alpn-protocols can be:
     ;;   nil - server doesn't care about ALPN
@@ -330,6 +355,61 @@
      :cipher-suite (server-handshake-selected-cipher-suite hs)
      :legacy-compression-method 0
      :extensions extensions)))
+
+(defun generate-hello-retry-request (hs)
+  "Generate a HelloRetryRequest message.
+   RFC 8446 Section 4.1.4: HRR is a ServerHello with special random value."
+  (let ((extensions
+          (list
+           ;; supported_versions extension (required)
+           (make-tls-extension
+            :type +extension-supported-versions+
+            :data (make-supported-versions-ext :selected-version +tls-1.3+))
+           ;; key_share extension with selected_group (NOT a full key share)
+           ;; For HRR, we send just the NamedGroup we want the client to use
+           (make-tls-extension
+            :type +extension-key-share+
+            :data (make-key-share-ext
+                   :selected-group (server-handshake-hrr-selected-group hs))))))
+    (make-server-hello
+     :legacy-version +tls-1.2+
+     :random +hello-retry-request-random+  ; Magic value indicates HRR
+     :legacy-session-id-echo (or (server-handshake-client-session-id hs)
+                                  (make-octet-vector 0))
+     :cipher-suite (server-handshake-selected-cipher-suite hs)
+     :legacy-compression-method 0
+     :extensions extensions)))
+
+(defun send-hello-retry-request (hs)
+  "Send HelloRetryRequest and update transcript per RFC 8446 Section 4.4.1.
+   The transcript becomes: message_hash || HelloRetryRequest"
+  (let* ((hrr (generate-hello-retry-request hs))
+         (hrr-bytes (serialize-server-hello hrr))
+         (message (wrap-handshake-message +handshake-server-hello+ hrr-bytes))
+         (cipher-suite (server-handshake-selected-cipher-suite hs))
+         (digest (cipher-suite-digest cipher-suite))
+         (hash-len (ironclad:digest-length digest)))
+    ;; Compute hash of first ClientHello (stored in transcript)
+    (let ((ch1-hash (ironclad:digest-sequence digest (server-handshake-transcript hs))))
+      ;; Store for potential debugging
+      (setf (server-handshake-first-client-hello-hash hs) ch1-hash)
+      ;; Create message_hash synthetic message per RFC 8446 Section 4.4.1
+      ;; message_hash = handshake_type(254) + length(hash-len) + Hash(CH1)
+      (let ((message-hash (concat-octet-vectors
+                           (octet-vector 254)  ; message_hash handshake type
+                           (encode-uint24 hash-len)
+                           ch1-hash)))
+        ;; Replace transcript with message_hash || HRR
+        (setf (server-handshake-transcript hs)
+              (concat-octet-vectors message-hash message))))
+    ;; Send HRR (unencrypted, like ServerHello)
+    (record-layer-write-handshake (server-handshake-record-layer hs) message)
+    ;; Send dummy CCS for middlebox compatibility
+    (record-layer-write-change-cipher-spec (server-handshake-record-layer hs))
+    ;; Mark that we've sent HRR
+    (setf (server-handshake-hello-retry-sent hs) t)
+    ;; Go back to waiting for a new ClientHello
+    (setf (server-handshake-state hs) :wait-client-hello)))
 
 (defun send-server-hello (hs)
   "Send the ServerHello message."
@@ -562,17 +642,47 @@
     ;; Update transcript AFTER verification
     (server-handshake-update-transcript hs raw-bytes)
     (key-schedule-update-transcript ks raw-bytes)
-    ;; Verify certificate chain when verification mode requires it AND trust store available
-    ;; +verify-peer+ or +verify-required+ with no trust store = just verify signature (proof of key possession)
+    ;; Verify certificate chain when verification mode requires it
+    ;; +verify-peer+ with no trust store = just verify signature (proof of key possession)
+    ;; +verify-required+ with no trust store = FAIL with unknown_ca (cannot verify without CA)
     ;; +verify-peer+ or +verify-required+ with trust store = verify signature AND chain
-    ;; Note: +verify-required+ ensures certificate is REQUIRED (checked earlier in process-client-certificate)
-    ;;       but chain verification only happens when a trust store is provided
+    (when (= verify-mode +verify-required+)
+      (unless trust-store
+        ;; Cannot verify client certificate without a trust store
+        (record-layer-write-alert (server-handshake-record-layer hs)
+                                  +alert-level-fatal+ +alert-unknown-ca+)
+        (error 'tls-verification-error
+               :message "Cannot verify client certificate: no trusted CA configured"
+               :reason :unknown-ca)))
     (when (and (member verify-mode (list +verify-peer+ +verify-required+))
                trust-store)
       ;; Full chain verification when trust store is available
-      (verify-certificate-chain
-       (server-handshake-peer-certificate-chain hs)
-       (trust-store-certificates trust-store)))
+      ;; Map verification failures to appropriate TLS alerts
+      (handler-case
+          (verify-certificate-chain
+           (server-handshake-peer-certificate-chain hs)
+           (trust-store-certificates trust-store))
+        (tls-verification-error (e)
+          ;; Map verification reason to appropriate alert
+          (let ((alert-code (case (tls-verification-error-reason e)
+                              (:unknown-ca +alert-unknown-ca+)
+                              (:name-mismatch +alert-bad-certificate+)
+                              (t +alert-certificate-unknown+))))
+            (record-layer-write-alert (server-handshake-record-layer hs)
+                                      +alert-level-fatal+ alert-code)
+            (error e)))
+        (tls-certificate-expired (e)
+          (record-layer-write-alert (server-handshake-record-layer hs)
+                                    +alert-level-fatal+ +alert-certificate-expired+)
+          (error e))
+        (tls-certificate-not-yet-valid (e)
+          (record-layer-write-alert (server-handshake-record-layer hs)
+                                    +alert-level-fatal+ +alert-bad-certificate+)
+          (error e))
+        (tls-certificate-error (e)
+          (record-layer-write-alert (server-handshake-record-layer hs)
+                                    +alert-level-fatal+ +alert-bad-certificate+)
+          (error e))))
     (setf (server-handshake-state hs) :wait-client-finished)))
 
 (defun process-client-finished (hs message raw-bytes)
@@ -760,6 +870,9 @@
                     :message ":UNEXPECTED_MESSAGE: Expected ClientHello"
                     :state :wait-client-hello))
            (process-client-hello hs message raw-bytes)))
+
+        (:send-hello-retry-request
+         (send-hello-retry-request hs))
 
         (:send-server-hello
          (send-server-hello hs))
