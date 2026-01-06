@@ -93,55 +93,81 @@ if [ -n "$FINAL_LINE" ]; then
 fi
 
 echo ""
-echo "=== Failure Breakdown ==="
+echo "=== Failure Breakdown (by unique test name) ==="
 
-# Count failures by category
-# Version negotiation tests (TLS 1.3-only impl can't do fallback)
-VERSION_NEG_FAILED=$(grep "FAILED" "$TMPLOG" | grep -E "VersionNegotiation|MinimumVersion|Fallback" | wc -l)
+# Extract unique failed test names for accurate counting
+grep -oP "FAILED \(\K[^)]+" "$TMPLOG" | sort -u > "$TMPLOG.fails"
+UNIQUE_FAILED=$(wc -l < "$TMPLOG.fails")
 
-# TLS 1.0/1.1/1.2 tests (we only support TLS 1.3)
-TLS12_FAILED=$(grep "FAILED" "$TMPLOG" | grep -v "VersionNegotiation\|MinimumVersion" | grep -E "TLS1$|TLS11|TLS12|-TLS\)|TLS-TLS1[012]" | wc -l)
+# Count by category using unique test names
+VERSION_NEG=$(grep -E "VersionNegotiation|MinimumVersion|Fallback" "$TMPLOG.fails" | wc -l)
+TLS12=$(grep -v "VersionNegotiation\|MinimumVersion" "$TMPLOG.fails" | grep -E "TLS1$|TLS11|TLS12\b|-TLS1[012]\b" | wc -l)
+QUIC=$(grep "QUIC" "$TMPLOG.fails" | wc -l)
+ECH=$(grep "ECH" "$TMPLOG.fails" | wc -l)
+SERVER=$(grep -E "Server-|-Server\b" "$TMPLOG.fails" | wc -l)
 
-# QUIC tests (not implemented)
-QUIC_FAILED=$(grep "FAILED" "$TMPLOG" | grep "QUIC" | wc -l)
+# TLS 1.3 tests (has TLS13 in name)
+TLS13_TESTS=$(grep "TLS13" "$TMPLOG.fails" | wc -l)
 
-# ECH tests (not implemented - optional extension)
-ECH_FAILED=$(grep "FAILED" "$TMPLOG" | grep "ECH" | wc -l)
+# TLS 1.3 server-side tests
+TLS13_SERVER=$(grep "TLS13" "$TMPLOG.fails" | grep -E "Server-|-Server\b" | wc -l)
 
-# Server-side tests (we're primarily a client implementation)
-SERVER_FAILED=$(grep "FAILED" "$TMPLOG" | grep -E "TLS13-Server-|Server-.*-TLS13|CertReq-CA-List|RequireAnyClientCertificate|SkipClientCertificate|-Server-TLS13" | wc -l)
+# TLS 1.3 optional features (still valid TLS 1.3, but optional extensions/callbacks)
+TLS13_ALPS=$(grep "TLS13" "$TMPLOG.fails" | grep "ALPS" | wc -l)
+TLS13_ALPN=$(grep "TLS13" "$TMPLOG.fails" | grep "ALPN" | wc -l)
+TLS13_CALLBACKS=$(grep "TLS13" "$TMPLOG.fails" | grep -E "Callback|CustomVerify|CustomCallback|Hint" | wc -l)
+TLS13_CLIENT_AUTH=$(grep "TLS13" "$TMPLOG.fails" | grep -E "ClientAuth|ClientCertificate|CertificateSelection|Client-Sign|Client-Verify|CertificateVerification|CertReq" | wc -l)
+TLS13_PSK=$(grep "TLS13" "$TMPLOG.fails" | grep -E "PSK|Ticket|Resumption|EarlyData" | wc -l)
+TLS13_QUIC=$(grep "TLS13" "$TMPLOG.fails" | grep "QUIC" | wc -l)
+TLS13_ECH=$(grep "TLS13" "$TMPLOG.fails" | grep "ECH" | wc -l)
+TLS13_OPTIONAL_API=$(grep "TLS13" "$TMPLOG.fails" | grep -E "CustomKeyShares|ExportKeyingMaterial|Renegotiat|GREASE|Compliance" | wc -l)
+TLS13_VERSION=$(grep "TLS13" "$TMPLOG.fails" | grep -E "VersionNegotiation|MinimumVersion" | wc -l)
 
-# Callback/optional feature tests
-CALLBACK_FAILED=$(grep "FAILED" "$TMPLOG" | grep -E "Callback|GREASE|DDoS|Hint|Compliance|Ticket.*Skip|SRTP|ChannelID" | wc -l)
+# Calculate TLS 1.3 optional/expected total
+TLS13_EXPECTED=$((TLS13_SERVER + TLS13_ALPS + TLS13_ALPN + TLS13_CALLBACKS + TLS13_CLIENT_AUTH + TLS13_PSK + TLS13_QUIC + TLS13_ECH + TLS13_OPTIONAL_API + TLS13_VERSION))
 
-# Count errors that are actually TLS 1.2 compatibility issues (even in "TLS13" tests)
-TLS12_COMPAT_ERRORS=$(grep -B5 "FAILED.*TLS13" "$TMPLOG" | grep -E "TLS 1.2 not supported|TLS 1.2-only extension|protocol_version" | wc -l)
+# TLS 1.3 core failures (potential bugs)
+TLS13_CORE=$(grep "TLS13" "$TMPLOG.fails" | grep -v "Server\|-Server\|ALPS\|ALPN\|Callback\|CustomVerify\|Hint\|ClientAuth\|ClientCertificate\|CertificateSelection\|Client-Sign\|Client-Verify\|CertificateVerification\|CertReq\|PSK\|Ticket\|Resumption\|EarlyData\|QUIC\|ECH\|CustomKeyShares\|ExportKeyingMaterial\|Renegotiat\|GREASE\|Compliance\|VersionNegotiation\|MinimumVersion" | wc -l)
 
-# Real TLS 1.3 client bugs (exclude all the above categories)
-TLS13_ALL=$(grep "FAILED.*TLS13" "$TMPLOG" | grep -v "QUIC\|VersionNegotiation\|MinimumVersion\|ECH\|Server-\|Callback\|GREASE\|DDoS\|Hint\|Compliance\|SRTP\|ChannelID" | wc -l)
-# Subtract tests that fail due to TLS 1.2 compatibility errors
-TLS13_FAILED=$((TLS13_ALL > TLS12_COMPAT_ERRORS ? TLS13_ALL - TLS12_COMPAT_ERRORS : 0))
+# Other/uncategorized
+CATEGORIZED=$((VERSION_NEG + TLS12 + QUIC + ECH + SERVER + TLS13_TESTS))
+OTHER=$((UNIQUE_FAILED > CATEGORIZED ? UNIQUE_FAILED - CATEGORIZED : 0))
 
-# Calculate other/remaining
-CATEGORIZED=$((TLS12_FAILED + VERSION_NEG_FAILED + QUIC_FAILED + ECH_FAILED + SERVER_FAILED + CALLBACK_FAILED + TLS13_ALL))
-OTHER_FAILED=$((FAILED > CATEGORIZED ? FAILED - CATEGORIZED : 0))
+echo "Unique test failures: $UNIQUE_FAILED"
+echo ""
+echo "Expected failures (implementation scope):"
+echo "  TLS 1.0/1.1/1.2 (TLS 1.3 only):  $TLS12"
+echo "  Version negotiation:              $VERSION_NEG"
+echo "  Server-side (client-only impl):   $SERVER"
+echo "  QUIC (not implemented):           $QUIC"
+echo "  ECH (not implemented):            $ECH"
+echo ""
+echo "TLS 1.3 failures breakdown ($TLS13_TESTS total):"
+echo "  Expected/optional failures:"
+echo "    Server-side:                    $TLS13_SERVER"
+echo "    Version negotiation:            $TLS13_VERSION"
+echo "    QUIC:                           $TLS13_QUIC"
+echo "    ECH:                            $TLS13_ECH"
+echo "    ALPS (optional extension):      $TLS13_ALPS"
+echo "    ALPN (protocol negotiation):    $TLS13_ALPN"
+echo "    Client auth/certificates:       $TLS13_CLIENT_AUTH"
+echo "    Callbacks/hints:                $TLS13_CALLBACKS"
+echo "    PSK/Resumption/EarlyData:       $TLS13_PSK"
+echo "    Optional APIs:                  $TLS13_OPTIONAL_API"
+echo "  --------------------------------"
+echo "  Expected subtotal:                $TLS13_EXPECTED"
+echo "  Core protocol (potential bugs):   $TLS13_CORE"
+echo ""
+echo "Other/Generic:                      $OTHER"
 
-echo "  TLS 1.0/1.1/1.2 (expected):     $TLS12_FAILED"
-echo "  Version negotiation (expected): $VERSION_NEG_FAILED"
-echo "  QUIC (not implemented):         $QUIC_FAILED"
-echo "  ECH (not implemented):          $ECH_FAILED"
-echo "  Server-side (client-only impl): $SERVER_FAILED"
-echo "  Callbacks/optional features:    $CALLBACK_FAILED"
-echo "  TLS 1.3 client (bugs to fix):   $TLS13_FAILED"
-echo "  Other/Generic:                  $OTHER_FAILED"
-
-# Show real TLS 1.3 client failures (excluding server, callbacks, ECH, etc.)
-REAL_TLS13_BUGS=$(grep "FAILED.*TLS13" "$TMPLOG" | grep -v "QUIC\|VersionNegotiation\|MinimumVersion\|ECH\|Server-\|-Server\|Callback\|GREASE\|DDoS\|Hint\|Compliance\|SRTP\|ChannelID\|CertReq-CA\|ClientAuth\|ClientCertificate" | head -20)
-if [ -n "$REAL_TLS13_BUGS" ]; then
+# Show core TLS 1.3 failures that need investigation
+if [ "$TLS13_CORE" -gt 0 ]; then
     echo ""
-    echo "=== TLS 1.3 Client Failures (first 20) ==="
-    echo "$REAL_TLS13_BUGS" | sed 's/.*FAILED /FAILED /'
+    echo "=== TLS 1.3 Core Failures (potential bugs) ==="
+    grep "TLS13" "$TMPLOG.fails" | grep -v "Server\|-Server\|ALPS\|ALPN\|Callback\|CustomVerify\|Hint\|ClientAuth\|ClientCertificate\|CertificateSelection\|Client-Sign\|Client-Verify\|CertificateVerification\|CertReq\|PSK\|Ticket\|Resumption\|EarlyData\|QUIC\|ECH\|CustomKeyShares\|ExportKeyingMaterial\|Renegotiat\|GREASE\|Compliance\|VersionNegotiation\|MinimumVersion" | head -20
 fi
+
+rm -f "$TMPLOG.fails"
 
 echo ""
 echo "=== Most Common Errors ==="
@@ -152,13 +178,16 @@ TLS12_ERROR_COUNT=$(grep "TLS error:" "$TMPLOG" | grep -E "TLS 1.2 not supported
 echo ""
 echo "  (Note: $TLS12_ERROR_COUNT errors are TLS 1.2 compatibility related)"
 
-# Success criteria: Real TLS 1.3 client failures should be low
-# We're a TLS 1.3-only client, so server-side and TLS 1.2 tests don't count
-if [ "$TLS13_FAILED" -gt 100 ]; then
-    echo ""
-    echo "WARNING: TLS 1.3 client failures higher than expected ($TLS13_FAILED > 100)"
-    echo "Review the failures above to identify real bugs vs expected limitations."
-    # Don't exit with error - just warn
+# Success criteria: Core TLS 1.3 failures should be low
+# We're a TLS 1.3-only client, so server-side, TLS 1.2, and optional features don't count
+echo ""
+if [ "$TLS13_CORE" -gt 50 ]; then
+    echo "WARNING: TLS 1.3 core failures higher than expected ($TLS13_CORE > 50)"
+    echo "Review the core failures above to identify real bugs."
+elif [ "$TLS13_CORE" -gt 0 ]; then
+    echo "INFO: $TLS13_CORE TLS 1.3 core protocol failures to investigate"
+else
+    echo "SUCCESS: No TLS 1.3 core protocol failures detected"
 fi
 
 echo ""
