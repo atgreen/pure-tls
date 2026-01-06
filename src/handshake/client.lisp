@@ -389,6 +389,16 @@
 
 ;;;; ServerHello Processing
 
+(defun valid-server-hello-extension-p (ext-type)
+  "Return T if ext-type is allowed in TLS 1.3 ServerHello.
+   Per RFC 8446 Section 4.2, only these extensions are valid in ServerHello:
+   - supported_versions (required)
+   - key_share (required for key exchange)
+   - pre_shared_key (if PSK mode)"
+  (member ext-type (list +extension-supported-versions+
+                         +extension-key-share+
+                         +extension-pre-shared-key+)))
+
 (defun process-server-hello (hs message raw-bytes)
   "Process ServerHello message.
    RAW-BYTES are the raw message bytes (needed for transcript handling)."
@@ -400,6 +410,17 @@
       (return-from process-server-hello nil))
     ;; Normal ServerHello - update transcript now
     (client-handshake-update-transcript hs raw-bytes)
+    ;; RFC 8446 Section 4.2: Validate that only allowed extensions are present
+    ;; Extensions that should appear in EncryptedExtensions are forbidden here
+    (dolist (ext extensions)
+      (let ((ext-type (tls-extension-type ext)))
+        (unless (valid-server-hello-extension-p ext-type)
+          (record-layer-write-alert (client-handshake-record-layer hs)
+                                    +alert-level-fatal+ +alert-unsupported-extension+)
+          (error 'tls-handshake-error
+                 :message (format nil ":UNEXPECTED_EXTENSION: Extension ~D not allowed in ServerHello"
+                                 ext-type)
+                 :state :wait-server-hello))))
     ;; RFC 8446 Section 4.1.3: legacy_compression_method MUST be 0
     (unless (zerop (server-hello-legacy-compression-method server-hello))
       (record-layer-write-alert (client-handshake-record-layer hs)
@@ -608,6 +629,13 @@
                                     +alert-level-fatal+ +alert-decode-error+)
           (error 'tls-decode-error
                  :message ":DECODE_ERROR: CertificateRequest has empty signature_algorithms list"))
+        ;; Check if we have any algorithms in common with the server
+        (let ((common (intersection algorithms (supported-signature-algorithms-tls13))))
+          (when (null common)
+            (record-layer-write-alert (client-handshake-record-layer hs)
+                                      +alert-level-fatal+ +alert-handshake-failure+)
+            (error 'tls-handshake-error
+                   :message ":NO_COMMON_SIGNATURE_ALGORITHMS: No common signature algorithms with server")))
         (setf (client-handshake-cert-request-signature-algorithms hs) algorithms)))
     ;; Mark that client auth was requested
     (setf (client-handshake-certificate-requested hs) t)))
@@ -644,7 +672,45 @@
              (error 'tls-handshake-error
                     :message ":UNSUPPORTED_EXTENSION: Unsolicited OCSP response in certificate"))
             ;; signed_certificate_timestamp (SCT) - we don't request it, so reject
+            ;; But first validate the format (RFC 6962 Section 3.3)
             ((= ext-type +extension-signed-certificate-timestamp+)
+             (let ((sct-data (tls-extension-data ext)))
+               ;; Validate SCT list format before rejecting as unsolicited
+               (when (or (null sct-data) (< (length sct-data) 2))
+                 (record-layer-write-alert (client-handshake-record-layer hs)
+                                           +alert-level-fatal+ +alert-decode-error+)
+                 (error 'tls-handshake-error
+                        :message ":DECODE_ERROR: Invalid SCT list in certificate"))
+               ;; Parse SCT list: uint16 list_length followed by SCT entries
+               (let* ((list-len (decode-uint16 sct-data 0))
+                      (expected-len (+ 2 list-len)))
+                 (unless (= (length sct-data) expected-len)
+                   (record-layer-write-alert (client-handshake-record-layer hs)
+                                             +alert-level-fatal+ +alert-decode-error+)
+                   (error 'tls-handshake-error
+                          :message ":DECODE_ERROR: SCT list length mismatch"))
+                 ;; Empty SCT list is invalid
+                 (when (zerop list-len)
+                   (record-layer-write-alert (client-handshake-record-layer hs)
+                                             +alert-level-fatal+ +alert-decode-error+)
+                   (error 'tls-handshake-error
+                          :message ":DECODE_ERROR: Empty SCT list in certificate"))
+                 ;; Validate each SCT entry is non-empty
+                 (let ((pos 2))
+                   (loop while (< pos (length sct-data))
+                         do (when (> (+ pos 2) (length sct-data))
+                              (record-layer-write-alert (client-handshake-record-layer hs)
+                                                        +alert-level-fatal+ +alert-decode-error+)
+                              (error 'tls-handshake-error
+                                     :message ":DECODE_ERROR: Truncated SCT in list"))
+                            (let ((sct-len (decode-uint16 sct-data pos)))
+                              (when (zerop sct-len)
+                                (record-layer-write-alert (client-handshake-record-layer hs)
+                                                          +alert-level-fatal+ +alert-decode-error+)
+                                (error 'tls-handshake-error
+                                       :message ":DECODE_ERROR: Empty SCT entry in list"))
+                              (incf pos (+ 2 sct-len)))))))
+             ;; We don't request SCT, so this is unsolicited
              (record-layer-write-alert (client-handshake-record-layer hs)
                                        +alert-level-fatal+ +alert-unsupported-extension+)
              (error 'tls-handshake-error
@@ -1398,7 +1464,16 @@
                     :state :wait-server-hello))
            ;; DON'T update transcript here - process-server-hello handles it
            ;; (transcript handling differs for HRR vs regular ServerHello)
-           (process-server-hello hs message raw-message)))
+           (process-server-hello hs message raw-message)
+           ;; After ServerHello (not HRR), encryption is installed.
+           ;; Any leftover plaintext data in the buffer is excess handshake data.
+           (when (and (eql (client-handshake-state hs) :wait-encrypted-extensions)
+                      (client-handshake-message-buffer hs))
+             (record-layer-write-alert (client-handshake-record-layer hs)
+                                       +alert-level-fatal+ +alert-unexpected-message+)
+             (error 'tls-handshake-error
+                    :message ":EXCESS_HANDSHAKE_DATA: Unexpected plaintext data after ServerHello"
+                    :state :wait-server-hello))))
         (:wait-encrypted-extensions
          (let ((message (read-handshake-message hs)))
            (unless (= (handshake-message-type message) +handshake-encrypted-extensions+)

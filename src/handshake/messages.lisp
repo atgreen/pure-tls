@@ -108,7 +108,15 @@
            (random (buffer-read-octets buf 32))
            (session-id (buffer-read-vector8 buf))
            (cipher-suite (buffer-read-uint16 buf))
-           (compression-method (buffer-read-octet buf)))
+           (compression-method (buffer-read-octet buf))
+           ;; Extensions are optional but consume all remaining data
+           (extensions (when (plusp (buffer-remaining buf))
+                         (parse-extensions (buffer-read-vector16 buf)
+                                           :validate-tls13 t))))
+      ;; Check for trailing data after extensions
+      (when (plusp (buffer-remaining buf))
+        (error 'tls-handshake-error
+               :message ":DECODE_ERROR: Trailing data in ServerHello"))
       ;; RFC 8446 Section 4.1.3: legacy_version MUST be 0x0303
       (unless (= legacy-version +tls-1.2+)
         (error 'tls-handshake-error
@@ -124,10 +132,7 @@
        :legacy-session-id-echo session-id
        :cipher-suite cipher-suite
        :legacy-compression-method compression-method
-       ;; Validate that TLS 1.2-only extensions are not present
-       :extensions (when (plusp (buffer-remaining buf))
-                     (parse-extensions (buffer-read-vector16 buf)
-                                      :validate-tls13 t))))))
+       :extensions extensions))))
 
 (defun serialize-server-hello (hello)
   "Serialize a ServerHello to bytes."
@@ -159,10 +164,13 @@
 (defun parse-encrypted-extensions (data)
   "Parse EncryptedExtensions from bytes."
   (let ((buf (make-tls-buffer data)))
-    (make-encrypted-extensions
-     ;; Validate that TLS 1.2-only extensions are not present
-     :extensions (parse-extensions (buffer-read-vector16 buf)
-                                  :validate-tls13 t))))
+    (let ((extensions (parse-extensions (buffer-read-vector16 buf)
+                                        :validate-tls13 t)))
+      ;; Check for trailing data
+      (when (plusp (buffer-remaining buf))
+        (error 'tls-handshake-error
+               :message ":DECODE_ERROR: Trailing data in EncryptedExtensions"))
+      (make-encrypted-extensions :extensions extensions))))
 
 (defun serialize-encrypted-extensions (ee)
   "Serialize an EncryptedExtensions message to bytes."
@@ -183,9 +191,15 @@
 (defun parse-certificate-request (data)
   "Parse a CertificateRequest message from bytes."
   (let ((buf (make-tls-buffer data)))
-    (make-certificate-request
-     :certificate-request-context (buffer-read-vector8 buf)
-     :extensions (parse-extensions (buffer-read-vector16 buf)))))
+    (let ((context (buffer-read-vector8 buf))
+          (extensions (parse-extensions (buffer-read-vector16 buf))))
+      ;; Check for trailing data
+      (when (plusp (buffer-remaining buf))
+        (error 'tls-handshake-error
+               :message ":DECODE_ERROR: Trailing data in CertificateRequest"))
+      (make-certificate-request
+       :certificate-request-context context
+       :extensions extensions))))
 
 (defun serialize-certificate-request (req)
   "Serialize a CertificateRequest message to bytes."
@@ -215,25 +229,29 @@
 (defun parse-certificate-message (data)
   "Parse a Certificate message from bytes."
   (let ((buf (make-tls-buffer data)))
-    (make-certificate-message
-     :certificate-request-context (buffer-read-vector8 buf)
-     :certificate-list
-     (let ((certs-data (buffer-read-vector24 buf))
-           (certs nil))
-       ;; Check certificate list size limit
-       (when (and (plusp *max-certificate-list-size*)
-                  (> (length certs-data) *max-certificate-list-size*))
-         (error 'tls-handshake-error
-                :message ":EXCESSIVE_MESSAGE_SIZE: Certificate list too large"))
-       (let ((cert-buf (make-tls-buffer certs-data)))
-         (loop while (plusp (buffer-remaining cert-buf))
-               do (let ((cert-data (buffer-read-vector24 cert-buf))
-                        (extensions (parse-extensions (buffer-read-vector16 cert-buf))))
-                    (push (make-certificate-entry
-                           :cert-data cert-data
-                           :extensions extensions)
-                          certs))))
-       (nreverse certs)))))
+    (let ((context (buffer-read-vector8 buf))
+          (certs-data (buffer-read-vector24 buf)))
+      ;; Check for trailing data
+      (when (plusp (buffer-remaining buf))
+        (error 'tls-handshake-error
+               :message ":DECODE_ERROR: Trailing data in Certificate"))
+      ;; Check certificate list size limit
+      (when (and (plusp *max-certificate-list-size*)
+                 (> (length certs-data) *max-certificate-list-size*))
+        (error 'tls-handshake-error
+               :message ":EXCESSIVE_MESSAGE_SIZE: Certificate list too large"))
+      (let ((certs nil))
+        (let ((cert-buf (make-tls-buffer certs-data)))
+          (loop while (plusp (buffer-remaining cert-buf))
+                do (let ((cert-data (buffer-read-vector24 cert-buf))
+                         (extensions (parse-extensions (buffer-read-vector16 cert-buf))))
+                     (push (make-certificate-entry
+                            :cert-data cert-data
+                            :extensions extensions)
+                           certs))))
+        (make-certificate-message
+         :certificate-request-context context
+         :certificate-list (nreverse certs))))))
 
 (defun serialize-certificate-message (cert-msg)
   "Serialize a Certificate message to bytes."
@@ -264,9 +282,15 @@
 (defun parse-certificate-verify (data)
   "Parse a CertificateVerify from bytes."
   (let ((buf (make-tls-buffer data)))
-    (make-certificate-verify
-     :algorithm (buffer-read-uint16 buf)
-     :signature (buffer-read-vector16 buf))))
+    (let ((algorithm (buffer-read-uint16 buf))
+          (signature (buffer-read-vector16 buf)))
+      ;; Check for trailing data
+      (when (plusp (buffer-remaining buf))
+        (error 'tls-handshake-error
+               :message ":DECODE_ERROR: Trailing data in CertificateVerify"))
+      (make-certificate-verify
+       :algorithm algorithm
+       :signature signature))))
 
 (defun serialize-certificate-verify (cv)
   "Serialize a CertificateVerify message to bytes."
@@ -315,6 +339,10 @@
            (ticket-nonce (buffer-read-vector8 buf))
            (ticket (buffer-read-vector16 buf))
            (extensions (parse-extensions (buffer-read-vector16 buf))))
+      ;; Check for trailing data
+      (when (plusp (buffer-remaining buf))
+        (error 'tls-handshake-error
+               :message ":DECODE_ERROR: Trailing data in NewSessionTicket"))
       ;; RFC 8446: ticket<1..2^16-1> - minimum 1 byte
       (when (zerop (length ticket))
         (error 'tls-handshake-error
@@ -337,6 +365,10 @@
 
 (defun parse-key-update (data)
   "Parse a KeyUpdate from bytes."
+  ;; KeyUpdate is exactly 1 byte
+  (unless (= (length data) 1)
+    (error 'tls-handshake-error
+           :message ":DECODE_ERROR: KeyUpdate message wrong length"))
   (make-key-update :request-update (aref data 0)))
 
 (defun serialize-key-update (msg)
