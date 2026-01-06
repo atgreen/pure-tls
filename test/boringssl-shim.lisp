@@ -404,7 +404,7 @@
            (shim-config-max-cert-list config)))
       (let* ((trust-store (load-trust-store config))
            (alpn (parse-alpn-protocols (shim-config-advertise-alpn config)))
-           (hostname (or (shim-config-host-name config) "localhost"))
+           (hostname (shim-config-host-name config))
            (max-frag (let ((frag (shim-config-max-send-fragment config)))
                        (if (plusp frag) frag nil)))
            (tls-stream

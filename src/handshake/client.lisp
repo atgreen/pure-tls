@@ -586,6 +586,13 @@
                    :message ":ILLEGAL_PARAMETER: ALPN in EncryptedExtensions must select exactly one protocol"))
           (let* ((selected (first protocols))
                  (offered (client-handshake-alpn-protocols hs)))
+            ;; Check for empty protocol name
+            (when (or (null selected) (zerop (length selected)))
+              (record-layer-write-alert (client-handshake-record-layer hs)
+                                        +alert-level-fatal+
+                                        +alert-illegal-parameter+)
+              (error 'tls-decode-error
+                     :message ":ILLEGAL_PARAMETER: ALPN selected empty protocol name"))
             (when (null offered)
               (record-layer-write-alert (client-handshake-record-layer hs)
                                         +alert-level-fatal+
