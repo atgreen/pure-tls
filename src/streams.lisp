@@ -87,12 +87,14 @@
     ;; Flush pending output unless aborting
     (unless abort
       (force-output stream))
-    ;; Send close_notify alert
+    ;; Send close_notify alert and flush to ensure it's sent before closing
     (unless abort
       (handler-case
-          (record-layer-write-alert (tls-stream-record-layer stream)
-                                    +alert-level-warning+
-                                    +alert-close-notify+)
+          (progn
+            (record-layer-write-alert (tls-stream-record-layer stream)
+                                      +alert-level-warning+
+                                      +alert-close-notify+)
+            (force-output (tls-stream-underlying-stream stream)))
         (error () nil)))  ; Ignore errors during shutdown
     ;; Close underlying stream (ignore errors - peer may have already closed)
     (handler-case
