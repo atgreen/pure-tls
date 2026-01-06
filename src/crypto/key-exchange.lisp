@@ -32,6 +32,12 @@
 (defun x25519-compute-shared-secret (key-exchange peer-public-key)
   "Compute the X25519 shared secret from our private key and peer's public key.
 Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
+  ;; X25519 public keys MUST be exactly 32 bytes (RFC 7748 Section 5)
+  (unless (= (length peer-public-key) 32)
+    (error 'tls-crypto-error
+           :operation "X25519 key exchange"
+           :message (format nil ":BAD_ECPOINT: Invalid X25519 key length: ~D (expected 32)"
+                           (length peer-public-key))))
   (let* ((private-key (key-exchange-private-key key-exchange))
          (peer-key (ironclad:make-public-key :curve25519 :y peer-public-key))
          (shared-secret (ironclad:diffie-hellman private-key peer-key)))
@@ -40,7 +46,7 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
     (when (every #'zerop shared-secret)
       (error 'tls-crypto-error
              :operation "X25519 key exchange"
-             :message "Invalid shared secret (all zeros) - possible small-subgroup attack"))
+             :message ":BAD_ECPOINT: Invalid shared secret (all zeros) - possible small-subgroup attack"))
     shared-secret))
 
 ;;;; secp256r1 (P-256) Implementation
@@ -89,11 +95,12 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
   (unless (= (length peer-public-key) 65)
     (error 'tls-crypto-error
            :operation "secp256r1 key exchange"
-           :message (format nil "Invalid key length: ~D (expected 65)" (length peer-public-key))))
+           :message (format nil ":BAD_ECPOINT: Invalid key length: ~D (expected 65)"
+                           (length peer-public-key))))
   (unless (= (aref peer-public-key 0) #x04)
     (error 'tls-crypto-error
            :operation "secp256r1 key exchange"
-           :message "Invalid key format: expected uncompressed point (0x04 prefix)"))
+           :message ":BAD_ECPOINT: Invalid key format: expected uncompressed point (0x04 prefix)"))
   ;; Extract x and y coordinates (big-endian, 32 bytes each)
   (let ((x (ironclad:octets-to-integer peer-public-key :start 1 :end 33))
         (y (ironclad:octets-to-integer peer-public-key :start 33 :end 65)))
@@ -102,12 +109,12 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
                  (< 0 y +secp256r1-p+))
       (error 'tls-crypto-error
              :operation "secp256r1 key exchange"
-             :message "Point coordinates out of range"))
+             :message ":BAD_ECPOINT: Point coordinates out of range"))
     ;; Check point is on curve
     (unless (secp256r1-point-on-curve-p x y)
       (error 'tls-crypto-error
              :operation "secp256r1 key exchange"
-             :message "Point not on curve - possible invalid curve attack"))
+             :message ":BAD_ECPOINT: Point not on curve - possible invalid curve attack"))
     (values x y)))
 
 (defun secp256r1-compute-shared-secret (key-exchange peer-public-key)
@@ -170,11 +177,12 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
   (unless (= (length peer-public-key) 97)
     (error 'tls-crypto-error
            :operation "secp384r1 key exchange"
-           :message (format nil "Invalid key length: ~D (expected 97)" (length peer-public-key))))
+           :message (format nil ":BAD_ECPOINT: Invalid key length: ~D (expected 97)"
+                           (length peer-public-key))))
   (unless (= (aref peer-public-key 0) #x04)
     (error 'tls-crypto-error
            :operation "secp384r1 key exchange"
-           :message "Invalid key format: expected uncompressed point (0x04 prefix)"))
+           :message ":BAD_ECPOINT: Invalid key format: expected uncompressed point (0x04 prefix)"))
   ;; Extract x and y coordinates (big-endian, 48 bytes each)
   (let ((x (ironclad:octets-to-integer peer-public-key :start 1 :end 49))
         (y (ironclad:octets-to-integer peer-public-key :start 49 :end 97)))
@@ -183,12 +191,12 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
                  (< 0 y +secp384r1-p+))
       (error 'tls-crypto-error
              :operation "secp384r1 key exchange"
-             :message "Point coordinates out of range"))
+             :message ":BAD_ECPOINT: Point coordinates out of range"))
     ;; Check point is on curve
     (unless (secp384r1-point-on-curve-p x y)
       (error 'tls-crypto-error
              :operation "secp384r1 key exchange"
-             :message "Point not on curve - possible invalid curve attack"))
+             :message ":BAD_ECPOINT: Point not on curve - possible invalid curve attack"))
     (values x y)))
 
 (defun secp384r1-compute-shared-secret (key-exchange peer-public-key)

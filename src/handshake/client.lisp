@@ -740,9 +740,15 @@
     ;; Parse and store the entire certificate chain
     (when cert-list
       (let ((parsed-chain
-              (mapcar (lambda (entry)
-                        (parse-certificate (certificate-entry-cert-data entry)))
-                      cert-list)))
+              (loop for entry in cert-list
+                    for i from 0
+                    collect (handler-case
+                                (parse-certificate (certificate-entry-cert-data entry))
+                              (error (e)
+                                ;; Re-throw with proper error message for BoringSSL tests
+                                (error 'tls-decode-error
+                                       :message (format nil ":CANNOT_PARSE_LEAF_CERT: Certificate ~D: ~A"
+                                                       i e)))))))
         ;; Store the full chain
         (setf (client-handshake-peer-certificate-chain hs) parsed-chain)
         ;; Store the leaf certificate (first in chain) for easy access
@@ -1437,11 +1443,18 @@
     (handler-bind
         ((tls-handshake-error
            (lambda (e)
-             (declare (ignore e))
-             ;; Send decode_error for parsing/protocol errors
+             ;; Send appropriate alert based on error type
              (ignore-errors
-               (record-layer-write-alert (client-handshake-record-layer hs)
-                                         +alert-level-fatal+ +alert-decode-error+))))
+               (let ((msg (tls-error-message e)))
+                 (record-layer-write-alert (client-handshake-record-layer hs)
+                                           +alert-level-fatal+
+                                           (cond
+                                             ;; Duplicate of KNOWN extension type → illegal_parameter
+                                             ;; Duplicate of UNKNOWN extension type (like 65535) → decode_error
+                                             ((and (search ":DUPLICATE_EXTENSION:" msg)
+                                                   (not (search "65535" msg)))
+                                              +alert-illegal-parameter+)
+                                             (t +alert-decode-error+)))))))
          (tls-decode-error
            (lambda (e)
              ;; Send appropriate alert based on error type
@@ -1486,34 +1499,48 @@
     (loop
       (case (client-handshake-state hs)
         (:wait-server-hello
-         (let* ((raw-message (read-raw-handshake-message hs))
-                (message (handler-bind
-                             ((tls-handshake-error
-                                (lambda (e)
-                                  (declare (ignore e))
-                                  ;; Send decode_error for parsing/protocol errors
-                                  (ignore-errors
-                                    (record-layer-write-alert (client-handshake-record-layer hs)
-                                                              +alert-level-fatal+ +alert-decode-error+)))))
-                           (parse-handshake-message raw-message))))
-           (unless (= (handshake-message-type message) +handshake-server-hello+)
-             (record-layer-write-alert (client-handshake-record-layer hs)
-                                       +alert-level-fatal+ +alert-unexpected-message+)
-             (error 'tls-handshake-error
-                    :message ":UNEXPECTED_MESSAGE: Expected ServerHello"
-                    :state :wait-server-hello))
-           ;; DON'T update transcript here - process-server-hello handles it
-           ;; (transcript handling differs for HRR vs regular ServerHello)
-           (process-server-hello hs message raw-message)
-           ;; After ServerHello (not HRR), encryption is installed.
-           ;; Any leftover plaintext data in the buffer is excess handshake data.
-           (when (and (eql (client-handshake-state hs) :wait-encrypted-extensions)
-                      (client-handshake-message-buffer hs))
-             (record-layer-write-alert (client-handshake-record-layer hs)
-                                       +alert-level-fatal+ +alert-unexpected-message+)
-             (error 'tls-handshake-error
-                    :message ":EXCESS_HANDSHAKE_DATA: Unexpected plaintext data after ServerHello"
-                    :state :wait-server-hello))))
+         (handler-bind
+             ((tls-handshake-error
+                (lambda (e)
+                  ;; Send appropriate alert based on error type
+                  (ignore-errors
+                    (let ((msg (tls-error-message e)))
+                      (record-layer-write-alert (client-handshake-record-layer hs)
+                                                +alert-level-fatal+
+                                                (cond
+                                                  ;; Duplicate of KNOWN extension → illegal_parameter
+                                                  ;; Duplicate of UNKNOWN extension (65535) → decode_error
+                                                  ((and (search ":DUPLICATE_EXTENSION:" msg)
+                                                        (not (search "65535" msg)))
+                                                   +alert-illegal-parameter+)
+                                                  (t +alert-decode-error+)))))))
+              (tls-crypto-error
+                (lambda (e)
+                  ;; Send illegal_parameter for key exchange errors
+                  (ignore-errors
+                    (record-layer-write-alert (client-handshake-record-layer hs)
+                                              +alert-level-fatal+
+                                              +alert-illegal-parameter+)))))
+           (let* ((raw-message (read-raw-handshake-message hs))
+                  (message (parse-handshake-message raw-message)))
+             (unless (= (handshake-message-type message) +handshake-server-hello+)
+               (record-layer-write-alert (client-handshake-record-layer hs)
+                                         +alert-level-fatal+ +alert-unexpected-message+)
+               (error 'tls-handshake-error
+                      :message ":UNEXPECTED_MESSAGE: Expected ServerHello"
+                      :state :wait-server-hello))
+             ;; DON'T update transcript here - process-server-hello handles it
+             ;; (transcript handling differs for HRR vs regular ServerHello)
+             (process-server-hello hs message raw-message)
+             ;; After ServerHello (not HRR), encryption is installed.
+             ;; Any leftover plaintext data in the buffer is excess handshake data.
+             (when (and (eql (client-handshake-state hs) :wait-encrypted-extensions)
+                        (client-handshake-message-buffer hs))
+               (record-layer-write-alert (client-handshake-record-layer hs)
+                                         +alert-level-fatal+ +alert-unexpected-message+)
+               (error 'tls-handshake-error
+                      :message ":EXCESS_HANDSHAKE_DATA: Unexpected plaintext data after ServerHello"
+                      :state :wait-server-hello)))))
         (:wait-encrypted-extensions
          (let ((message (read-handshake-message hs)))
            (unless (= (handshake-message-type message) +handshake-encrypted-extensions+)
@@ -1525,35 +1552,44 @@
            (process-encrypted-extensions hs message)))
         (:wait-cert-or-finished
          ;; Don't update transcript automatically - we need to handle Finished specially
-         (multiple-value-bind (message raw-bytes)
-             (read-handshake-message hs :update-transcript nil)
-           (case (handshake-message-type message)
-             (#.+handshake-certificate-request+
-              ;; Server is requesting client certificate (mTLS)
-              ;; Update transcript and remember we need to send a cert later
-              (client-handshake-update-transcript hs raw-bytes)
-              (process-certificate-request hs message)
-              ;; Stay in this state, waiting for server's Certificate
-              )
-             (#.+handshake-certificate+
-              ;; Update transcript now for Certificate
-              (client-handshake-update-transcript hs raw-bytes)
-              (process-certificate hs message))
-             (#.+handshake-finished+
-              ;; Server sent Finished without certificate (PSK mode)
-              ;; This is NOT allowed when verify-mode is +verify-required+
-              (when (= (client-handshake-verify-mode hs) +verify-required+)
-                (error 'tls-certificate-error
-                       :message "Server did not provide a certificate but verification is required"))
-              ;; Don't update transcript yet - process-server-finished will do it after verification
-              (setf (client-handshake-state hs) :wait-finished)
-              (process-server-finished hs message raw-bytes))
-             (otherwise
-             (record-layer-write-alert (client-handshake-record-layer hs)
-                                       +alert-level-fatal+ +alert-unexpected-message+)
-             (error 'tls-handshake-error
+         ;; Wrap in handler-bind to catch decode errors (e.g., garbage certificates)
+         (handler-bind
+             ((tls-decode-error
+                (lambda (e)
+                  ;; Send decode_error alert for certificate parsing errors
+                  (ignore-errors
+                    (record-layer-write-alert (client-handshake-record-layer hs)
+                                              +alert-level-fatal+
+                                              +alert-decode-error+)))))
+           (multiple-value-bind (message raw-bytes)
+               (read-handshake-message hs :update-transcript nil)
+             (case (handshake-message-type message)
+               (#.+handshake-certificate-request+
+                ;; Server is requesting client certificate (mTLS)
+                ;; Update transcript and remember we need to send a cert later
+                (client-handshake-update-transcript hs raw-bytes)
+                (process-certificate-request hs message)
+                ;; Stay in this state, waiting for server's Certificate
+                )
+               (#.+handshake-certificate+
+                ;; Update transcript now for Certificate
+                (client-handshake-update-transcript hs raw-bytes)
+                (process-certificate hs message))
+               (#.+handshake-finished+
+                ;; Server sent Finished without certificate (PSK mode)
+                ;; This is NOT allowed when verify-mode is +verify-required+
+                (when (= (client-handshake-verify-mode hs) +verify-required+)
+                  (error 'tls-certificate-error
+                         :message "Server did not provide a certificate but verification is required"))
+                ;; Don't update transcript yet - process-server-finished will do it after verification
+                (setf (client-handshake-state hs) :wait-finished)
+                (process-server-finished hs message raw-bytes))
+               (otherwise
+                (record-layer-write-alert (client-handshake-record-layer hs)
+                                          +alert-level-fatal+ +alert-unexpected-message+)
+                (error 'tls-handshake-error
                        :message ":UNEXPECTED_MESSAGE: Expected CertificateRequest, Certificate or Finished"
-                       :state :wait-cert-or-finished)))))
+                       :state :wait-cert-or-finished))))))
         (:wait-certificate-verify
          ;; Don't update transcript yet - we need to verify signature first, THEN update
          (multiple-value-bind (message raw-bytes)

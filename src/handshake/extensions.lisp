@@ -42,7 +42,7 @@
                ;; of the same type in a given extension block
                (when (member ext-type seen-types)
                  (error 'tls-handshake-error
-                        :message ":DUPLICATE_EXTENSION: Duplicate extension type"))
+                        :message (format nil ":DUPLICATE_EXTENSION: Duplicate extension type ~D" ext-type)))
                (push ext-type seen-types)
                ;; Check for TLS 1.2-only extensions when validating
                (when (and validate-tls13 (tls12-only-extension-p ext-type))
