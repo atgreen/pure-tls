@@ -128,13 +128,17 @@
                  :nonce (new-session-ticket-ticket-nonce nst)
                  :hostname hostname)))
     ;; Check for early_data extension
+    ;; RFC 8446 Section 4.6.1: early_data in NewSessionTicket contains uint32 max_early_data_size
     (let ((early-data-ext (find-extension (new-session-ticket-extensions nst)
                                           +extension-early-data+)))
       (when early-data-ext
         (let ((data (tls-extension-data early-data-ext)))
-          (when (and data (>= (length data) 4))
-            (setf (session-ticket-max-early-data-size ticket)
-                  (decode-uint32 data 0))))))
+          ;; Must be exactly 4 bytes (uint32)
+          (unless (and data (= (length data) 4))
+            (error 'tls-handshake-error
+                   :message ":DECODE_ERROR: Invalid early_data extension size in NewSessionTicket"))
+          (setf (session-ticket-max-early-data-size ticket)
+                (decode-uint32 data 0)))))
     ;; Cache the ticket
     (when hostname
       (session-ticket-cache-put hostname ticket))

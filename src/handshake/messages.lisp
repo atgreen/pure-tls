@@ -310,12 +310,21 @@
 (defun parse-new-session-ticket (data)
   "Parse a NewSessionTicket from bytes."
   (let ((buf (make-tls-buffer data)))
-    (make-new-session-ticket
-     :ticket-lifetime (buffer-read-uint32 buf)
-     :ticket-age-add (buffer-read-uint32 buf)
-     :ticket-nonce (buffer-read-vector8 buf)
-     :ticket (buffer-read-vector16 buf)
-     :extensions (parse-extensions (buffer-read-vector16 buf)))))
+    (let* ((ticket-lifetime (buffer-read-uint32 buf))
+           (ticket-age-add (buffer-read-uint32 buf))
+           (ticket-nonce (buffer-read-vector8 buf))
+           (ticket (buffer-read-vector16 buf))
+           (extensions (parse-extensions (buffer-read-vector16 buf))))
+      ;; RFC 8446: ticket<1..2^16-1> - minimum 1 byte
+      (when (zerop (length ticket))
+        (error 'tls-handshake-error
+               :message ":DECODE_ERROR: Empty session ticket"))
+      (make-new-session-ticket
+       :ticket-lifetime ticket-lifetime
+       :ticket-age-add ticket-age-add
+       :ticket-nonce ticket-nonce
+       :ticket ticket
+       :extensions extensions))))
 
 ;;;; KeyUpdate
 
