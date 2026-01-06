@@ -96,21 +96,25 @@ echo ""
 echo "=== Failure Breakdown ==="
 
 # Count failures by category
-TLS12_FAILED=$(grep "FAILED" "$TMPLOG" | grep -E "TLS1$|TLS11|TLS12|-TLS\)" | wc -l)
+# Version negotiation tests (TLS 1.3-only impl can't do fallback)
+VERSION_NEG_FAILED=$(grep "FAILED" "$TMPLOG" | grep -E "VersionNegotiation|MinimumVersion" | wc -l)
+TLS12_FAILED=$(grep "FAILED" "$TMPLOG" | grep -v "VersionNegotiation\|MinimumVersion" | grep -E "TLS1$|TLS11|TLS12|-TLS\)" | wc -l)
 QUIC_FAILED=$(grep "FAILED" "$TMPLOG" | grep "QUIC" | wc -l)
-TLS13_FAILED=$(grep "FAILED.*TLS13" "$TMPLOG" | grep -v "QUIC" | wc -l)
-OTHER_FAILED=$((FAILED - TLS12_FAILED - QUIC_FAILED - TLS13_FAILED))
+# Real TLS 1.3 failures (exclude version negotiation tests)
+TLS13_FAILED=$(grep "FAILED.*TLS13" "$TMPLOG" | grep -v "QUIC\|VersionNegotiation\|MinimumVersion" | wc -l)
+OTHER_FAILED=$((FAILED - TLS12_FAILED - QUIC_FAILED - TLS13_FAILED - VERSION_NEG_FAILED))
 
 echo "  TLS 1.0/1.1/1.2 (expected): $TLS12_FAILED"
+echo "  Version negotiation (expected): $VERSION_NEG_FAILED"
 echo "  QUIC (not implemented):     $QUIC_FAILED"
 echo "  TLS 1.3 (bugs to fix):      $TLS13_FAILED"
 echo "  Other/Generic:              $OTHER_FAILED"
 
-# Show TLS 1.3 specific failures
+# Show TLS 1.3 specific failures (real bugs, not version negotiation)
 if [ "$TLS13_FAILED" -gt 0 ]; then
     echo ""
     echo "=== TLS 1.3 Failure Details (first 20) ==="
-    grep "FAILED.*TLS13" "$TMPLOG" | grep -v "QUIC" | sed 's/.*FAILED /FAILED /' | head -20
+    grep "FAILED.*TLS13" "$TMPLOG" | grep -v "QUIC\|VersionNegotiation\|MinimumVersion" | sed 's/.*FAILED /FAILED /' | head -20
 fi
 
 echo ""
