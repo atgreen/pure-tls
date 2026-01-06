@@ -325,6 +325,10 @@
       (let ((list-buf (make-tls-buffer list-data)))
         (loop while (plusp (buffer-remaining list-buf))
               do (let ((proto-data (buffer-read-vector8 list-buf)))
+                   ;; RFC 7301: Empty protocol names are not permitted
+                   (when (zerop (length proto-data))
+                     (error 'tls-handshake-error
+                            :message ":DECODE_ERROR: Empty ALPN protocol name"))
                    (push (octets-to-string proto-data) protocols)))))
     (make-alpn-ext :protocol-list (nreverse protocols))))
 

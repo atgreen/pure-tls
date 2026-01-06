@@ -556,28 +556,28 @@
       (when alpn-ext
         (let* ((alpn-data (tls-extension-data alpn-ext))
                (protocols (alpn-ext-protocol-list alpn-data)))
-          (when protocols
-            (when (/= (length protocols) 1)
+          ;; RFC 7301: Server MUST select exactly one protocol
+          (when (or (null protocols) (/= (length protocols) 1))
+            (record-layer-write-alert (client-handshake-record-layer hs)
+                                      +alert-level-fatal+
+                                      +alert-illegal-parameter+)
+            (error 'tls-decode-error
+                   :message ":ILLEGAL_PARAMETER: ALPN in EncryptedExtensions must select exactly one protocol"))
+          (let* ((selected (first protocols))
+                 (offered (client-handshake-alpn-protocols hs)))
+            (when (null offered)
+              (record-layer-write-alert (client-handshake-record-layer hs)
+                                        +alert-level-fatal+
+                                        +alert-unsupported-extension+)
+              (error 'tls-decode-error
+                     :message ":UNSUPPORTED_EXTENSION: ALPN returned but not offered"))
+            (unless (member selected offered :test #'string=)
               (record-layer-write-alert (client-handshake-record-layer hs)
                                         +alert-level-fatal+
                                         +alert-illegal-parameter+)
               (error 'tls-decode-error
-                     :message ":ILLEGAL_PARAMETER: ALPN in EncryptedExtensions must select exactly one protocol"))
-            (let* ((selected (first protocols))
-                   (offered (client-handshake-alpn-protocols hs)))
-              (when (and (null offered) selected)
-                (record-layer-write-alert (client-handshake-record-layer hs)
-                                          +alert-level-fatal+
-                                          +alert-illegal-parameter+)
-                (error 'tls-decode-error
-                       :message ":ILLEGAL_PARAMETER: ALPN returned but not offered"))
-              (when (and offered (not (member selected offered :test #'string=)))
-                (record-layer-write-alert (client-handshake-record-layer hs)
-                                          +alert-level-fatal+
-                                          +alert-illegal-parameter+)
-                (error 'tls-decode-error
-                       :message ":ILLEGAL_PARAMETER: ALPN selected protocol not offered by client"))
-              (setf (client-handshake-selected-alpn hs) selected))))))
+                     :message ":ILLEGAL_PARAMETER: ALPN selected protocol not offered by client"))
+            (setf (client-handshake-selected-alpn hs) selected)))))
     ;; In PSK mode with resumption, server skips Certificate/CertificateVerify
     ;; Otherwise, expect Certificate next
     (setf (client-handshake-state hs) :wait-cert-or-finished)))
