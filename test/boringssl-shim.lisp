@@ -559,9 +559,19 @@
           ;; Send shim-id as 64-bit little-endian before proceeding
           (send-shim-id stream (shim-config-shim-id config))
           (unwind-protect
-              (if (shim-config-is-server config)
-                  (run-server-test config stream)
-                  (run-client-test config stream))
+              ;; Wrap in handler-bind to flush alerts before error propagates
+              (handler-bind
+                  ((pure-tls:tls-error
+                     (lambda (c)
+                       (declare (ignore c))
+                       ;; Flush underlying stream to ensure alerts are sent
+                       (ignore-errors
+                         (force-output stream)
+                         ;; Small delay to allow TCP to transmit alert
+                         (sleep 0.01)))))
+                (if (shim-config-is-server config)
+                    (run-server-test config stream)
+                    (run-client-test config stream)))
             (usocket:socket-close socket))))
 
     ;; Handle TLS record overflow

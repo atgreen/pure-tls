@@ -52,6 +52,16 @@
   (hrr-cookie nil :type (or null octet-vector))  ; Cookie from HRR
   (hrr-selected-group nil)  ; Group requested by server in HRR
   (offered-key-share-groups nil :type list)  ; Groups we've offered key shares for
+  (ccs-sent nil :type boolean)  ; T if CCS was already sent (for HRR flow)
+  ;; Saved from CH1 for reuse in CH2 (RFC 8446 Section 4.1.2)
+  (legacy-session-id nil :type (or null octet-vector))
+  ;; Saved GREASE values for CH2
+  (grease-cipher nil)
+  (grease-version nil)
+  (grease-group nil)
+  (grease-key-share-bytes nil :type (or null octet-vector))  ; Random bytes for GREASE key share
+  (grease-ext-type nil)  ; GREASE extension type
+  (grease-ext-data nil :type (or null octet-vector))  ; GREASE extension data
   ;; Session resumption (PSK)
   (offered-psk nil)  ; session-ticket if we offered a PSK
   (psk-accepted nil :type boolean)  ; T if server accepted our PSK
@@ -83,18 +93,43 @@
   "Generate a ClientHello message.
    REQUESTED-GROUP, if provided, specifies the key exchange group to use
    (used when responding to HelloRetryRequest)."
-  (let* ((random (random-bytes 32))
-         (session-id (random-bytes 32))  ; Legacy, but some servers expect it
-         ;; Generate key share for requested group (from HRR) or preferred group
+  ;; RFC 8446 Section 4.1.2: In CH2 after HRR, random and session-id MUST be same as CH1
+  (let* ((is-ch2 (not (null (client-handshake-client-random hs))))
+         (random (if is-ch2
+                     (client-handshake-client-random hs)
+                     (let ((r (random-bytes 32)))
+                       (setf (client-handshake-client-random hs) r)
+                       r)))
+         (session-id (if is-ch2
+                         (client-handshake-legacy-session-id hs)
+                         (let ((s (random-bytes 32)))
+                           (setf (client-handshake-legacy-session-id hs) s)
+                           s)))
+         ;; Key share handling:
+         ;; - CH1: generate new key share for preferred group
+         ;; - CH2 with HRR key_share: generate new key share for requested group
+         ;; - CH2 without HRR key_share: reuse key share from CH1
          (key-share-group (or requested-group *preferred-group*))
-         (key-exchange (generate-key-exchange key-share-group))
-         ;; Track which groups we've offered (for HRR validation)
-         (_ (push key-share-group (client-handshake-offered-key-share-groups hs)))
+         (key-exchange (if (and is-ch2 (null requested-group))
+                           ;; HRR didn't request a new group - reuse CH1's key share
+                           (client-handshake-key-exchange hs)
+                           ;; Generate new key share
+                           (generate-key-exchange key-share-group)))
+         ;; Track which groups we've offered (for HRR validation) - only for new groups
+         (_ (unless (and is-ch2 (null requested-group))
+              (push key-share-group (client-handshake-offered-key-share-groups hs))))
          ;; Build extensions
          ;; GREASE values for protocol robustness (RFC 8701)
-         (grease-version (random-grease-value *grease-extension-values*))
-         (grease-group (random-grease-value *grease-group-values*))
-         (grease-cipher (random-grease-value *grease-cipher-suite-values*))
+         ;; Must be same in CH2 as in CH1
+         (grease-version (or (client-handshake-grease-version hs)
+                             (setf (client-handshake-grease-version hs)
+                                   (random-grease-value *grease-extension-values*))))
+         (grease-group (or (client-handshake-grease-group hs)
+                           (setf (client-handshake-grease-group hs)
+                                 (random-grease-value *grease-group-values*))))
+         (grease-cipher (or (client-handshake-grease-cipher hs)
+                            (setf (client-handshake-grease-cipher hs)
+                                  (random-grease-value *grease-cipher-suite-values*))))
          ;; Prepend GREASE cipher suite to the list
          (cipher-suites-with-grease (cons grease-cipher (client-handshake-cipher-suites hs)))
          (extensions (list
@@ -112,21 +147,31 @@
                        :type +extension-signature-algorithms+
                        :data (make-signature-algorithms-ext
                               :algorithms (supported-signature-algorithms-tls13)))
-                      ;; key_share (with GREASE entry per RFC 8701)
+                      ;; key_share extension
+                      ;; RFC 8446 Section 4.1.2: If HRR includes key_share, CH2 contains
+                      ;; only the requested group (no GREASE). Otherwise include GREASE + real.
                       (make-tls-extension
                        :type +extension-key-share+
                        :data (make-key-share-ext
                               :client-shares
-                              (list
+                              (if requested-group
+                                  ;; CH2 after HRR with key_share: only the requested group
+                                  (list (make-key-share-entry
+                                         :group (key-exchange-group key-exchange)
+                                         :key-exchange (key-exchange-public-key key-exchange)))
+                                  ;; CH1 or CH2 without HRR key_share: include GREASE + real
+                                  (list
                                ;; GREASE key share entry (RFC 8701 §3.1)
-                               ;; "key_exchange SHOULD be at least one byte"
+                               ;; Save/reuse for CH2
                                (make-key-share-entry
                                 :group grease-group
-                                :key-exchange (random-bytes 1))
-                               ;; Real key share
-                               (make-key-share-entry
-                                :group (key-exchange-group key-exchange)
-                                :key-exchange (key-exchange-public-key key-exchange))))))))
+                                :key-exchange (or (client-handshake-grease-key-share-bytes hs)
+                                                  (setf (client-handshake-grease-key-share-bytes hs)
+                                                        (random-bytes 1))))
+                                   ;; Real key share
+                                   (make-key-share-entry
+                                    :group (key-exchange-group key-exchange)
+                                    :key-exchange (key-exchange-public-key key-exchange)))))))))
     ;; Add SNI if hostname provided
     (when (client-handshake-hostname hs)
       (push (make-tls-extension
@@ -150,9 +195,15 @@
     ;; Add GREASE extension (RFC 8701) for protocol robustness
     ;; This helps prevent protocol ossification by ensuring servers
     ;; properly ignore unknown extension types
+    ;; Must be same in CH2 as CH1
     (push (make-tls-extension
-           :type (random-grease-value *grease-extension-values*)
-           :data (make-grease-ext))
+           :type (or (client-handshake-grease-ext-type hs)
+                     (setf (client-handshake-grease-ext-type hs)
+                           (random-grease-value *grease-extension-values*)))
+           :data (make-grease-ext
+                  :data (or (client-handshake-grease-ext-data hs)
+                            (setf (client-handshake-grease-ext-data hs)
+                                  (random-bytes 1)))))
           extensions)
     ;; Check for cached session ticket for resumption
     (let ((ticket (and (client-handshake-hostname hs)
@@ -168,8 +219,6 @@
         (setf (client-handshake-offered-psk hs) ticket)))
     ;; Store key exchange for later
     (setf (client-handshake-key-exchange hs) key-exchange)
-    ;; Store client random for SSLKEYLOGFILE
-    (setf (client-handshake-client-random hs) random)
     ;; Build ClientHello (extensions in reverse order, PSK will be added separately)
     (let ((hello (make-client-hello
                   :legacy-version +tls-1.2+
@@ -301,7 +350,7 @@
               (record-layer-write-alert (client-handshake-record-layer hs)
                                         +alert-level-fatal+ +alert-illegal-parameter+)
               (error 'tls-handshake-error
-                     :message ":ILLEGAL_PARAMETER: HelloRetryRequest for already-offered key share group"
+                     :message ":WRONG_CURVE: HelloRetryRequest for already-offered key share group"
                      :state :wait-server-hello))
             (setf (client-handshake-hrr-selected-group hs) selected-group)))))
 
@@ -311,6 +360,16 @@
         (setf (client-handshake-hrr-cookie hs)
               (tls-extension-data cookie-ext))))
 
+    ;; RFC 8446 Section 4.2.8: HRR must result in a change to ClientHello
+    ;; An HRR with no key_share and no cookie doesn't cause any change
+    (unless (or (client-handshake-hrr-selected-group hs)
+                (client-handshake-hrr-cookie hs))
+      (record-layer-write-alert (client-handshake-record-layer hs)
+                                +alert-level-fatal+ +alert-illegal-parameter+)
+      (error 'tls-handshake-error
+             :message ":EMPTY_HELLO_RETRY_REQUEST: HelloRetryRequest would not result in any change"
+             :state :wait-server-hello))
+
     ;; Replace transcript with message_hash per RFC 8446 Section 4.4.1
     ;; The transcript becomes: message_hash || HelloRetryRequest
     (let ((message-hash (make-message-hash
@@ -318,6 +377,12 @@
                          (client-handshake-selected-cipher-suite hs))))
       (setf (client-handshake-transcript hs)
             (concat-octet-vectors message-hash hrr-raw-bytes)))
+
+    ;; Send CCS for middlebox compatibility before ClientHello2
+    ;; RFC 8446 Appendix D.4: "before its second flight"
+    (unless (client-handshake-ccs-sent hs)
+      (record-layer-write-change-cipher-spec (client-handshake-record-layer hs))
+      (setf (client-handshake-ccs-sent hs) t))
 
     ;; Send new ClientHello with requested group and cookie
     (send-client-hello hs :requested-group (client-handshake-hrr-selected-group hs))))
@@ -1131,8 +1196,10 @@
   (let* ((ks (client-handshake-key-schedule hs))
          (cipher-suite (client-handshake-selected-cipher-suite hs)))
     ;; Send dummy CCS for middlebox compatibility (RFC 8446 Appendix D.4)
-    ;; This is sent after ServerHello confirms TLS 1.3, before our encrypted messages
-    (record-layer-write-change-cipher-spec (client-handshake-record-layer hs))
+    ;; Skip if already sent (e.g., after HRR)
+    (unless (client-handshake-ccs-sent hs)
+      (record-layer-write-change-cipher-spec (client-handshake-record-layer hs))
+      (setf (client-handshake-ccs-sent hs) t))
     ;; Client handshake write keys were already installed after ServerHello processing
     ;; If server requested client auth, send Certificate (+ CertificateVerify if we have one)
     (when (client-handshake-certificate-requested hs)
