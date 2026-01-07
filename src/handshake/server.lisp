@@ -187,16 +187,10 @@
         (error 'tls-handshake-error
                :message "Client does not support TLS 1.3"
                :state :wait-client-hello)))
-    ;; RFC 8446: Check for TLS 1.2-only extensions that are forbidden in TLS 1.3
-    ;; These include renegotiation_info (65281) and extended_master_secret (23)
-    (dolist (ext extensions)
-      (when (tls12-only-extension-p (tls-extension-type ext))
-        (record-layer-write-alert (server-handshake-record-layer hs)
-                                  +alert-level-fatal+ +alert-illegal-parameter+)
-        (error 'tls-handshake-error
-               :message (format nil ":ERROR_PARSING_EXTENSION: TLS 1.2-only extension ~D in TLS 1.3 ClientHello"
-                               (tls-extension-type ext))
-               :state :wait-client-hello)))
+    ;; RFC 8446 Section 4.2: Servers MUST ignore unrecognized extensions.
+    ;; TLS 1.2-only extensions (renegotiation_info, extended_master_secret, NPN)
+    ;; are simply skipped - we don't reject the ClientHello for having them.
+    ;; The client might be offering TLS 1.2 fallback support.
     ;; RFC 8446 Section 4.1.2: legacy_compression_methods MUST contain exactly
     ;; one byte set to zero (null compression)
     (let ((compression-methods (client-hello-legacy-compression-methods client-hello)))
