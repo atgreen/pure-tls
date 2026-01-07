@@ -1310,6 +1310,16 @@
       (record-layer-install-keys
        (client-handshake-record-layer hs)
        :read key iv cipher-suite))
+    ;; Check for trailing data after server Finished
+    ;; The handshake message buffer should be empty at this point
+    (when (client-handshake-message-buffer hs)
+      (let ((extra-len (length (client-handshake-message-buffer hs))))
+        (record-layer-write-alert (client-handshake-record-layer hs)
+                                  +alert-level-fatal+ +alert-unexpected-message+)
+        (error 'tls-handshake-error
+               :message (format nil ":EXCESS_HANDSHAKE_DATA: ~D extra bytes after server Finished"
+                               extra-len)
+               :state :wait-finished)))
     (setf (client-handshake-state hs) :send-finished)))
 
 ;;;; Client Finished

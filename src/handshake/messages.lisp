@@ -312,7 +312,7 @@
   ;; Finished message must be exactly hash-length bytes (RFC 8446 Section 4.4.4)
   (unless (= (length data) hash-length)
     (error 'tls-handshake-error
-           :message (format nil ":DECODE_ERROR: Finished message wrong length: expected ~D, got ~D"
+           :message (format nil ":EXCESS_HANDSHAKE_DATA: Finished message wrong length: expected ~D, got ~D"
                            hash-length (length data))))
   (make-finished-message
    :verify-data (subseq data 0 hash-length)))
@@ -401,10 +401,17 @@
    HASH-LENGTH is needed for Finished message parsing."
   (multiple-value-bind (msg-type length body-start)
       (parse-handshake-header data)
-    (let ((body (subseq data body-start (+ body-start length))))
-      (make-handshake-message
-       :type msg-type
-       :body (case msg-type
+    (let ((expected-end (+ body-start length)))
+      ;; Check for trailing data after the message
+      (when (> (length data) expected-end)
+        (error 'tls-handshake-error
+               :message (format nil ":EXCESS_HANDSHAKE_DATA: ~D extra bytes after ~A message"
+                               (- (length data) expected-end)
+                               (handshake-message-name msg-type))))
+      (let ((body (subseq data body-start expected-end)))
+        (make-handshake-message
+         :type msg-type
+         :body (case msg-type
                (#.+handshake-client-hello+
                 (parse-client-hello body))
                (#.+handshake-server-hello+
@@ -423,7 +430,7 @@
                 (parse-new-session-ticket body))
                (#.+handshake-key-update+
                 (parse-key-update body))
-               (otherwise body))))))  ; Return raw bytes for unknown types
+               (otherwise body)))))))  ; Return raw bytes for unknown types
 
 (defun handshake-message-name (msg-type)
   "Return a human-readable name for a handshake message type."
