@@ -16,7 +16,8 @@
 ;;;; Connection Helper
 
 (defun try-tls-connect (hostname &key (port 443) (verify pure-tls:+verify-required+) context)
-  "Attempt TLS connection. Returns :success or an error keyword."
+  "Attempt TLS connection. Returns :success or an error keyword.
+   On failure, prints error details to help with debugging."
   (let ((socket nil))
     (unwind-protect
         (handler-case
@@ -33,11 +34,21 @@
                 ;; TLS handshake succeeded - that's all we need to verify
                 (close tls)
                 :success))
-          (pure-tls:tls-certificate-error () :cert-error)
-          (pure-tls:tls-verification-error () :verify-error)
-          (pure-tls:tls-handshake-error () :handshake-error)
-          (pure-tls:tls-error () :tls-error)
-          (error () :other-error))
+          (pure-tls:tls-certificate-error (e)
+            (format t "~&  [~A] cert-error: ~A~%" hostname e)
+            :cert-error)
+          (pure-tls:tls-verification-error (e)
+            (format t "~&  [~A] verify-error: ~A~%" hostname e)
+            :verify-error)
+          (pure-tls:tls-handshake-error (e)
+            (format t "~&  [~A] handshake-error: ~A~%" hostname e)
+            :handshake-error)
+          (pure-tls:tls-error (e)
+            (format t "~&  [~A] tls-error: ~A~%" hostname e)
+            :tls-error)
+          (error (e)
+            (format t "~&  [~A] other-error: ~A~%" hostname e)
+            :other-error))
       (when socket (ignore-errors (usocket:socket-close socket))))))
 
 ;;;; TLS 1.3 Connection Tests (Major Sites)
