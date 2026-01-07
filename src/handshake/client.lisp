@@ -357,7 +357,7 @@
               (record-layer-write-alert (client-handshake-record-layer hs)
                                         +alert-level-fatal+ +alert-illegal-parameter+)
               (error 'tls-handshake-error
-                     :message ":ILLEGAL_PARAMETER: Server requested unsupported key exchange group"
+                     :message ":WRONG_CURVE: Server requested unsupported key exchange group"
                      :state :wait-server-hello))
             ;; RFC 8446 Section 4.1.4: HRR requesting a group we already offered is unnecessary
             (when (member selected-group (client-handshake-offered-key-share-groups hs))
