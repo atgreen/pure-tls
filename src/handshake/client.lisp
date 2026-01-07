@@ -591,8 +591,14 @@
             (record-layer-write-alert (client-handshake-record-layer hs)
                                       +alert-level-fatal+
                                       +alert-unsupported-extension+)
-            (error 'tls-decode-error
-                   :message (format nil ":UNSUPPORTED_EXTENSION: Extension ~D not allowed in EncryptedExtensions"
+            ;; Use different error messages for known vs unknown extensions
+            ;; - Known extensions in wrong context → :ERROR_PARSING_EXTENSION:
+            ;; - Unknown/custom extensions → :UNEXPECTED_EXTENSION:
+            (error 'tls-handshake-error
+                   :message (format nil "~A Extension ~D not allowed in EncryptedExtensions"
+                                    (if (known-extension-p ext-type)
+                                        ":ERROR_PARSING_EXTENSION:"
+                                        ":UNEXPECTED_EXTENSION:")
                                     ext-type)))
           (when (= ext-type +extension-server-name+)
             ;; RFC 8446: Server MUST NOT send server_name unless client sent it
@@ -1573,14 +1579,24 @@
                       :message ":EXCESS_HANDSHAKE_DATA: Unexpected plaintext data after ServerHello"
                       :state :wait-server-hello)))))
         (:wait-encrypted-extensions
-         (let ((message (read-handshake-message hs)))
-           (unless (= (handshake-message-type message) +handshake-encrypted-extensions+)
-             (record-layer-write-alert (client-handshake-record-layer hs)
-                                       +alert-level-fatal+ +alert-unexpected-message+)
-             (error 'tls-handshake-error
-                    :message ":UNEXPECTED_MESSAGE: Expected EncryptedExtensions"
-                    :state :wait-encrypted-extensions))
-           (process-encrypted-extensions hs message)))
+         ;; Wrap in handler-bind to send alerts for parsing errors
+         ;; (e.g., TLS 1.2-only extensions like EMS, NPN, renegotiation_info)
+         (handler-bind
+             ((tls-handshake-error
+                (lambda (e)
+                  ;; Send illegal_parameter alert for TLS 1.2-only extensions
+                  (ignore-errors
+                    (record-layer-write-alert (client-handshake-record-layer hs)
+                                              +alert-level-fatal+
+                                              +alert-illegal-parameter+)))))
+           (let ((message (read-handshake-message hs)))
+             (unless (= (handshake-message-type message) +handshake-encrypted-extensions+)
+               (record-layer-write-alert (client-handshake-record-layer hs)
+                                         +alert-level-fatal+ +alert-unexpected-message+)
+               (error 'tls-handshake-error
+                      :message ":UNEXPECTED_MESSAGE: Expected EncryptedExtensions"
+                      :state :wait-encrypted-extensions))
+             (process-encrypted-extensions hs message))))
         (:wait-cert-or-finished
          ;; Don't update transcript automatically - we need to handle Finished specially
          ;; Wrap in handler-bind to catch decode errors (e.g., garbage certificates)

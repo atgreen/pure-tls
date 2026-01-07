@@ -29,6 +29,36 @@
       (= ext-type +extension-renegotiation-info+)
       (= ext-type +extension-next-protocol-negotiation+)))
 
+(defun known-extension-p (ext-type)
+  "Return T if ext-type is a known TLS extension type.
+   Known extensions are those defined in the TLS specifications."
+  (member ext-type (list +extension-server-name+               ; 0
+                         +extension-max-fragment-length+       ; 1
+                         +extension-status-request+            ; 5
+                         +extension-supported-groups+          ; 10
+                         11  ; ec_point_formats
+                         +extension-signature-algorithms+      ; 13
+                         +extension-use-srtp+                  ; 14
+                         +extension-heartbeat+                 ; 15
+                         +extension-application-layer-protocol-negotiation+ ; 16
+                         +extension-signed-certificate-timestamp+  ; 18
+                         +extension-client-certificate-type+   ; 19
+                         +extension-server-certificate-type+   ; 20
+                         +extension-padding+                   ; 21
+                         +extension-extended-master-secret+    ; 23
+                         +extension-pre-shared-key+            ; 41
+                         +extension-early-data+                ; 42
+                         +extension-supported-versions+        ; 43
+                         +extension-cookie+                    ; 44
+                         +extension-psk-key-exchange-modes+    ; 45
+                         +extension-certificate-authorities+   ; 47
+                         +extension-oid-filters+               ; 48
+                         +extension-post-handshake-auth+       ; 49
+                         +extension-signature-algorithms-cert+ ; 50
+                         +extension-key-share+                 ; 51
+                         +extension-renegotiation-info+        ; 65281
+                         +extension-next-protocol-negotiation+)))
+
 (defun parse-extensions (data &key validate-tls13)
   "Parse a list of extensions from bytes.
    If VALIDATE-TLS13 is true, reject TLS 1.2-only extensions with an error."
