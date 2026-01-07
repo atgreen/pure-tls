@@ -286,7 +286,12 @@
     ;; EC Curves
     ((1 2 840 10045 3 1 7) . :prime256v1)
     ((1 3 132 0 34) . :secp384r1)
-    ((1 3 132 0 35) . :secp521r1))
+    ((1 3 132 0 35) . :secp521r1)
+    ;; EdDSA Keys (RFC 8410)
+    ((1 3 101 112) . :ed25519)
+    ((1 3 101 113) . :ed448)
+    ;; RSA-PSS (RFC 4055)
+    ((1 2 840 113549 1 1 10) . :rsassa-pss))
   "Mapping of well-known OIDs to symbolic names.")
 
 (defun oid-name (oid)

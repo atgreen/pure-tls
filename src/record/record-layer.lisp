@@ -75,14 +75,10 @@
         (error 'tls-decode-error
                :message (format nil ":WRONG_VERSION_NUMBER: Invalid content type ~D (not a valid TLS record)"
                                 content-type)))
-      ;; RFC 8446 Section 5.1: legacy_record_version MUST be 0x0303 for
-      ;; all TLS 1.3 records (except initial ClientHello which MAY use 0x0301).
-      ;; Accept 0x0300-0x0303 (SSL 3.0 through TLS 1.2) as valid versions.
-      ;; Reject clearly invalid/garbage versions.
-      (unless (and (>= version #x0300) (<= version #x0303))
-        (error 'tls-decode-error
-               :message (format nil ":WRONG_VERSION_NUMBER: Invalid record version 0x~4,'0X"
-                               version)))
+      ;; RFC 8446 Section 5.1: legacy_record_version SHOULD be 0x0303 for
+      ;; all TLS 1.3 records, but implementations MUST NOT check this field.
+      ;; The version is legacy and version negotiation happens at handshake level.
+      ;; Accept any record version for maximum compatibility.
       ;; Validate length
       (when (> length +max-record-size-with-padding+)
         (error 'tls-record-overflow :size length))

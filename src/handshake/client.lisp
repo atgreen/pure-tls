@@ -323,6 +323,20 @@
            :state :wait-server-hello))
 
   (let ((extensions (server-hello-extensions server-hello)))
+    ;; RFC 8446 Section 4.1.4: HRR can only contain supported_versions, cookie, and key_share
+    ;; Reject any unknown extensions with unsupported_extension
+    (dolist (ext extensions)
+      (let ((ext-type (tls-extension-type ext)))
+        (unless (member ext-type (list +extension-supported-versions+
+                                       +extension-cookie+
+                                       +extension-key-share+))
+          (record-layer-write-alert (client-handshake-record-layer hs)
+                                    +alert-level-fatal+ +alert-unsupported-extension+)
+          (error 'tls-handshake-error
+                 :message (format nil ":UNEXPECTED_EXTENSION: Unknown extension ~D in HelloRetryRequest"
+                                 ext-type)
+                 :state :wait-server-hello))))
+
     ;; Get the selected cipher suite (needed for hash algorithm)
     (let ((cipher-suite (server-hello-cipher-suite server-hello)))
       (unless (member cipher-suite (client-handshake-cipher-suites hs))
@@ -357,8 +371,23 @@
     ;; Extract cookie if present
     (let ((cookie-ext (find-extension extensions +extension-cookie+)))
       (when cookie-ext
-        (setf (client-handshake-hrr-cookie hs)
-              (tls-extension-data cookie-ext))))
+        (let ((cookie-data (tls-extension-data cookie-ext)))
+          ;; Cookie extension structure: opaque cookie<1..2^16-1>
+          ;; So we have 2-byte length prefix + cookie bytes
+          ;; Cookie must have at least 1 byte (length > 0)
+          (when (< (length cookie-data) 3)  ; Need at least 2 bytes length + 1 byte cookie
+            (record-layer-write-alert (client-handshake-record-layer hs)
+                                      +alert-level-fatal+ +alert-decode-error+)
+            (error 'tls-decode-error
+                   :message ":DECODE_ERROR: Empty cookie in HelloRetryRequest"))
+          ;; Check the length field itself
+          (let ((cookie-len (+ (* (aref cookie-data 0) 256) (aref cookie-data 1))))
+            (when (zerop cookie-len)
+              (record-layer-write-alert (client-handshake-record-layer hs)
+                                        +alert-level-fatal+ +alert-decode-error+)
+              (error 'tls-decode-error
+                     :message ":DECODE_ERROR: Empty cookie in HelloRetryRequest")))
+          (setf (client-handshake-hrr-cookie hs) cookie-data))))
 
     ;; RFC 8446 Section 4.2.8: HRR must result in a change to ClientHello
     ;; An HRR with no key_share and no cookie doesn't cause any change
@@ -460,8 +489,10 @@
     ;; Process key_share extension
     (let ((ks-ext (find-extension extensions +extension-key-share+)))
       (unless ks-ext
+        (record-layer-write-alert (client-handshake-record-layer hs)
+                                  +alert-level-fatal+ +alert-illegal-parameter+)
         (error 'tls-handshake-error
-               :message "Missing key_share extension"
+               :message ":MISSING_KEY_SHARE: Missing key_share extension in ServerHello"
                :state :wait-server-hello))
       (let* ((ks-data (tls-extension-data ks-ext))
              (server-share (key-share-ext-server-share ks-data))
