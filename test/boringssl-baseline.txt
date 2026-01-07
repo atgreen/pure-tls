@@ -2187,7 +2187,6 @@ FAIL TrailingDataWithFinished-Server-TLS1
 FAIL TrailingDataWithFinished-Server-TLS11
 FAIL TrailingDataWithFinished-Server-TLS12
 FAIL TrailingDataWithFinished-Server-TLS13
-FAIL TrailingKeyShareData-TLS13
 FAIL TrailingMessageData-CertificateRequest-TLS
 FAIL TrailingMessageData-CertificateStatus-TLS
 FAIL TrailingMessageData-CertificateVerify-TLS

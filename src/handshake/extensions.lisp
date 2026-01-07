@@ -172,7 +172,7 @@
        (make-key-share-ext :selected-group (buffer-read-uint16 buf)))
       ;; ServerHello: single entry (group + key)
       ((< (length data) 6)
-       (error 'tls-decode-error :message "Invalid key_share extension"))
+       (error 'tls-decode-error :message ":DECODE_ERROR: Invalid key_share extension"))
       ;; Try to parse as ServerHello first (no length prefix)
       ((let ((potential-group (decode-uint16 data 0))
              (potential-len (decode-uint16 data 2)))

@@ -391,7 +391,7 @@
   "Parse a handshake message header.
    Returns (VALUES msg-type length body-start)."
   (when (< (length data) 4)
-    (error 'tls-decode-error :message "Handshake message too short"))
+    (error 'tls-decode-error :message ":DECODE_ERROR: Handshake message too short"))
   (values (aref data 0)
           (decode-uint24 data 1)
           4))

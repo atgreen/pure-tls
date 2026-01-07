@@ -100,7 +100,7 @@
 (defun buffer-read-octet (buffer)
   "Read a single octet from BUFFER."
   (when (zerop (buffer-remaining buffer))
-    (error 'tls-decode-error :message "Unexpected end of buffer"))
+    (error 'tls-decode-error :message ":DECODE_ERROR: Unexpected end of buffer"))
   (prog1 (aref (tls-buffer-data buffer) (tls-buffer-position buffer))
     (incf (tls-buffer-position buffer))))
 
@@ -108,7 +108,7 @@
   "Read COUNT octets from BUFFER as a new octet vector."
   (when (< (buffer-remaining buffer) count)
     (error 'tls-decode-error
-           :message (format nil "Expected ~D bytes but only ~D remaining"
+           :message (format nil ":DECODE_ERROR: Expected ~D bytes but only ~D remaining"
                             count (buffer-remaining buffer))))
   (let ((result (make-octet-vector count))
         (pos (tls-buffer-position buffer)))
