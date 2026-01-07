@@ -64,6 +64,29 @@
   :components ((:file "compat/package")
                (:file "compat/api")))
 
+(asdf:defsystem "pure-tls/acme"
+  :description "ACME client for automatic certificate management (Let's Encrypt)"
+  :author "Anthony Green <green@moxielogic.com>"
+  :license "MIT"
+  :version "1.0.0"
+  :depends-on ("pure-tls"
+               "drakma"
+               "cl-json"
+               "cl-base64"
+               "ironclad"
+               "flexi-streams"
+               "bordeaux-threads"
+               "usocket")
+  :serial t
+  :components ((:module "acme"
+                :serial t
+                :components ((:file "package")
+                             (:file "asn1")
+                             (:file "client")
+                             (:file "challenges")
+                             (:file "csr")
+                             (:file "cert-manager")))))
+
 (asdf:defsystem "pure-tls/test"
   :description "Tests for pure-tls"
   :author "Anthony Green <green@moxielogic.com>"
