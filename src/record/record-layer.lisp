@@ -171,7 +171,7 @@
       (unless (= content-type +content-type-application-data+)
         (record-layer-write-alert layer +alert-level-fatal+ +alert-unexpected-message+)
         (error 'tls-handshake-error
-               :message (format nil ":UNEXPECTED_RECORD: Expected encrypted record (23), got ~D"
+               :message (format nil ":INVALID_OUTER_RECORD_TYPE: Expected encrypted record (23), got ~D"
                                content-type)))
       ;; Decrypt the record
       (let ((header (octet-vector content-type
