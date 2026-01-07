@@ -9,6 +9,7 @@ A pure Common Lisp implementation of TLS 1.3 (RFC 8446).
 - **Gray streams** - Seamless integration with existing I/O code
 - **cl+ssl compatible** - Drop-in replacement API available
 - **Native trust store integration** - Uses Windows CryptoAPI and macOS Security.framework for certificate validation
+- **ACME client** - Automatic certificate management with Let's Encrypt (TLS-ALPN-01 challenge)
 
 ### Supported Cipher Suites
 
@@ -165,6 +166,138 @@ This technique:
 
 This allows you to eliminate OpenSSL as a dependency entirely, making your
 application fully portable pure Common Lisp for TLS.
+
+## ACME Client (Let's Encrypt)
+
+The `pure-tls/acme` system provides automatic certificate management using the ACME protocol (RFC 8555), compatible with Let's Encrypt and other ACME-compliant certificate authorities.
+
+### Quick Start
+
+```lisp
+(asdf:load-system :pure-tls/acme)
+
+;; Obtain a certificate for your domain
+(pure-tls/acme:obtain-certificate "example.com" "admin@example.com")
+```
+
+This will:
+1. Register an ACME account (or use existing)
+2. Create a certificate order
+3. Start a TLS-ALPN-01 validation server on port 443
+4. Complete domain validation
+5. Generate a CSR and obtain the certificate
+6. Save the certificate and private key to `~/certs/`
+
+### Automatic Certificate Management
+
+For production use, the cert-manager provides automatic renewal:
+
+```lisp
+;; Start automatic certificate management
+(pure-tls/acme:start-cert-manager
+  :domains '("example.com" "www.example.com")
+  :email "admin@example.com"
+  :production t)  ; Use Let's Encrypt production (default is staging)
+
+;; Check certificate status
+(pure-tls/acme:cert-manager-status)
+
+;; Stop the manager
+(pure-tls/acme:stop-cert-manager)
+```
+
+The cert-manager:
+- Checks certificates daily for expiration
+- Renews certificates 30 days before expiry
+- Handles the TLS-ALPN-01 challenge automatically
+- Stores certificates in `~/certs/` by default
+
+### Manual ACME Workflow
+
+For more control over the certificate process:
+
+```lisp
+(in-package :pure-tls/acme)
+
+;; Initialize and register
+(acme-init)
+(acme-register-account "admin@example.com")
+
+;; Create order
+(multiple-value-bind (order order-url)
+    (acme-new-order "example.com")
+
+  ;; Get authorization and challenge
+  (let* ((auth-url (first (cdr (assoc :authorizations order))))
+         (auth (acme-get-authorization auth-url))
+         (challenge (get-tls-alpn-challenge auth))
+         (token (cdr (assoc :token challenge))))
+
+    ;; Start validation server
+    (start-tls-alpn-server "example.com"
+                           (compute-key-authorization token)
+                           443)
+
+    ;; Tell ACME to verify
+    (acme-respond-challenge (cdr (assoc :url challenge)))
+
+    ;; Wait for validation
+    (acme-poll-status auth-url)
+    (stop-tls-alpn-server)
+
+    ;; Generate CSR and finalize
+    (multiple-value-bind (priv pub) (generate-domain-key)
+      (let ((csr (generate-csr priv pub "example.com")))
+        (acme-finalize-order (cdr (assoc :finalize order)) csr)
+
+        ;; Download certificate
+        (let ((final (acme-poll-status order-url)))
+          (acme-download-certificate (cdr (assoc :certificate final))))))))
+```
+
+### TLS-ALPN-01 Challenge
+
+pure-tls/acme uses the TLS-ALPN-01 challenge type, which validates domain ownership by serving a special self-signed certificate on port 443. This is ideal for:
+
+- Servers that already run on port 443
+- Environments where HTTP port 80 is not available
+- Wildcard certificates (when combined with DNS challenges)
+
+**Requirements:**
+- Port 443 must be available for the validation server
+- The domain must resolve to your server's IP address
+
+### Configuration
+
+```lisp
+;; Use Let's Encrypt staging (for testing)
+(pure-tls/acme:use-staging)  ; Default
+
+;; Use Let's Encrypt production
+(pure-tls/acme:use-production)
+
+;; Custom certificate directory
+(setf pure-tls/acme:*cert-directory* #p"/etc/certs/")
+
+;; Skip TLS verification (for testing with Pebble)
+(setf pure-tls/acme:*skip-tls-verify* t)
+```
+
+### Testing with Pebble
+
+For local development, use [Pebble](https://github.com/letsencrypt/pebble), a small ACME server:
+
+```bash
+# Start Pebble (requires podman or docker)
+cd test/acme
+./run-pebble.sh start
+
+# Run tests
+sbcl --load quick-pebble-test.lisp
+
+# Stop Pebble
+./run-pebble.sh stop
+```
 
 ## API Reference
 
@@ -565,4 +698,7 @@ Copyright (c) 2026 Anthony Green <green@moxielogic.com>
 ## See Also
 
 - [RFC 8446](https://tools.ietf.org/html/rfc8446) - TLS 1.3 specification
+- [RFC 8555](https://tools.ietf.org/html/rfc8555) - ACME protocol specification
+- [RFC 8737](https://tools.ietf.org/html/rfc8737) - TLS-ALPN-01 challenge
+- [Let's Encrypt](https://letsencrypt.org/) - Free, automated certificate authority
 - [cl+ssl](https://github.com/cl-plus-ssl/cl-plus-ssl) - OpenSSL-based TLS for Common Lisp
