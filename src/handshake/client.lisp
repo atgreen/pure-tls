@@ -1268,11 +1268,16 @@
       (when (and hostname (not (client-handshake-skip-hostname-verify hs)))
         (verify-hostname cert hostname))
       ;; Verify certificate chain
+      ;; Pass nil for hostname when skip-hostname-verify is set to avoid
+      ;; platform-specific hostname verification (macOS/Windows)
       (when chain
         (let ((trusted-roots (when trust-store
-                               (trust-store-certificates trust-store))))
+                               (trust-store-certificates trust-store)))
+              (verify-hostname (if (client-handshake-skip-hostname-verify hs)
+                                   nil
+                                   hostname)))
           (verify-certificate-chain chain trusted-roots
-                                    (get-universal-time) hostname))))
+                                    (get-universal-time) verify-hostname))))
     (setf (client-handshake-state hs) :wait-finished)))
 
 ;;;; Finished Processing
@@ -1597,16 +1602,20 @@
                       :message ":EXCESS_HANDSHAKE_DATA: Unexpected plaintext data after ServerHello"
                       :state :wait-server-hello)))))
         (:wait-encrypted-extensions
-         ;; Wrap in handler-bind to send alerts for parsing errors
-         ;; (e.g., TLS 1.2-only extensions like EMS, NPN, renegotiation_info)
+         ;; Wrap in handler-bind to send alerts for TLS 1.2-only extension errors
+         ;; (e.g., EMS, NPN, renegotiation_info sent in TLS 1.3)
+         ;; Other errors (like ALPN empty protocol) are handled by inner handler
          (handler-bind
              ((tls-handshake-error
                 (lambda (e)
-                  ;; Send illegal_parameter alert for TLS 1.2-only extensions
-                  (ignore-errors
-                    (record-layer-write-alert (client-handshake-record-layer hs)
-                                              +alert-level-fatal+
-                                              +alert-illegal-parameter+)))))
+                  ;; Only send illegal_parameter for TLS 1.2-only extension errors
+                  ;; Other errors are already handled by the inner handler in read-handshake-message
+                  (let ((msg (tls-error-message e)))
+                    (when (search ":TLS12_ONLY_EXTENSION:" msg)
+                      (ignore-errors
+                        (record-layer-write-alert (client-handshake-record-layer hs)
+                                                  +alert-level-fatal+
+                                                  +alert-illegal-parameter+)))))))
            (let ((message (read-handshake-message hs)))
              (unless (= (handshake-message-type message) +handshake-encrypted-extensions+)
                (record-layer-write-alert (client-handshake-record-layer hs)
