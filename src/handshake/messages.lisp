@@ -68,17 +68,23 @@
 (defun parse-client-hello (data)
   "Parse a ClientHello from bytes."
   (let ((buf (make-tls-buffer data)))
-    (make-client-hello
-     :legacy-version (buffer-read-uint16 buf)
-     :random (buffer-read-octets buf 32)
-     :legacy-session-id (buffer-read-vector8 buf)
-     :cipher-suites (let ((suites-data (buffer-read-vector16 buf))
-                          (suites nil))
-                      (loop for i from 0 below (length suites-data) by 2
-                            do (push (decode-uint16 suites-data i) suites))
-                      (nreverse suites))
-     :legacy-compression-methods (buffer-read-vector8 buf)
-     :extensions (parse-extensions (buffer-read-vector16 buf)))))
+    (let ((result (make-client-hello
+                   :legacy-version (buffer-read-uint16 buf)
+                   :random (buffer-read-octets buf 32)
+                   :legacy-session-id (buffer-read-vector8 buf)
+                   :cipher-suites (let ((suites-data (buffer-read-vector16 buf))
+                                        (suites nil))
+                                    (loop for i from 0 below (length suites-data) by 2
+                                          do (push (decode-uint16 suites-data i) suites))
+                                    (nreverse suites))
+                   :legacy-compression-methods (buffer-read-vector8 buf)
+                   :extensions (parse-extensions (buffer-read-vector16 buf)))))
+      ;; Check for trailing data after ClientHello
+      (when (plusp (buffer-remaining buf))
+        (error 'tls-decode-error
+               :message (format nil ":CLIENTHELLO_PARSE_FAILED: ~D extra bytes after ClientHello"
+                               (buffer-remaining buf))))
+      result)))
 
 ;;;; ServerHello
 

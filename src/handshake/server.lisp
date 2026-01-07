@@ -878,6 +878,12 @@
                         :message ":UNEXPECTED_MESSAGE: Expected ClientHello"
                         :state :wait-client-hello))
                (process-client-hello hs message raw-bytes))
+           ;; Catch decode errors and send decode_error alert
+           (tls-decode-error (e)
+             (ignore-errors
+               (record-layer-write-alert (server-handshake-record-layer hs)
+                                         +alert-level-fatal+ +alert-decode-error+))
+             (error e))
            ;; Catch extension parsing errors and send appropriate alert
            (tls-handshake-error (e)
              (let ((msg (tls-error-message e)))
