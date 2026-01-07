@@ -269,8 +269,11 @@
            (when (server-handshake-hello-retry-sent hs)
              (record-layer-write-alert (server-handshake-record-layer hs)
                                        +alert-level-fatal+ +alert-illegal-parameter+)
+             ;; Differentiate between no key share vs wrong curve
              (error 'tls-handshake-error
-                    :message ":ILLEGAL_PARAMETER: Second ClientHello missing requested key_share"
+                    :message (if client-shares
+                                 ":WRONG_CURVE: Second ClientHello has key_share for wrong group"
+                                 ":MISSING_KEY_SHARE: Second ClientHello missing requested key_share")
                     :state :wait-client-hello))
            ;; Find a group from supported_groups that we also support
            (let* ((client-groups (when sg-ext

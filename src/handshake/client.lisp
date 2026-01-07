@@ -663,6 +663,14 @@
    We currently don't support sending client certificates, so we'll send
    an empty Certificate message later."
   (let ((cert-req (handshake-message-body message)))
+    ;; RFC 8446 Section 4.3.2: certificate_request_context MUST be zero length
+    ;; during the initial handshake (non-empty only for post-handshake auth)
+    (let ((context (certificate-request-certificate-request-context cert-req)))
+      (when (and context (plusp (length context)))
+        (record-layer-write-alert (client-handshake-record-layer hs)
+                                  +alert-level-fatal+ +alert-decode-error+)
+        (error 'tls-decode-error
+               :message ":DECODE_ERROR: CertificateRequest has non-empty context during handshake")))
     ;; Store the certificate_request_context
     ;; This must be echoed back in our Certificate message
     (setf (client-handshake-cert-request-context hs)

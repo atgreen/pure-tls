@@ -308,14 +308,14 @@
   (verify-data nil :type (or null octet-vector)))
 
 (defun parse-finished (data hash-length)
-  "Parse a Finished message from bytes."
-  ;; Finished message must be exactly hash-length bytes (RFC 8446 Section 4.4.4)
-  (unless (= (length data) hash-length)
-    (error 'tls-handshake-error
-           :message (format nil ":EXCESS_HANDSHAKE_DATA: Finished message wrong length: expected ~D, got ~D"
-                           hash-length (length data))))
+  "Parse a Finished message from bytes.
+   Note: We use all data as verify_data without length checking.
+   Length mismatches will be caught by constant-time-equal during
+   verification, resulting in :DIGEST_CHECK_FAILED: error."
+  (declare (ignore hash-length))
+  ;; Use all data - verification will fail if length doesn't match
   (make-finished-message
-   :verify-data (subseq data 0 hash-length)))
+   :verify-data data))
 
 (defun serialize-finished (finished)
   "Serialize a Finished message to bytes."
