@@ -607,7 +607,7 @@
                                         +alert-level-fatal+
                                         +alert-unsupported-extension+)
               (error 'tls-decode-error
-                     :message ":UNSUPPORTED_EXTENSION: Unsolicited server_name extension"))
+                     :message ":UNEXPECTED_EXTENSION: Unsolicited server_name extension"))
             (let ((sni (tls-extension-data ext)))
               (when (and (server-name-ext-p sni)
                          (server-name-ext-host-name sni))
@@ -643,7 +643,7 @@
                                         +alert-level-fatal+
                                         +alert-unsupported-extension+)
               (error 'tls-decode-error
-                     :message ":UNSUPPORTED_EXTENSION: ALPN returned but not offered"))
+                     :message ":UNEXPECTED_EXTENSION: ALPN returned but not offered"))
             (unless (member selected offered :test #'string=)
               (record-layer-write-alert (client-handshake-record-layer hs)
                                         +alert-level-fatal+
@@ -722,7 +722,7 @@
              (record-layer-write-alert (client-handshake-record-layer hs)
                                        +alert-level-fatal+ +alert-unsupported-extension+)
              (error 'tls-handshake-error
-                    :message ":UNSUPPORTED_EXTENSION: Unsolicited OCSP response in certificate"))
+                    :message ":UNEXPECTED_EXTENSION: Unsolicited OCSP response in certificate"))
             ;; signed_certificate_timestamp (SCT) - we don't request it, so reject
             ;; But first validate the format (RFC 6962 Section 3.3)
             ((= ext-type +extension-signed-certificate-timestamp+)
@@ -766,13 +766,13 @@
              (record-layer-write-alert (client-handshake-record-layer hs)
                                        +alert-level-fatal+ +alert-unsupported-extension+)
              (error 'tls-handshake-error
-                    :message ":UNSUPPORTED_EXTENSION: Unsolicited SCT in certificate"))
+                    :message ":UNEXPECTED_EXTENSION: Unsolicited SCT in certificate"))
             ;; Any other extension is unknown/forbidden
             (t
              (record-layer-write-alert (client-handshake-record-layer hs)
                                        +alert-level-fatal+ +alert-unsupported-extension+)
              (error 'tls-handshake-error
-                    :message (format nil ":UNSUPPORTED_EXTENSION: Unknown extension ~D in certificate"
+                    :message (format nil ":UNEXPECTED_EXTENSION: Unknown extension ~D in certificate"
                                     ext-type)))))))
     ;; Parse and store the entire certificate chain
     (when cert-list
