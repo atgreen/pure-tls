@@ -58,6 +58,26 @@
 
 ;;;; Certificate Parsing
 
+(defun known-extension-p (oid)
+  "Check if an extension OID is known (has a symbolic name).
+Per RFC 5280 s4.2, unknown critical extensions must cause rejection."
+  (symbolp oid))
+
+(defun validate-implicit-bit-string (raw-bytes)
+  "Validate BIT STRING encoding for IMPLICIT BIT STRING fields.
+Per DER (X.690): unused bits count must be 0-7 and padding bits must be zero."
+  (when (and raw-bytes (> (length raw-bytes) 0))
+    (let ((unused-bits (aref raw-bytes 0)))
+      (when (> unused-bits 7)
+        (error 'tls-decode-error
+               :message "BIT STRING unused bits count must be 0-7"))
+      (when (and (> unused-bits 0) (> (length raw-bytes) 1))
+        (let* ((last-byte (aref raw-bytes (1- (length raw-bytes))))
+               (mask (1- (ash 1 unused-bits))))
+          (unless (zerop (logand last-byte mask))
+            (error 'tls-decode-error
+                   :message "BIT STRING has non-zero padding bits (invalid DER)")))))))
+
 (defun parse-certificate (der-bytes)
   "Parse a DER-encoded X.509 certificate."
   (let* ((root (parse-der der-bytes))
@@ -67,15 +87,22 @@
     (let ((children (asn1-children root)))
       (unless (>= (length children) 3)
         (error 'tls-decode-error :message "Certificate missing required fields"))
-      ;; TBSCertificate
-      (let ((tbs (first children)))
-        (setf (x509-certificate-tbs-raw cert) (asn1-node-raw-bytes tbs))
-        (parse-tbs-certificate cert tbs))
-      ;; SignatureAlgorithm (with params for RSA-PSS)
-      (multiple-value-bind (algorithm params)
-          (parse-algorithm-identifier-with-params (second children))
-        (setf (x509-certificate-signature-algorithm cert) algorithm)
-        (setf (x509-certificate-signature-algorithm-params cert) params))
+      ;; TBSCertificate - returns inner signature algorithm
+      (let* ((tbs (first children))
+             (inner-sig-algorithm (progn
+                                    (setf (x509-certificate-tbs-raw cert)
+                                          (asn1-node-raw-bytes tbs))
+                                    (parse-tbs-certificate cert tbs))))
+        ;; SignatureAlgorithm (with params for RSA-PSS)
+        (multiple-value-bind (algorithm params)
+            (parse-algorithm-identifier-with-params (second children))
+          (setf (x509-certificate-signature-algorithm cert) algorithm)
+          (setf (x509-certificate-signature-algorithm-params cert) params)
+          ;; Per RFC 5280 s4.1.1.2: inner and outer signature algorithms must match
+          (unless (equal inner-sig-algorithm algorithm)
+            (error 'tls-decode-error
+                   :message (format nil "Signature algorithm mismatch: inner=~A outer=~A"
+                                    inner-sig-algorithm algorithm)))))
       ;; SignatureValue (BIT STRING)
       (let ((sig-value (asn1-node-value (third children))))
         (setf (x509-certificate-signature cert)
@@ -83,20 +110,25 @@
     cert))
 
 (defun parse-tbs-certificate (cert tbs)
-  "Parse the TBSCertificate portion."
+  "Parse the TBSCertificate portion. Returns the inner signature algorithm."
   (let ((children (asn1-children tbs))
-        (idx 0))
+        (idx 0)
+        (inner-sig-algorithm nil))
     ;; Version [0] EXPLICIT (optional, default v1)
     (when (and children (asn1-context-p (nth idx children) 0))
       (let ((version-node (first (asn1-children (nth idx children)))))
         (setf (x509-certificate-version cert)
               (1+ (asn1-node-value version-node))))
       (incf idx))
-    ;; SerialNumber
-    (setf (x509-certificate-serial-number cert)
-          (asn1-node-value (nth idx children)))
+    ;; SerialNumber - RFC 5280 s4.1.2.2: must be positive
+    (let ((serial (asn1-node-value (nth idx children))))
+      (when (< serial 0)
+        (error 'tls-decode-error
+               :message "Certificate serial number must be positive (RFC 5280 s4.1.2.2)"))
+      (setf (x509-certificate-serial-number cert) serial))
     (incf idx)
-    ;; Signature (AlgorithmIdentifier) - skip, use outer one
+    ;; Signature (AlgorithmIdentifier) - capture for validation
+    (setf inner-sig-algorithm (parse-algorithm-identifier (nth idx children)))
     (incf idx)
     ;; Issuer
     (setf (x509-certificate-issuer cert)
@@ -117,16 +149,29 @@
     (setf (x509-certificate-subject-public-key-info cert)
           (parse-subject-public-key-info (nth idx children)))
     (incf idx)
-    ;; Skip optional issuerUniqueID [1] and subjectUniqueID [2]
+    ;; Validate and skip optional issuerUniqueID [1] and subjectUniqueID [2]
+    ;; These are IMPLICIT BIT STRING, so we need to validate the BIT STRING encoding
     (loop while (and (< idx (length children))
-                     (asn1-context-p (nth idx children) 1)
-                     (asn1-context-p (nth idx children) 2))
-          do (incf idx))
+                     (or (asn1-context-p (nth idx children) 1)
+                         (asn1-context-p (nth idx children) 2)))
+          do (let ((unique-id-node (nth idx children)))
+               ;; Validate BIT STRING encoding for IMPLICIT BIT STRING
+               (validate-implicit-bit-string (asn1-node-value unique-id-node)))
+             (incf idx))
     ;; Extensions [3] EXPLICIT
     (when (and (< idx (length children))
                (asn1-context-p (nth idx children) 3))
       (setf (x509-certificate-extensions cert)
-            (parse-extensions-seq (first (asn1-children (nth idx children))))))))
+            (parse-extensions-seq (first (asn1-children (nth idx children)))))
+      ;; Per RFC 5280 s4.2: reject certificates with unknown critical extensions
+      (dolist (ext (x509-certificate-extensions cert))
+        (when (and (x509-extension-critical ext)
+                   (not (known-extension-p (x509-extension-oid ext))))
+          (error 'tls-decode-error
+                 :message (format nil "Unknown critical extension: ~A"
+                                  (x509-extension-oid ext))))))
+    ;; Return inner signature algorithm for validation
+    inner-sig-algorithm))
 
 (defun parse-name (node)
   "Parse an X.509 Name (sequence of RDNs)."
@@ -212,8 +257,21 @@
           :public-key (getf public-key-bits :data))))
 
 (defun parse-extensions-seq (node)
-  "Parse a SEQUENCE of Extensions."
-  (mapcar #'parse-x509-extension (asn1-children node)))
+  "Parse a SEQUENCE of Extensions.
+Per RFC 5280 Section 4.2: A certificate MUST NOT include more than one
+instance of a particular extension."
+  (let ((extensions nil)
+        (seen-oids (make-hash-table :test 'equal)))
+    (dolist (child (asn1-children node))
+      (let* ((ext-children (asn1-children child))
+             (oid (asn1-node-value (first ext-children))))
+        ;; Check for duplicate extensions
+        (when (gethash oid seen-oids)
+          (error 'tls-decode-error
+                 :message (format nil "Duplicate extension: ~A" (oid-name oid))))
+        (setf (gethash oid seen-oids) t)
+        (push (parse-x509-extension child) extensions)))
+    (nreverse extensions)))
 
 (defun parse-x509-extension (node)
   "Parse a single Extension."

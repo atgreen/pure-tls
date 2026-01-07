@@ -123,8 +123,19 @@
          (decode-der-integer raw-bytes))
         (#.+asn1-bit-string+
          ;; First byte is unused bits count
-         (list :unused-bits (aref raw-bytes 0)
-               :data (subseq raw-bytes 1)))
+         ;; Per DER (X.690): unused bits in last byte must be zero
+         (let ((unused-bits (aref raw-bytes 0)))
+           (when (> unused-bits 7)
+             (error 'tls-decode-error
+                    :message "BIT STRING unused bits count must be 0-7"))
+           (when (and (> unused-bits 0) (> (length raw-bytes) 1))
+             (let* ((last-byte (aref raw-bytes (1- (length raw-bytes))))
+                    (mask (1- (ash 1 unused-bits))))  ; e.g., unused=1 -> mask=1
+               (unless (zerop (logand last-byte mask))
+                 (error 'tls-decode-error
+                        :message "BIT STRING has non-zero padding bits (invalid DER)"))))
+           (list :unused-bits unused-bits
+                 :data (subseq raw-bytes 1))))
         (#.+asn1-octet-string+
          raw-bytes)
         (#.+asn1-null+
@@ -144,7 +155,22 @@
 ;;;; Integer Decoding
 
 (defun decode-der-integer (bytes)
-  "Decode a DER-encoded integer (two's complement, big-endian)."
+  "Decode a DER-encoded integer (two's complement, big-endian).
+Per DER (X.690): integers must be minimally encoded."
+  (when (zerop (length bytes))
+    (error 'tls-decode-error :message "INTEGER must have at least one byte"))
+  ;; Check for non-minimal encoding (leading 0x00 or 0xFF that isn't needed)
+  (when (>= (length bytes) 2)
+    (let ((first (aref bytes 0))
+          (second (aref bytes 1)))
+      ;; Leading 0x00 is only valid if next byte has high bit set (positive number)
+      (when (and (zerop first) (not (logbitp 7 second)))
+        (error 'tls-decode-error
+               :message "INTEGER has non-minimal encoding (unnecessary leading zero)"))
+      ;; Leading 0xFF is only valid if next byte has high bit clear (negative number)
+      (when (and (= first #xff) (logbitp 7 second))
+        (error 'tls-decode-error
+               :message "INTEGER has non-minimal encoding (unnecessary leading 0xFF)"))))
   (let ((value 0)
         (negative (logbitp 7 (aref bytes 0))))
     (loop for byte across bytes
