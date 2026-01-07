@@ -275,9 +275,13 @@
                ;; Skip unknown flags but continue
                (t
                 ;; Check if next arg is a value for this flag
-                (when (and (< (1+ i) (length args))
-                           (not (char= (char (elt args (1+ i)) 0) #\-)))
-                  (incf i))))
+                ;; Handle empty string args (e.g., from ALPS tests)
+                (let ((next-arg (and (< (1+ i) (length args))
+                                     (elt args (1+ i)))))
+                  (when (and next-arg
+                             (or (zerop (length next-arg))
+                                 (not (char= (char next-arg 0) #\-))))
+                    (incf i)))))
              (incf i))
     config))
 
