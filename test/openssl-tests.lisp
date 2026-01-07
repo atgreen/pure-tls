@@ -59,7 +59,8 @@
           (:ASSIGNMENT
            (let ((key (second (second inner)))      ; :KEY -> string
                  (value (second (third inner))))    ; :VALUE -> string
-             (push (cons key (string-trim " " value))
+             ;; Trim spaces and CR (for Windows CRLF line endings)
+             (push (cons key (string-trim '(#\Space #\Tab #\Return) value))
                    (gethash current-section sections)))))))
     ;; Convert hash-table to alist, reversing each section's pairs
     (let ((result nil))
