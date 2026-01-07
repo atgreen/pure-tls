@@ -282,7 +282,7 @@
                (record-layer-write-alert (server-handshake-record-layer hs)
                                          +alert-level-fatal+ +alert-handshake-failure+)
                (error 'tls-handshake-error
-                      :message ":HANDSHAKE_FAILURE_ON_CLIENT_HELLO: No common key exchange group"
+                      :message ":NO_SHARED_GROUP: No common key exchange group"
                       :state :wait-client-hello))
              ;; Request the client to retry with this group
              (setf (server-handshake-hrr-selected-group hs) common-group)
