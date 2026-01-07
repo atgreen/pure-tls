@@ -391,10 +391,11 @@
     (t pure-tls:+verify-none+)))
 
 (defun run-tls-server (port cert-file key-file verify-mode ca-file alpn-protocols
-                       sni-callback result-box error-box ready-lock ready-cv)
+                       sni-callback result-box error-box ready-lock ready-cv ready-flag)
   "Run a TLS server on PORT. Stores result in RESULT-BOX.
    ALPN-PROTOCOLS is a list of protocol strings, or (:none) for empty list.
-   SNI-CALLBACK is a function (hostname) that returns :reject or (values cert-chain key)."
+   SNI-CALLBACK is a function (hostname) that returns :reject or (values cert-chain key).
+   READY-FLAG is a cons cell that will be set to T when the server is ready."
   (let ((server-socket nil)
         (client-socket nil))
     (unwind-protect
@@ -404,8 +405,9 @@
               (setf server-socket (usocket:socket-listen "127.0.0.1" port
                                                           :reuse-address t
                                                           :element-type '(unsigned-byte 8)))
-              ;; Signal that we're ready
+              ;; Signal that we're ready - set flag BEFORE signaling to avoid race
               (bt:with-lock-held (ready-lock)
+                (setf (car ready-flag) t)
                 (bt:condition-notify ready-cv))
               ;; Accept one connection
               (setf client-socket (usocket:socket-accept server-socket
@@ -531,6 +533,7 @@
          (server-error (list nil))
          (ready-lock (bt:make-lock "server-ready"))
          (ready-cv (bt:make-condition-variable :name "server-ready-cv"))
+         (ready-flag (list nil))  ; Flag to avoid condition variable race
          ;; Server config
          (server-cert (openssl-test-server-certificate test))
          (server-key (openssl-test-server-private-key test))
@@ -552,13 +555,16 @@
     (bt:make-thread
      (lambda ()
        (run-tls-server port server-cert server-key server-verify server-ca server-alpn
-                       server-sni-cb server-result server-error ready-lock ready-cv))
+                       server-sni-cb server-result server-error ready-lock ready-cv ready-flag))
      :name "openssl-test-server")
-    ;; Wait for server to be ready
+    ;; Wait for server to be ready - use flag to avoid race condition
     (bt:with-lock-held (ready-lock)
-      (bt:condition-wait ready-cv ready-lock :timeout 5))
-    ;; Small delay to ensure server is listening
-    (sleep 0.1)
+      (loop until (car ready-flag)
+            do (bt:condition-wait ready-cv ready-lock :timeout 5)
+            unless (car ready-flag)
+            do (return)))  ; Timeout without flag being set
+    ;; Small delay to ensure server is fully listening
+    (sleep 0.05)
     ;; Run client
     (multiple-value-bind (client-result client-error)
         (run-tls-client port client-cert client-key client-verify client-ca client-alpn
@@ -692,25 +698,25 @@ ExpectedResult = Success
 ;;;; Live Execution Tests
 
 (defun run-all-tests-from-file (cnf-filename)
-  "Run all tests from a CNF file, returning (values pass-count fail-count skip-count failed-names)."
+  "Run all tests from a CNF file, returning (values pass-count fail-count skip-count failed-details).
+   FAILED-DETAILS is a list of (name . message) pairs for failed tests."
   (let* ((cnf-file (merge-pathnames cnf-filename *openssl-ssl-tests-dir*))
          (tests (load-openssl-tests cnf-file))
          (pass 0) (fail 0) (skip 0)
-         (failed-names nil))
+         (failed-details nil))
     (dolist (test tests)
       (let ((category (openssl-test-category test)))
         (if (eq category :skip)
             (incf skip)
             (multiple-value-bind (result message)
                 (run-openssl-test test)
-              (declare (ignore message))
               (case result
                 (:pass (incf pass))
                 ((:fail :error)
                  (incf fail)
-                 (push (openssl-test-name test) failed-names))
+                 (push (cons (openssl-test-name test) message) failed-details))
                 (t (incf skip)))))))
-    (values pass fail skip (nreverse failed-names))))
+    (values pass fail skip (nreverse failed-details))))
 
 (test execute-0-default
   "Execute the 0-default test (basic TLS 1.3 handshake)."
@@ -725,134 +731,160 @@ ExpectedResult = Success
 
 (test execute-01-simple-all
   "Execute all tests from 01-simple.cnf (basic TLS 1.3 tests)."
-  (multiple-value-bind (pass fail skip failed)
+  (multiple-value-bind (pass fail skip failed-details)
       (run-all-tests-from-file "01-simple.cnf")
     (declare (ignore skip))
     (format t "~&01-simple.cnf: ~D pass, ~D fail~%" pass fail)
-    (when failed
-      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (when failed-details
+      (format t "  Failed: ~{~A~^, ~}~%" (mapcar #'car failed-details))
+      (dolist (detail failed-details)
+        (format t "    ~A: ~A~%" (car detail) (cdr detail))))
     ;; All 4 tests should pass
     (is (= 4 pass))
     (is (= 0 fail))))
 
 (test execute-21-key-update-all
   "Execute all tests from 21-key-update.cnf (TLS 1.3 key update tests)."
-  (multiple-value-bind (pass fail skip failed)
+  (multiple-value-bind (pass fail skip failed-details)
       (run-all-tests-from-file "21-key-update.cnf")
     (declare (ignore skip))
     (format t "~&21-key-update.cnf: ~D pass, ~D fail~%" pass fail)
-    (when failed
-      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (when failed-details
+      (format t "  Failed: ~{~A~^, ~}~%" (mapcar #'car failed-details))
+      (dolist (detail failed-details)
+        (format t "    ~A: ~A~%" (car detail) (cdr detail))))
     ;; All 4 tests should pass
     (is (= 4 pass))
     (is (= 0 fail))))
 
 (test execute-09-alpn-all
   "Execute all tests from 09-alpn.cnf (ALPN negotiation tests)."
-  (multiple-value-bind (pass fail skip failed)
+  (multiple-value-bind (pass fail skip failed-details)
       (run-all-tests-from-file "09-alpn.cnf")
     (declare (ignore skip))
     (format t "~&09-alpn.cnf: ~D pass, ~D fail~%" pass fail)
-    (when failed
-      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (when failed-details
+      (format t "  Failed: ~{~A~^, ~}~%" (mapcar #'car failed-details))
+      (dolist (detail failed-details)
+        (format t "    ~A: ~A~%" (car detail) (cdr detail))))
     (is (= 0 fail) "All ALPN tests should pass")))
 
 (test execute-14-curves-all
   "Execute all tests from 14-curves.cnf (elliptic curve tests)."
-  (multiple-value-bind (pass fail skip failed)
+  (multiple-value-bind (pass fail skip failed-details)
       (run-all-tests-from-file "14-curves.cnf")
     (declare (ignore skip))
     (format t "~&14-curves.cnf: ~D pass, ~D fail~%" pass fail)
-    (when failed
-      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (when failed-details
+      (format t "  Failed: ~{~A~^, ~}~%" (mapcar #'car failed-details))
+      (dolist (detail failed-details)
+        (format t "    ~A: ~A~%" (car detail) (cdr detail))))
     (is (= 0 fail) "All curves tests should pass")))
 
 (test execute-13-fragmentation-all
   "Execute all tests from 13-fragmentation.cnf (record fragmentation tests)."
-  (multiple-value-bind (pass fail skip failed)
+  (multiple-value-bind (pass fail skip failed-details)
       (run-all-tests-from-file "13-fragmentation.cnf")
     (declare (ignore skip))
     (format t "~&13-fragmentation.cnf: ~D pass, ~D fail~%" pass fail)
-    (when failed
-      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (when failed-details
+      (format t "  Failed: ~{~A~^, ~}~%" (mapcar #'car failed-details))
+      (dolist (detail failed-details)
+        (format t "    ~A: ~A~%" (car detail) (cdr detail))))
     (is (= 0 fail) "All fragmentation tests should pass")))
 
 (test execute-24-padding-all
   "Execute all tests from 24-padding.cnf (TLS 1.3 record padding tests)."
-  (multiple-value-bind (pass fail skip failed)
+  (multiple-value-bind (pass fail skip failed-details)
       (run-all-tests-from-file "24-padding.cnf")
     (declare (ignore skip))
     (format t "~&24-padding.cnf: ~D pass, ~D fail~%" pass fail)
-    (when failed
-      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (when failed-details
+      (format t "  Failed: ~{~A~^, ~}~%" (mapcar #'car failed-details))
+      (dolist (detail failed-details)
+        (format t "    ~A: ~A~%" (car detail) (cdr detail))))
     (is (= 0 fail) "All padding tests should pass")))
 
 (test execute-22-compression-all
   "Execute all tests from 22-compression.cnf (compression disabled tests)."
-  (multiple-value-bind (pass fail skip failed)
+  (multiple-value-bind (pass fail skip failed-details)
       (run-all-tests-from-file "22-compression.cnf")
     (declare (ignore skip))
     (format t "~&22-compression.cnf: ~D pass, ~D fail~%" pass fail)
-    (when failed
-      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (when failed-details
+      (format t "  Failed: ~{~A~^, ~}~%" (mapcar #'car failed-details))
+      (dolist (detail failed-details)
+        (format t "    ~A: ~A~%" (car detail) (cdr detail))))
     (is (= 0 fail) "All compression tests should pass")))
 
 (test execute-05-sni-all
   "Execute all tests from 05-sni.cnf (Server Name Indication tests)."
-  (multiple-value-bind (pass fail skip failed)
+  (multiple-value-bind (pass fail skip failed-details)
       (run-all-tests-from-file "05-sni.cnf")
     (declare (ignore skip))
     (format t "~&05-sni.cnf: ~D pass, ~D fail~%" pass fail)
-    (when failed
-      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (when failed-details
+      (format t "  Failed: ~{~A~^, ~}~%" (mapcar #'car failed-details))
+      (dolist (detail failed-details)
+        (format t "    ~A: ~A~%" (car detail) (cdr detail))))
     (is (= 0 fail) "All SNI tests should pass")))
 
 (test execute-03-custom-verify-all
   "Execute all tests from 03-custom_verify.cnf (custom verification tests)."
-  (multiple-value-bind (pass fail skip failed)
+  (multiple-value-bind (pass fail skip failed-details)
       (run-all-tests-from-file "03-custom_verify.cnf")
     (declare (ignore skip))
     (format t "~&03-custom_verify.cnf: ~D pass, ~D fail~%" pass fail)
-    (when failed
-      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (when failed-details
+      (format t "  Failed: ~{~A~^, ~}~%" (mapcar #'car failed-details))
+      (dolist (detail failed-details)
+        (format t "    ~A: ~A~%" (car detail) (cdr detail))))
     (is (= 0 fail) "All custom verify tests should pass")))
 
 (test execute-26-tls13-client-auth-all
   "Execute all tests from 26-tls13_client_auth.cnf (TLS 1.3 client authentication tests)."
-  (multiple-value-bind (pass fail skip failed)
+  (multiple-value-bind (pass fail skip failed-details)
       (run-all-tests-from-file "26-tls13_client_auth.cnf")
     (declare (ignore skip))
     (format t "~&26-tls13_client_auth.cnf: ~D pass, ~D fail~%" pass fail)
-    (when failed
-      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (when failed-details
+      (format t "  Failed: ~{~A~^, ~}~%" (mapcar #'car failed-details))
+      (dolist (detail failed-details)
+        (format t "    ~A: ~A~%" (car detail) (cdr detail))))
     (is (= 0 fail) "All TLS 1.3 client auth tests should pass")))
 
 (test execute-12-ct-all
   "Execute all tests from 12-ct.cnf (Certificate Transparency tests)."
-  (multiple-value-bind (pass fail skip failed)
+  (multiple-value-bind (pass fail skip failed-details)
       (run-all-tests-from-file "12-ct.cnf")
     (declare (ignore skip))
     (format t "~&12-ct.cnf: ~D pass, ~D fail~%" pass fail)
-    (when failed
-      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (when failed-details
+      (format t "  Failed: ~{~A~^, ~}~%" (mapcar #'car failed-details))
+      (dolist (detail failed-details)
+        (format t "    ~A: ~A~%" (car detail) (cdr detail))))
     (is (= 0 fail) "All CT tests should pass")))
 
 (test execute-15-certstatus-all
   "Execute all tests from 15-certstatus.cnf (OCSP stapling tests)."
-  (multiple-value-bind (pass fail skip failed)
+  (multiple-value-bind (pass fail skip failed-details)
       (run-all-tests-from-file "15-certstatus.cnf")
     (declare (ignore skip))
     (format t "~&15-certstatus.cnf: ~D pass, ~D fail~%" pass fail)
-    (when failed
-      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (when failed-details
+      (format t "  Failed: ~{~A~^, ~}~%" (mapcar #'car failed-details))
+      (dolist (detail failed-details)
+        (format t "    ~A: ~A~%" (car detail) (cdr detail))))
     (is (= 0 fail) "All certstatus tests should pass")))
 
 (test execute-28-seclevel-all
   "Execute all tests from 28-seclevel.cnf (security level tests)."
-  (multiple-value-bind (pass fail skip failed)
+  (multiple-value-bind (pass fail skip failed-details)
       (run-all-tests-from-file "28-seclevel.cnf")
     (declare (ignore skip))
     (format t "~&28-seclevel.cnf: ~D pass, ~D fail~%" pass fail)
-    (when failed
-      (format t "  Failed: ~{~A~^, ~}~%" failed))
+    (when failed-details
+      (format t "  Failed: ~{~A~^, ~}~%" (mapcar #'car failed-details))
+      (dolist (detail failed-details)
+        (format t "    ~A: ~A~%" (car detail) (cdr detail))))
     (is (= 0 fail) "All seclevel tests should pass")))
