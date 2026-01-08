@@ -17,6 +17,7 @@
    #:run-network-tests
    #:run-openssl-tests
    #:run-boringssl-tests
+   #:run-x509test-tests
    ;; Test suites
    #:crypto-tests
    #:record-tests
@@ -24,4 +25,5 @@
    #:certificate-tests
    #:network-tests
    #:openssl-tests
-   #:boringssl-tests))
+   #:boringssl-tests
+   #:x509test-tests))

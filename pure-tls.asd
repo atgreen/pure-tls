@@ -108,4 +108,5 @@
                              (:file "network-tests")
                              (:file "openssl-tests")
                              (:file "boringssl-tests")
+                             (:file "x509test-tests")
                              (:file "runner")))))
