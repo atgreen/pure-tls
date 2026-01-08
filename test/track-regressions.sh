@@ -50,34 +50,21 @@ run_tests() {
 
     echo "Running BoringSSL tests..." >&2
 
+    # Run tests and capture output, using script to preserve stdout streaming
     if [ -n "$BORINGSSL_RUNNER" ]; then
         cd "$BORINGSSL_RUNNER"
-        timeout "$TIMEOUT" go test -v \
+        timeout --foreground "$TIMEOUT" go test -v \
             -shim-path="$SHIM_PATH" \
             -allow-unimplemented \
-            > "$tmplog" 2>&1 &
-        local test_pid=$!
-        # Stream output while waiting
-        tail -f "$tmplog" &
-        local tail_pid=$!
-        wait $test_pid
-        local test_exit=$?
-        kill $tail_pid 2>/dev/null || true
-        echo "DEBUG: go test exited with code $test_exit" >&2
+            2>&1 | tee "$tmplog" || true
+        echo "DEBUG: go test completed" >&2
     else
-        timeout "$TIMEOUT" "$RUNNER_BIN" \
+        timeout --foreground "$TIMEOUT" "$RUNNER_BIN" \
             -test.v \
             -shim-path="$SHIM_PATH" \
             -allow-unimplemented \
-            > "$tmplog" 2>&1 &
-        local test_pid=$!
-        # Stream output while waiting
-        tail -f "$tmplog" &
-        local tail_pid=$!
-        wait $test_pid
-        local test_exit=$?
-        kill $tail_pid 2>/dev/null || true
-        echo "DEBUG: runner_test exited with code $test_exit" >&2
+            2>&1 | tee "$tmplog" || true
+        echo "DEBUG: runner_test completed" >&2
     fi
 
     echo "DEBUG: Tests completed, extracting results..." >&2
