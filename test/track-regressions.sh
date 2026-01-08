@@ -141,7 +141,7 @@ compare_results() {
     trap "rm -f $regressions $improvements $new_skips" RETURN
 
     # Get list of currently failing tests
-    grep "^FAIL " "$tmpresults" | cut -d' ' -f2- | sort > "$regressions.current_fails"
+    grep "^FAIL " "$tmpresults" | cut -d' ' -f2- | sort > "$regressions.current_fails" 2>/dev/null || touch "$regressions.current_fails"
 
     # Get list of previously failing tests
     grep "^FAIL " "$BASELINE_FILE" | cut -d' ' -f2- | sort > "$regressions.baseline_fails" 2>/dev/null || touch "$regressions.baseline_fails"
