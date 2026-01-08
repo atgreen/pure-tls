@@ -1271,11 +1271,9 @@ FAIL QUICTransportParams-Client-NotSentInNonQUIC-Standard-TLS-TLS13
 FAIL QUICTransportParams-NonQUICServer-ClientBoth-ServerLegacy-TLS-TLS1
 FAIL QUICTransportParams-NonQUICServer-ClientBoth-ServerLegacy-TLS-TLS11
 FAIL QUICTransportParams-NonQUICServer-ClientBoth-ServerLegacy-TLS-TLS12
-FAIL QUICTransportParams-NonQUICServer-ClientBoth-ServerLegacy-TLS-TLS13
 FAIL QUICTransportParams-NonQUICServer-ClientBoth-ServerStandard-TLS-TLS1
 FAIL QUICTransportParams-NonQUICServer-ClientBoth-ServerStandard-TLS-TLS11
 FAIL QUICTransportParams-NonQUICServer-ClientBoth-ServerStandard-TLS-TLS12
-FAIL QUICTransportParams-NonQUICServer-ClientBoth-ServerStandard-TLS-TLS13
 FAIL QUICTransportParams-NonQUICServer-ClientLegacy-ServerLegacy-TLS-TLS1
 FAIL QUICTransportParams-NonQUICServer-ClientLegacy-ServerLegacy-TLS-TLS11
 FAIL QUICTransportParams-NonQUICServer-ClientLegacy-ServerLegacy-TLS-TLS12
@@ -1291,11 +1289,9 @@ FAIL QUICTransportParams-NonQUICServer-ClientNeither-ServerStandard-TLS-TLS12
 FAIL QUICTransportParams-NonQUICServer-ClientStandard-ServerLegacy-TLS-TLS1
 FAIL QUICTransportParams-NonQUICServer-ClientStandard-ServerLegacy-TLS-TLS11
 FAIL QUICTransportParams-NonQUICServer-ClientStandard-ServerLegacy-TLS-TLS12
-FAIL QUICTransportParams-NonQUICServer-ClientStandard-ServerLegacy-TLS-TLS13
 FAIL QUICTransportParams-NonQUICServer-ClientStandard-ServerStandard-TLS-TLS1
 FAIL QUICTransportParams-NonQUICServer-ClientStandard-ServerStandard-TLS-TLS11
 FAIL QUICTransportParams-NonQUICServer-ClientStandard-ServerStandard-TLS-TLS12
-FAIL QUICTransportParams-NonQUICServer-ClientStandard-ServerStandard-TLS-TLS13
 FAIL RejectEmptyOCSPResponse-TLS-TLS1
 FAIL RejectEmptyOCSPResponse-TLS-TLS11
 FAIL RejectEmptyOCSPResponse-TLS-TLS12
