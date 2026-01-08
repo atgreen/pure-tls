@@ -21,6 +21,7 @@ A pure Common Lisp implementation of TLS 1.3 (RFC 8446).
 
 - X25519 (Curve25519)
 - secp256r1 (P-256)
+- secp384r1 (P-384)
 
 ## Installation
 
@@ -621,6 +622,7 @@ The test suite validates:
 - **Record layer**: Header format, content types, AEAD nonce construction
 - **X.509 certificates**: ASN.1 parsing, hostname verification, OID handling
 - **Bundled bad certificates**: Offline tests using certificates from [badssl.com](https://github.com/chromium/badssl.com) (expired, self-signed, known malware CAs)
+- **X.509 validation**: Certificate validation tests from Google's [x509test](https://github.com/google/x509test) project (RFC 5280 compliance, X.690 DER encoding)
 - **OpenSSL test suite**: Live TLS handshake tests adapted from OpenSSL's ssl-tests (basic handshakes, ALPN, SNI, key update, curves, mTLS)
 - **BoringSSL test suite**: Protocol compliance testing via shim binary (65% pass rate; failures are TLS 1.2 tests which pure-tls does not implement)
 - **Live validation**: TLS 1.3 connections to major sites (Google, Cloudflare, GitHub, etc.)
@@ -647,6 +649,7 @@ The shim implements the BoringSSL test protocol, allowing pure-tls to be tested 
 (pure-tls/test:run-record-tests)       ; Record layer
 (pure-tls/test:run-handshake-tests)    ; Key schedule, extensions
 (pure-tls/test:run-certificate-tests)  ; X.509 parsing
+(pure-tls/test:run-x509test-tests)     ; X.509 validation (RFC 5280)
 (pure-tls/test:run-network-tests)      ; Network tests (requires internet)
 
 ;; OpenSSL-adapted tests
@@ -664,8 +667,8 @@ The shim implements the BoringSSL test protocol, allowing pure-tls to be tested 
 
 ### Limited Support
 
-- **Elliptic curves** - Only X25519 and secp256r1 (P-256) are supported. The following are not implemented:
-  - P-384 (secp384r1), P-521 (secp521r1)
+- **Elliptic curves** - Only X25519, secp256r1 (P-256), and secp384r1 (P-384) are supported. The following are not implemented:
+  - P-521 (secp521r1)
   - Brainpool curves (brainpoolP256r1, brainpoolP384r1, brainpoolP512r1)
   - Legacy curves (sect233k1, sect283k1, secp224r1, etc.)
 
@@ -688,6 +691,12 @@ This project also includes test key material derived from the [BoringSSL](https:
 - `test/certs/boringssl/` - BoringSSL test keys used by the shim and local tests
 
 These files are used under the BoringSSL license. Copyright (c) BoringSSL Authors.
+
+This project also includes test certificates from Google's [x509test](https://github.com/google/x509test) project:
+
+- `test/certs/x509test/` - X.509 certificate validation test cases
+
+These files are used under the Apache License 2.0. Copyright (c) Google Inc.
 
 ## License
 
