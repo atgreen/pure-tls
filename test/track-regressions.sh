@@ -50,22 +50,25 @@ run_tests() {
 
     echo "Running BoringSSL tests..." >&2
 
-    # Run tests and capture output, using script to preserve stdout streaming
+    # Run tests and capture output directly to file
     if [ -n "$BORINGSSL_RUNNER" ]; then
         cd "$BORINGSSL_RUNNER"
-        timeout --foreground "$TIMEOUT" go test -v \
+        timeout "$TIMEOUT" go test -v \
             -shim-path="$SHIM_PATH" \
             -allow-unimplemented \
-            2>&1 | tee "$tmplog" || true
+            > "$tmplog" 2>&1 || true
         echo "DEBUG: go test completed" >&2
     else
-        timeout --foreground "$TIMEOUT" "$RUNNER_BIN" \
+        timeout "$TIMEOUT" "$RUNNER_BIN" \
             -test.v \
             -shim-path="$SHIM_PATH" \
             -allow-unimplemented \
-            2>&1 | tee "$tmplog" || true
+            > "$tmplog" 2>&1 || true
         echo "DEBUG: runner_test completed" >&2
     fi
+    # Display test output (especially failures)
+    grep -E "^(FAILED|UNIMPLEMENTED)" "$tmplog" || true
+    grep -oE "[0-9]+/[0-9]+/[0-9]+/[0-9]+/6551" "$tmplog" | tail -1 || true
 
     echo "DEBUG: Tests completed, extracting results..." >&2
 
