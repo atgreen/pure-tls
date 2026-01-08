@@ -217,19 +217,14 @@
     ;; are simply skipped - we don't reject the ClientHello for having them.
     ;; The client might be offering TLS 1.2 fallback support.
     ;; However, certain extensions MUST be rejected in a non-QUIC TLS server:
-    ;; - QUIC transport parameters (RFC 9001) are only valid in QUIC
+    ;; - QUIC transport parameters (RFC 9001, extension 57) are only valid in QUIC
+    ;; - Legacy QUIC params (65445) are in private-use range, just ignore them
     ;; - ALPS (Application-Layer Protocol Settings) is not implemented
     (when (find-extension extensions +extension-quic-transport-parameters+)
       (record-layer-write-alert (server-handshake-record-layer hs)
                                 +alert-level-fatal+ +alert-unsupported-extension+)
       (error 'tls-handshake-error
              :message ":UNEXPECTED_EXTENSION: QUIC transport parameters not allowed in TLS"
-             :state :wait-client-hello))
-    (when (find-extension extensions +extension-quic-transport-parameters-legacy+)
-      (record-layer-write-alert (server-handshake-record-layer hs)
-                                +alert-level-fatal+ +alert-unsupported-extension+)
-      (error 'tls-handshake-error
-             :message ":UNEXPECTED_EXTENSION: QUIC transport parameters (legacy) not allowed in TLS"
              :state :wait-client-hello))
     (when (find-extension extensions +extension-alps+)
       (record-layer-write-alert (server-handshake-record-layer hs)
