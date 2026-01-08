@@ -168,7 +168,7 @@
               (setf (server-handshake-private-key hs) priv-key))
             (when selected-alpn
               ;; Provider selected ALPN - skip normal ALPN negotiation later
-              (setf (server-handshake-selected-alpn hs) selected-alpn)))))))
+              (setf (server-handshake-selected-alpn hs) selected-alpn))))))
     ;; Call SNI callback if provided (for virtual hosting)
     ;; Only if certificate-provider didn't already set a certificate
     (when (and (server-handshake-sni-callback hs)
@@ -353,7 +353,7 @@
                    (error 'tls-alert-error
                           :level +alert-level-fatal+
                           :description +alert-no-application-protocol+))))))))
-    (setf (server-handshake-state hs) :send-server-hello)))
+    (setf (server-handshake-state hs) :send-server-hello))))
 
 ;;;; Server Message Generation
 
