@@ -2,14 +2,41 @@
 
 A pure Common Lisp implementation of TLS 1.3 (RFC 8446).
 
+## Quick Start
+
+### Server
+
+HTTPS server with automatic Let's Encrypt certificates:
+
+```lisp
+(asdf:load-system :pure-tls/acme+hunchentoot)
+
+(hunchentoot:start
+  (pure-tls/acme:make-acme-acceptor "example.com" "admin@example.com"))
+```
+
+The server obtains a certificate on first start and renews it automatically.
+
+### Client
+
+Use with drakma via cl+ssl compatibility layer (drop-in OpenSSL replacement):
+
+```lisp
+(asdf:load-system :pure-tls/cl+ssl-compat)
+(asdf:register-immutable-system "cl+ssl")
+(asdf:load-system :drakma)
+
+(drakma:http-request "https://example.com/")
+```
+
 ## Features
 
 - **Pure Common Lisp** - No foreign libraries or OpenSSL dependency
 - **TLS 1.3 only** - Modern, secure protocol with simplified handshake
+- **Automatic certificates** - Built-in ACME client for Let's Encrypt
 - **Gray streams** - Seamless integration with existing I/O code
 - **cl+ssl compatible** - Drop-in replacement API available
-- **Native trust store integration** - Uses Windows CryptoAPI and macOS Security.framework for certificate validation
-- **ACME client** - Automatic certificate management with Let's Encrypt (TLS-ALPN-01 challenge)
+- **Native trust store** - Uses Windows CryptoAPI and macOS Security.framework
 
 ### Supported Cipher Suites
 
@@ -39,7 +66,7 @@ Or add to your ASDF system:
 
 ## Usage
 
-### Basic HTTPS Client
+### HTTPS Client
 
 ```lisp
 (let ((socket (usocket:socket-connect "example.com" 443
@@ -171,24 +198,6 @@ application fully portable pure Common Lisp for TLS.
 ## ACME Client (Let's Encrypt)
 
 The `pure-tls/acme` system provides automatic certificate management using the ACME protocol (RFC 8555), compatible with Let's Encrypt and other ACME-compliant certificate authorities.
-
-### Hunchentoot Quick Start
-
-The easiest way to use automatic certificates is with Hunchentoot:
-
-```lisp
-(asdf:load-system :pure-tls/acme+hunchentoot)
-
-(defvar *server*
-  (pure-tls/acme:make-acme-acceptor "example.com" "admin@example.com"))
-
-(hunchentoot:start *server*)
-```
-
-That's it. The server will:
-1. Obtain a Let's Encrypt certificate on first start
-2. Handle TLS-ALPN-01 challenges inline on port 443
-3. Automatically renew the certificate before expiry
 
 ### Multi-Domain Certificates
 
