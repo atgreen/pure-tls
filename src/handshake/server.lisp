@@ -216,6 +216,27 @@
     ;; TLS 1.2-only extensions (renegotiation_info, extended_master_secret, NPN)
     ;; are simply skipped - we don't reject the ClientHello for having them.
     ;; The client might be offering TLS 1.2 fallback support.
+    ;; However, certain extensions MUST be rejected in a non-QUIC TLS server:
+    ;; - QUIC transport parameters (RFC 9001) are only valid in QUIC
+    ;; - ALPS (Application-Layer Protocol Settings) is not implemented
+    (when (find-extension extensions +extension-quic-transport-parameters+)
+      (record-layer-write-alert (server-handshake-record-layer hs)
+                                +alert-level-fatal+ +alert-unsupported-extension+)
+      (error 'tls-handshake-error
+             :message ":UNEXPECTED_EXTENSION: QUIC transport parameters not allowed in TLS"
+             :state :wait-client-hello))
+    (when (find-extension extensions +extension-quic-transport-parameters-legacy+)
+      (record-layer-write-alert (server-handshake-record-layer hs)
+                                +alert-level-fatal+ +alert-unsupported-extension+)
+      (error 'tls-handshake-error
+             :message ":UNEXPECTED_EXTENSION: QUIC transport parameters (legacy) not allowed in TLS"
+             :state :wait-client-hello))
+    (when (find-extension extensions +extension-alps+)
+      (record-layer-write-alert (server-handshake-record-layer hs)
+                                +alert-level-fatal+ +alert-unsupported-extension+)
+      (error 'tls-handshake-error
+             :message ":UNEXPECTED_EXTENSION: ALPS extension not supported"
+             :state :wait-client-hello))
     ;; RFC 8446 Section 4.1.2: legacy_compression_methods MUST contain exactly
     ;; one byte set to zero (null compression)
     (let ((compression-methods (client-hello-legacy-compression-methods client-hello)))

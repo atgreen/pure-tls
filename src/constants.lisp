@@ -102,6 +102,11 @@
 (defconstant +extension-post-handshake-auth+ 49)
 (defconstant +extension-signature-algorithms-cert+ 50)
 (defconstant +extension-key-share+ 51)
+;; QUIC transport parameters (RFC 9001) - only valid in QUIC, reject in TLS
+(defconstant +extension-quic-transport-parameters+ 57)        ; 0x39 - standard
+(defconstant +extension-quic-transport-parameters-legacy+ 65445)  ; 0xffa5 - legacy/draft
+;; ALPS (Application-Layer Protocol Settings) - Google extension, not implemented
+(defconstant +extension-alps+ 17513)  ; 0x4469
 
 ;;;; Named Groups (RFC 8446 Section 4.2.7)
 
