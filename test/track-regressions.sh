@@ -57,20 +57,15 @@ run_tests() {
             -shim-path="$SHIM_PATH" \
             -allow-unimplemented \
             > "$tmplog" 2>&1 || true
-        echo "DEBUG: go test completed" >&2
     else
         timeout "$TIMEOUT" "$RUNNER_BIN" \
             -test.v \
             -shim-path="$SHIM_PATH" \
             -allow-unimplemented \
             > "$tmplog" 2>&1 || true
-        echo "DEBUG: runner_test completed" >&2
     fi
-    # Display test output (especially failures)
-    grep -E "^(FAILED|UNIMPLEMENTED)" "$tmplog" || true
-    grep -oE "[0-9]+/[0-9]+/[0-9]+/[0-9]+/6551" "$tmplog" | tail -1 || true
-
-    echo "DEBUG: Tests completed, extracting results..." >&2
+    # Display final test progress
+    grep -oE "[0-9]+/[0-9]+/[0-9]+/[0-9]+/[0-9]+" "$tmplog" | tail -1 || true
 
     # Extract test results
     # Format: PASS or FAIL followed by test name
@@ -85,8 +80,6 @@ run_tests() {
         # Get unimplemented tests
         grep -oE "UNIMPLEMENTED \([^)]+\)" "$tmplog" | sed 's/UNIMPLEMENTED (\(.*\))/SKIP \1/' || true
     } | sort -k2 > "$output_file"
-
-    echo "DEBUG: Results extracted to $output_file ($(wc -l < "$output_file") lines)" >&2
 
     # Count results
     local failed=0
@@ -128,7 +121,6 @@ save_baseline() {
 }
 
 compare_results() {
-    echo "DEBUG: Starting compare_results" >&2
     if [ ! -f "$BASELINE_FILE" ]; then
         echo "No baseline found at $BASELINE_FILE"
         echo "Run with --save-baseline first"
@@ -138,9 +130,7 @@ compare_results() {
     local tmpresults=$(mktemp)
     trap "rm -f $tmpresults" RETURN
 
-    echo "DEBUG: Running tests..." >&2
     run_tests "$tmpresults"
-    echo "DEBUG: run_tests completed" >&2
 
     echo ""
     echo "=== Regression Analysis ==="
