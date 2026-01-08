@@ -8,7 +8,7 @@
 #
 # SPDX-License-Identifier: MIT
 
-set -e
+# Note: Not using set -e as grep returns non-zero for no matches
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
