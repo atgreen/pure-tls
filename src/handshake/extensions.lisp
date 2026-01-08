@@ -102,9 +102,9 @@
            (#.+extension-psk-key-exchange-modes+
             (parse-psk-key-exchange-modes-extension data))
            (#.+extension-pre-shared-key+
-            ;; Note: PSK needs context (client vs server hello)
-            ;; For now, return raw bytes - caller will parse appropriately
-            data)
+            ;; Parse as ClientHello format (identities + binders)
+            ;; ServerHello format (just selected index) is only 2 bytes
+            (parse-pre-shared-key-extension data :server-hello-p (= (length data) 2)))
            (otherwise data))))  ; Return raw bytes for unknown extensions
 
 (defun serialize-extension (ext)

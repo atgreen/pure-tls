@@ -760,19 +760,14 @@
     (let ((full-ticket (concat-octet-vectors
                         (encode-uint32-be age-add)
                         (encode-uint32-be ticket-lifetime)
-                        ticket-data))
-          ;; Include GREASE extension per RFC 8701 Section 4.1
-          ;; "Servers SHOULD select one or more GREASE extension values and
-          ;;  advertise them in... NewSessionTicket extensions"
-          (grease-ext-type (random-grease-value *grease-extension-values*)))
+                        ticket-data)))
+      ;; Note: GREASE extension temporarily removed for debugging
       (make-new-session-ticket
        :ticket-lifetime ticket-lifetime
        :ticket-age-add age-add
        :ticket-nonce nonce
        :ticket full-ticket
-       :extensions (list (make-tls-extension
-                          :type grease-ext-type
-                          :data (make-grease-ext :data (octet-vector))))))))
+       :extensions nil))))
 
 (defun send-new-session-ticket (hs)
   "Send a NewSessionTicket message to enable session resumption.

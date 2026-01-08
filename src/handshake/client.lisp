@@ -865,14 +865,15 @@
   (member algorithm (supported-signature-algorithms-tls13) :test #'eql))
 
 (defun signature-algorithms-for-private-key (private-key)
-  "Return the TLS 1.3 signature algorithms compatible with PRIVATE-KEY."
+  "Return the TLS 1.3 signature algorithms compatible with PRIVATE-KEY.
+   For RSA keys, only rsae algorithms are returned since standard RSA keys
+   (rsaEncryption OID) cannot use rsa_pss_pss_* algorithms - those require
+   id-RSASSA-PSS OID in the certificate."
   (case (signature-key-type-from-private-key private-key)
+    ;; Standard RSA keys (rsaEncryption OID) only support rsae algorithms
     (:rsa (list +sig-rsa-pss-rsae-sha256+
                 +sig-rsa-pss-rsae-sha384+
-                +sig-rsa-pss-rsae-sha512+
-                +sig-rsa-pss-pss-sha256+
-                +sig-rsa-pss-pss-sha384+
-                +sig-rsa-pss-pss-sha512+))
+                +sig-rsa-pss-rsae-sha512+))
     (:ecdsa-p256 (list +sig-ecdsa-secp256r1-sha256+))
     (:ecdsa-p384 (list +sig-ecdsa-secp384r1-sha384+))
     (:ecdsa-p521 (list +sig-ecdsa-secp521r1-sha512+))
