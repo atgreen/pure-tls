@@ -219,18 +219,12 @@
     ;; However, certain extensions MUST be rejected in a non-QUIC TLS server:
     ;; - QUIC transport parameters (RFC 9001, extension 57) are only valid in QUIC
     ;; - Legacy QUIC params (65445) are in private-use range, just ignore them
-    ;; - ALPS (Application-Layer Protocol Settings) is not implemented
+    ;; - ALPS (17513) is ignored per RFC 8446 - server ignores unknown extensions
     (when (find-extension extensions +extension-quic-transport-parameters+)
       (record-layer-write-alert (server-handshake-record-layer hs)
                                 +alert-level-fatal+ +alert-unsupported-extension+)
       (error 'tls-handshake-error
              :message ":UNEXPECTED_EXTENSION: QUIC transport parameters not allowed in TLS"
-             :state :wait-client-hello))
-    (when (find-extension extensions +extension-alps+)
-      (record-layer-write-alert (server-handshake-record-layer hs)
-                                +alert-level-fatal+ +alert-unsupported-extension+)
-      (error 'tls-handshake-error
-             :message ":UNEXPECTED_EXTENSION: ALPS extension not supported"
              :state :wait-client-hello))
     ;; RFC 8446 Section 4.1.2: legacy_compression_methods MUST contain exactly
     ;; one byte set to zero (null compression)
