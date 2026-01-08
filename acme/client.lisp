@@ -20,31 +20,37 @@
   "https://acme-v02.api.letsencrypt.org/directory"
   "Let's Encrypt production directory.")
 
-(defparameter *directory-url* *staging-url*
+(defparameter *directory-url* *production-url*
   "Current ACME directory URL. Defaults to staging for safety.")
 
 (defparameter *skip-tls-verify* nil
   "Skip TLS certificate verification (for testing with Pebble).")
 
-(defparameter *cert-directory*
-  (merge-pathnames "certs/" (user-homedir-pathname))
-  "Directory for storing certificates.")
+(defvar *cert-directory* nil
+  "Directory for storing certificates. Defaults to ~/certs/ at runtime.")
+
+(defun cert-directory ()
+  "Get the certificate directory, defaulting to ~/certs/."
+  (or *cert-directory*
+      (merge-pathnames "certs/" (user-homedir-pathname))))
 
 (defun use-production ()
   "Switch to Let's Encrypt production. Call before acme-init."
   (setf *directory-url* *production-url*))
 
 (defun use-staging ()
-  "Switch to Let's Encrypt staging (default)."
+  "Switch to Let's Encrypt staging."
   (setf *directory-url* *staging-url*))
+  "Switch to Let's Encrypt staging (default)."
+  (setf *directory-url* *production-url*))
 
 (defun cert-path (domain)
   "Return the certificate file path for a domain."
-  (merge-pathnames (format nil "~A.pem" domain) *cert-directory*))
+  (merge-pathnames (format nil "~A.pem" domain) (cert-directory)))
 
 (defun key-path (domain)
   "Return the private key file path for a domain."
-  (merge-pathnames (format nil "~A-key.pem" domain) *cert-directory*))
+  (merge-pathnames (format nil "~A-key.pem" domain) (cert-directory)))
 
 (defun certificates-exist-p (domain)
   "Check if certificate and key files exist for a domain."
@@ -221,7 +227,8 @@
 
 (defun acme-register-account (email)
   "Register new account or fetch existing one.
-   Returns the account URL on success, NIL on failure."
+   Returns the account URL on success.
+   Signals ACME-ERROR with details on failure."
   (unless *account-key*
     (setf *account-key* (generate-account-key)))
 
@@ -230,16 +237,23 @@
                  ;; Use vector for contact array (cl-json quirk)
                  `(("termsOfServiceAgreed" . t)
                    ("contact" . #(,(format nil "mailto:~A" email)))))
-    (declare (ignore response))
     (cond
       ((member status '(200 201))
        (setf *account-url* location)
        location)
-      (t nil))))
+      (t
+       (let ((error-type (cdr (assoc :type response)))
+             (error-detail (cdr (assoc :detail response))))
+         (error 'acme-error
+                :message (format nil "Account registration HTTP ~A: ~A - ~A"
+                                 status
+                                 (or error-type "unknown")
+                                 (or error-detail "no details"))))))))
 
 (defun acme-new-order (domains)
   "Create new certificate order for domains.
-   Returns (VALUES order-response order-url) on success."
+   Returns (VALUES order-response order-url) on success.
+   Signals ACME-ORDER-ERROR with details on failure."
   (let* ((domain-list (if (listp domains) domains (list domains)))
          ;; Use vector for JSON array encoding (cl-json quirk)
          (identifiers (coerce (mapcar (lambda (d)
@@ -253,31 +267,58 @@
                    :kid *account-url*)
       (if (member status '(200 201))
           (values response location)
-          nil))))
+          ;; Extract error details from response
+          (let ((error-type (cdr (assoc :type response)))
+                (error-detail (cdr (assoc :detail response))))
+            (error 'acme-order-error
+                   :message (format nil "HTTP ~A: ~A - ~A"
+                                    status
+                                    (or error-type "unknown")
+                                    (or error-detail "no details"))))))))
 
 (defun acme-get-authorization (auth-url)
   "Get authorization details including challenges."
   (acme-post auth-url nil :kid *account-url*))
 
 (defun acme-respond-challenge (challenge-url)
-  "Tell ACME server to validate the challenge."
-  (acme-post challenge-url '(()) :kid *account-url*))
+  "Tell ACME server to validate the challenge.
+   Payload must be empty JSON object {}."
+  (format t "~&[ACME-DEBUG] Responding to challenge at ~A~%" challenge-url)
+  (force-output)
+  (multiple-value-bind (response status)
+      ;; ACME requires empty JSON object {}, use hash-table for cl-json
+      (acme-post challenge-url (make-hash-table) :kid *account-url*)
+    (format t "~&[ACME-DEBUG] Challenge response status: ~A~%" status)
+    (format t "~&[ACME-DEBUG] Challenge response: ~A~%" response)
+    (force-output)
+    (values response status)))
 
-(defun acme-poll-status (url &key (max-attempts 30) (delay 2))
+(defun acme-poll-status (url &key (max-attempts 30) (delay 2) (wait-for-valid nil))
   "Poll order/authorization status until ready or failed.
    Returns (VALUES response status-keyword) where status-keyword is
-   :valid, :ready, :invalid, or :timeout."
+   :valid, :ready, :invalid, or :timeout.
+   If WAIT-FOR-VALID is true, keeps polling through 'ready' and 'processing' states."
+  (format t "~&[ACME-DEBUG] Polling status at ~A~%" url)
+  (force-output)
   (loop for attempt from 1 to max-attempts
         do (multiple-value-bind (response status)
                (acme-post url nil :kid *account-url*)
              (declare (ignore status))
              (let ((state (cdr (assoc :status response))))
+               (format t "~&[ACME-DEBUG] Poll ~A/~A: status=~A~%" attempt max-attempts state)
+               (force-output)
                (cond
                  ((string= state "valid")
                   (return (values response :valid)))
                  ((string= state "ready")
-                  (return (values response :ready)))
+                  (if wait-for-valid
+                      (sleep delay)  ; Keep waiting for valid
+                      (return (values response :ready))))
+                 ((string= state "processing")
+                  (sleep delay))  ; Always wait through processing
                  ((string= state "invalid")
+                  (format t "~&[ACME-DEBUG] INVALID - full response: ~A~%" response)
+                  (force-output)
                   (return (values response :invalid)))
                  ((string= state "pending")
                   (sleep delay))
@@ -287,9 +328,16 @@
 
 (defun acme-finalize-order (finalize-url csr-der)
   "Submit CSR to finalize the order."
-  (acme-post finalize-url
-             `(("csr" . ,(base64url-encode csr-der)))
-             :kid *account-url*))
+  (format t "~&[ACME-DEBUG] Finalizing order at ~A~%" finalize-url)
+  (force-output)
+  (multiple-value-bind (response status)
+      (acme-post finalize-url
+                 `(("csr" . ,(base64url-encode csr-der)))
+                 :kid *account-url*)
+    (format t "~&[ACME-DEBUG] Finalize response status: ~A~%" status)
+    (format t "~&[ACME-DEBUG] Finalize response: ~A~%" response)
+    (force-output)
+    (values response status)))
 
 (defun acme-download-certificate (cert-url)
   "Download the issued certificate chain (returns PEM string)."

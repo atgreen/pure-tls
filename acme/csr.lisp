@@ -13,9 +13,31 @@
 ;;; ----------------------------------------------------------------------------
 
 (defun generate-domain-key ()
-  "Generate RSA key pair for the certificate (separate from account key).
+  "Generate RSA key pair for the certificate with standard e=65537.
    Returns (values private-key public-key)."
-  (ironclad:generate-key-pair :rsa :num-bits 2048))
+  (generate-rsa-key-with-e65537 2048))
+
+(defun generate-rsa-key-with-e65537 (num-bits)
+  "Generate RSA key pair with the standard public exponent e=65537.
+   This is required for X.509 compatibility (ironclad uses random e by default)."
+  (let* ((e 65537)
+         (l (floor num-bits 2)))
+    ;; Generate primes p and q such that gcd(e, (p-1)(q-1)) = 1
+    (multiple-value-bind (p q n)
+        (loop for a = (ironclad:generate-prime (- num-bits l))
+              for b = (ironclad:generate-prime l)
+              for c = (* a b)
+              ;; Check that e is coprime to phi(n) = (p-1)(q-1)
+              until (and (/= a b)
+                         (= num-bits (integer-length c))
+                         (= 1 (gcd e (* (1- a) (1- b)))))
+              finally (return (values a b c)))
+      (let* ((phi (* (1- p) (1- q)))
+             (d (ironclad::modular-inverse e phi)))
+        (format t "~&[ACME-DEBUG] Generated RSA key with e=65537, n=~A bits~%" (integer-length n))
+        (force-output)
+        (values (ironclad:make-private-key :rsa :d d :n n :p p :q q)
+                (ironclad:make-public-key :rsa :e e :n n))))))
 
 ;;; ----------------------------------------------------------------------------
 ;;; CSR generation
@@ -56,10 +78,62 @@
      (encode-rsa-public-key private-key public-key)   ; public key
      (encode-extension-request all-domains))))        ; attributes (SAN)
 
-(defun sign-csr (private-key csr-info)
-  "Sign CSR info with RSA-SHA256."
-  (let* ((digest (ironclad:digest-sequence :sha256 csr-info))
-         (signature (ironclad:sign-message private-key digest)))
+(defparameter *sha256-digest-info-prefix*
+  ;; DER-encoded DigestInfo prefix for SHA-256
+  ;; SEQUENCE { SEQUENCE { OID 2.16.840.1.101.3.4.2.1, NULL }, OCTET STRING (32 bytes) }
+  #(#x30 #x31 #x30 #x0d #x06 #x09 #x60 #x86 #x48 #x01 #x65 #x03 #x04 #x02 #x01
+    #x05 #x00 #x04 #x20)
+  "DER-encoded DigestInfo prefix for SHA-256 (without the hash).")
+
+(defun pkcs1-v15-pad-sha256 (message key-size-bytes)
+  "Create PKCS#1 v1.5 padded message for SHA-256 signature.
+   Returns the padded EM (encoded message) ready for RSA operation."
+  ;; 1. Hash the message with SHA-256
+  (let* ((hash (ironclad:digest-sequence :sha256 message))
+         ;; 2. Create DigestInfo = prefix || hash
+         (digest-info (concatenate '(vector (unsigned-byte 8))
+                                   *sha256-digest-info-prefix*
+                                   hash))
+         ;; 3. Calculate padding length
+         (ps-len (- key-size-bytes (length digest-info) 3))
+         ;; 4. Create padded message: 0x00 || 0x01 || PS || 0x00 || DigestInfo
+         (padded (make-array key-size-bytes :element-type '(unsigned-byte 8))))
+    (when (< ps-len 8)
+      (error "RSA key too small for SHA-256 signature"))
+    ;; Build: 0x00 || 0x01 || PS (0xFF bytes) || 0x00 || DigestInfo
+    (setf (aref padded 0) #x00)
+    (setf (aref padded 1) #x01)
+    (fill padded #xff :start 2 :end (+ 2 ps-len))
+    (setf (aref padded (+ 2 ps-len)) #x00)
+    (replace padded digest-info :start1 (+ 3 ps-len))
+    padded))
+
+(defun sign-csr (private-key public-key csr-info)
+  "Sign CSR info with RSA-SHA256 (PKCS#1 v1.5).
+   Manually constructs PKCS#1 v1.5 padding, then does raw RSA."
+  (let* ((priv-data (ironclad:destructure-private-key private-key))
+         (pub-data (ironclad:destructure-public-key public-key))
+         (n (getf priv-data :n))
+         (d (getf priv-data :d))
+         (e (getf pub-data :e))  ; Get actual e from public key
+         (key-size-bytes (ceiling (integer-length n) 8))
+         ;; Create PKCS#1 v1.5 padded message
+         (padded (pkcs1-v15-pad-sha256 csr-info key-size-bytes))
+         ;; Convert to integer for RSA operation
+         (m (ironclad:octets-to-integer padded))
+         ;; RSA signature: s = m^d mod n
+         (s (ironclad:expt-mod m d n))
+         ;; Convert back to bytes, preserving leading zeros
+         (signature (ironclad:integer-to-octets s :n-bits (* key-size-bytes 8))))
+    (format t "~&[ACME-DEBUG] PKCS1-v15-SHA256: key=~A bytes, e=~A bits, sig=~A bytes~%"
+            key-size-bytes (integer-length e) (length signature))
+    ;; Self-verify: decrypt signature and compare with padded message
+    (let* ((decrypted (ironclad:expt-mod s e n))
+           (matches (= m decrypted)))
+      (format t "~&[ACME-DEBUG] Self-verify: m == s^e mod n ? ~A~%" matches)
+      (unless matches
+        (format t "~&[ACME-DEBUG] ERROR: Signature self-verification failed!~%")))
+    (force-output)
     signature))
 
 (defun generate-csr (private-key public-key domains)
@@ -68,7 +142,7 @@
    DOMAINS is a string or list of strings for the certificate.
    Returns the CSR as a byte vector."
   (let* ((csr-info (build-csr-info private-key public-key domains))
-         (signature (sign-csr private-key csr-info))
+         (signature (sign-csr private-key public-key csr-info))
          ;; CertificationRequest ::= SEQUENCE {
          ;;   certificationRequestInfo,
          ;;   signatureAlgorithm AlgorithmIdentifier,
@@ -81,16 +155,27 @@
                csr-info
                algorithm-id
                (encode-bit-string signature))))
+    ;; Debug: save CSR for inspection
+    (let ((debug-path (merge-pathnames "debug-csr.der" (cert-directory))))
+      (ensure-directories-exist debug-path)
+      (with-open-file (out debug-path :direction :output
+                                       :if-exists :supersede
+                                       :element-type '(unsigned-byte 8))
+        (write-sequence csr out))
+      (format t "~&[ACME-DEBUG] CSR saved to ~A~%" debug-path)
+      (format t "~&[ACME-DEBUG] Verify with: openssl req -in ~A -inform DER -noout -text~%" debug-path)
+      (force-output))
     csr))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Key and certificate saving
 ;;; ----------------------------------------------------------------------------
 
-(defun save-private-key-pem (private-key path)
-  "Save RSA private key to PEM file."
+(defun save-private-key-pem (private-key public-key path)
+  "Save RSA private key to PEM file.
+   PUBLIC-KEY is needed because ironclad's private key doesn't expose :e."
   (ensure-directories-exist path)
-  (let* ((der (encode-rsa-private-key-der private-key))
+  (let* ((der (encode-rsa-private-key-der private-key public-key))
          (pem (wrap-pem "RSA PRIVATE KEY" der)))
     (with-open-file (out path :direction :output
                               :if-exists :supersede
@@ -170,14 +255,14 @@
              (finalize-url (cdr (assoc :finalize order))))
 
         ;; Save the private key immediately (before finalization, in case of failure)
-        (save-private-key-pem private-key (key-path domain))
+        (save-private-key-pem private-key public-key (key-path domain))
 
         ;; Finalize the order with CSR
         (acme-finalize-order finalize-url csr)
 
-        ;; Poll until order is ready
+        ;; Poll until order is valid (wait through ready/processing states)
         (multiple-value-bind (final-order status)
-            (acme-poll-status order-url)
+            (acme-poll-status order-url :wait-for-valid t)
           (unless (eq status :valid)
             (error 'acme-order-error
                    :message (format nil "Order finalization failed: ~A" status)))

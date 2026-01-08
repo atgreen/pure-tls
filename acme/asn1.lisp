@@ -35,6 +35,10 @@
   '(1 2 840 113549 1 1 11)
   "SHA-256 with RSA signature OID: 1.2.840.113549.1.1.11")
 
+(defparameter *oid-sha1-with-rsa*
+  '(1 2 840 113549 1 1 5)
+  "SHA-1 with RSA signature OID: 1.2.840.113549.1.1.5")
+
 (defparameter *oid-common-name*
   '(2 5 4 3)
   "Common Name (CN) OID: 2.5.4.3")
@@ -50,6 +54,18 @@
 (defparameter *oid-acme-identifier*
   '(1 3 6 1 5 5 7 1 31)
   "ACME Identifier extension OID for TLS-ALPN-01: 1.3.6.1.5.5.7.1.31")
+
+(defparameter *oid-ecdsa-with-sha256*
+  '(1 2 840 10045 4 3 2)
+  "ECDSA with SHA-256 OID: 1.2.840.10045.4.3.2")
+
+(defparameter *oid-ec-public-key*
+  '(1 2 840 10045 2 1)
+  "EC Public Key OID: 1.2.840.10045.2.1")
+
+(defparameter *oid-secp256r1*
+  '(1 2 840 10045 3 1 7)
+  "secp256r1 (P-256) curve OID: 1.2.840.10045.3.1.7")
 
 ;;; ----------------------------------------------------------------------------
 ;;; Basic DER Encoding
@@ -234,11 +250,16 @@
 
 (defun get-rsa-public-key-bytes (private-key public-key)
   "Extract RSA public key components (n, e) from key pair.
-   PRIVATE-KEY provides N, PUBLIC-KEY provides E."
-  (let ((priv-data (ironclad:destructure-private-key private-key))
-        (pub-data (ironclad:destructure-public-key public-key)))
-    (values (getf priv-data :n)  ; modulus from private key
-            (getf pub-data :e)))) ; public exponent from public key
+   Uses the actual public exponent from the key (ironclad uses random e, not 65537)."
+  (let* ((priv-data (ironclad:destructure-private-key private-key))
+         (pub-data (ironclad:destructure-public-key public-key))
+         (n (getf priv-data :n))
+         ;; Get E from public key - ironclad generates random e, so it can be large
+         (e (getf pub-data :e)))
+    (format t "~&[ACME-DEBUG] RSA modulus N bit-length: ~A~%" (integer-length n))
+    (format t "~&[ACME-DEBUG] RSA exponent E bit-length: ~A~%" (integer-length e))
+    (force-output)
+    (values n e)))
 
 (defun encode-rsa-public-key (private-key public-key)
   "Encode RSA public key in SubjectPublicKeyInfo format."
@@ -258,14 +279,17 @@
       (encode-sequence algorithm-id
                        (encode-bit-string rsa-public-key)))))
 
-(defun encode-rsa-private-key-der (private-key)
-  "Encode RSA private key in PKCS#1 DER format."
-  (let* ((key-data (ironclad:destructure-private-key private-key))
-         (n (getf key-data :n))
-         (e (getf key-data :e))
-         (d (getf key-data :d))
-         (p (getf key-data :p))
-         (q (getf key-data :q))
+(defun encode-rsa-private-key-der (private-key public-key)
+  "Encode RSA private key in PKCS#1 DER format.
+   PUBLIC-KEY is needed because ironclad's private key doesn't expose :e."
+  (let* ((priv-data (ironclad:destructure-private-key private-key))
+         (pub-data (ironclad:destructure-public-key public-key))
+         (n (getf priv-data :n))
+         ;; Get E from public key - ironclad uses random e
+         (e (getf pub-data :e))
+         (d (getf priv-data :d))
+         (p (getf priv-data :p))
+         (q (getf priv-data :q))
          ;; Calculate derived values
          (dp (mod d (1- p)))
          (dq (mod d (1- q)))
@@ -281,6 +305,55 @@
      (encode-integer-bytes (integer-to-bytes dp))
      (encode-integer-bytes (integer-to-bytes dq))
      (encode-integer-bytes (integer-to-bytes qinv)))))
+
+;;; ----------------------------------------------------------------------------
+;;; EC Key Encoding
+;;; ----------------------------------------------------------------------------
+
+(defun encode-ec-public-key (public-key)
+  "Encode EC public key in SubjectPublicKeyInfo format."
+  (let* ((key-data (ironclad:destructure-public-key public-key))
+         (public-point (getf key-data :y)))  ; Uncompressed point: 04 || X || Y
+    ;; SubjectPublicKeyInfo ::= SEQUENCE {
+    ;;   algorithm AlgorithmIdentifier,
+    ;;   subjectPublicKey BIT STRING
+    ;; }
+    ;; AlgorithmIdentifier for EC: SEQUENCE { ecPublicKey OID, namedCurve OID }
+    (encode-sequence
+     (encode-sequence
+      (encode-oid *oid-ec-public-key*)
+      (encode-oid *oid-secp256r1*))
+     (encode-bit-string public-point))))
+
+(defun encode-ecdsa-signature (raw-signature)
+  "Convert raw ECDSA signature (r || s) to DER-encoded format.
+   ECDSA-Sig-Value ::= SEQUENCE { r INTEGER, s INTEGER }"
+  (let* ((half-len (/ (length raw-signature) 2))
+         (r-bytes (subseq raw-signature 0 half-len))
+         (s-bytes (subseq raw-signature half-len)))
+    (encode-sequence
+     (encode-integer-bytes r-bytes)
+     (encode-integer-bytes s-bytes))))
+
+(defun encode-ec-private-key-pem (private-key)
+  "Encode EC private key in SEC1/PEM format for pure-tls."
+  (let* ((key-data (ironclad:destructure-private-key private-key))
+         (d-bytes (getf key-data :x))      ; Private key scalar
+         (public-point (getf key-data :y)) ; Public point
+         ;; ECPrivateKey ::= SEQUENCE {
+         ;;   version INTEGER { ecPrivkeyVer1(1) },
+         ;;   privateKey OCTET STRING,
+         ;;   parameters [0] ECParameters OPTIONAL,
+         ;;   publicKey [1] BIT STRING OPTIONAL
+         ;; }
+         (ec-private-key (encode-sequence
+                          (encode-integer 1)  ; version
+                          (encode-octet-string d-bytes)
+                          ;; [0] curve OID
+                          (encode-context-tag 0 (encode-oid *oid-secp256r1*))
+                          ;; [1] public key
+                          (encode-context-tag 1 (encode-bit-string public-point)))))
+    (wrap-pem "EC PRIVATE KEY" ec-private-key)))
 
 ;;; ----------------------------------------------------------------------------
 ;;; PEM Encoding

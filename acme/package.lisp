@@ -24,6 +24,7 @@
 
    ;; Certificate paths
    #:*cert-directory*
+   #:cert-directory
    #:cert-path
    #:key-path
    #:certificates-exist-p

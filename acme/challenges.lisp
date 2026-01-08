@@ -17,10 +17,11 @@
 
 (defun generate-validation-certificate (domain key-authorization)
   "Generate a self-signed validation certificate for TLS-ALPN-01.
+   Uses ECDSA P-256 for TLS 1.3 compatibility.
    Returns (VALUES cert-pem key-pem private-key)."
-  ;; Generate a temporary RSA key for the validation certificate
+  ;; Generate ECDSA P-256 key (avoids RSA-PSS issues in TLS 1.3)
   (multiple-value-bind (private-key public-key)
-      (ironclad:generate-key-pair :rsa :num-bits 2048)
+      (ironclad:generate-key-pair :secp256r1)
     (let* (
          ;; Hash the key authorization for the acmeIdentifier extension
          (key-auth-hash (ironclad:digest-sequence
@@ -49,10 +50,9 @@
                     (encode-context-tag 0 (encode-integer 2))
                     ;; serialNumber
                     (encode-integer serial)
-                    ;; signature algorithm (SHA256 with RSA)
+                    ;; signature algorithm (ECDSA with SHA256)
                     (encode-sequence
-                     (encode-oid *oid-sha256-with-rsa*)
-                     (encode-null))
+                     (encode-oid *oid-ecdsa-with-sha256*))
                     ;; issuer (self-signed, same as subject)
                     subject
                     ;; validity
@@ -60,31 +60,33 @@
                     ;; subject
                     subject
                     ;; subjectPublicKeyInfo
-                    (encode-rsa-public-key private-key public-key)
+                    (encode-ec-public-key public-key)
                     ;; extensions [3]
                     (encode-x509-extensions (list san-ext acme-id-ext))))
-         ;; Sign TBSCertificate
-         (signature (let ((digest (ironclad:digest-sequence :sha256 tbs-cert)))
-                      (ironclad:sign-message private-key digest)))
+         ;; Sign TBSCertificate with ECDSA (must DER-encode the signature)
+         (raw-signature (let ((digest (ironclad:digest-sequence :sha256 tbs-cert)))
+                          (ironclad:sign-message private-key digest)))
+         (der-signature (encode-ecdsa-signature raw-signature))
          ;; Build Certificate
          (certificate (encode-sequence
                        tbs-cert
                        (encode-sequence
-                        (encode-oid *oid-sha256-with-rsa*)
-                        (encode-null))
-                       (encode-bit-string signature)))
+                        (encode-oid *oid-ecdsa-with-sha256*))
+                       (encode-bit-string der-signature)))
          ;; Convert to PEM
          (cert-pem (wrap-pem "CERTIFICATE" certificate))
-         (key-der (encode-rsa-private-key-der private-key))
-         (key-pem (wrap-pem "RSA PRIVATE KEY" key-der)))
+         (key-pem (encode-ec-private-key-pem private-key)))
 
       (values cert-pem key-pem private-key))))
 
 (defun save-temp-validation-files (cert-pem key-pem)
   "Save validation certificate and key to temporary files.
    Returns (VALUES cert-path key-path)."
-  (let ((cert-path (merge-pathnames "acme-validation-cert.pem" *cert-directory*))
-        (key-path (merge-pathnames "acme-validation-key.pem" *cert-directory*)))
+  (let ((cert-path (merge-pathnames "acme-validation-cert.pem" (cert-directory)))
+        (key-path (merge-pathnames "acme-validation-key.pem" (cert-directory)))
+        ;; Also save a debug copy that won't be deleted
+        (debug-cert-path (merge-pathnames "acme-validation-cert-DEBUG.pem" (cert-directory)))
+        (debug-key-path (merge-pathnames "acme-validation-key-DEBUG.pem" (cert-directory))))
     (ensure-directories-exist cert-path)
     (with-open-file (out cert-path :direction :output
                                    :if-exists :supersede)
@@ -92,13 +94,25 @@
     (with-open-file (out key-path :direction :output
                                   :if-exists :supersede)
       (write-string key-pem out))
+    ;; Save debug copies
+    (with-open-file (out debug-cert-path :direction :output
+                                         :if-exists :supersede)
+      (write-string cert-pem out))
+    (with-open-file (out debug-key-path :direction :output
+                                        :if-exists :supersede)
+      (write-string key-pem out))
+    (format t "~&[ACME-DEBUG] Debug cert saved to ~A~%" debug-cert-path)
+    (force-output)
     #+sbcl (sb-posix:chmod (namestring key-path) #o600)
+    #+sbcl (sb-posix:chmod (namestring debug-key-path) #o600)
     (values cert-path key-path)))
 
 (defun start-tls-alpn-server (domain key-authorization &optional (port 443))
   "Start TLS-ALPN-01 validation server on the specified port.
    The server responds to connections with ALPN 'acme-tls/1' using
    a self-signed certificate containing the acmeIdentifier extension."
+  (format t "~&[ACME-DEBUG] Generating validation certificate for ~A~%" domain)
+  (force-output)
   ;; Generate validation certificate
   (multiple-value-bind (cert-pem key-pem)
       (generate-validation-certificate domain key-authorization)
@@ -106,12 +120,18 @@
     ;; Save to temp files (pure-tls needs file paths)
     (multiple-value-bind (cert-path key-path)
         (save-temp-validation-files cert-pem key-pem)
+      (format t "~&[ACME-DEBUG] Validation cert saved to ~A~%" cert-path)
+      (force-output)
 
       ;; Create TCP listener
+      (format t "~&[ACME-DEBUG] Starting TLS-ALPN-01 server on port ~A~%" port)
+      (force-output)
       (let ((listen-socket (usocket:socket-listen "0.0.0.0" port
                                                   :reuse-address t
                                                   :element-type '(unsigned-byte 8)
                                                   :backlog 5)))
+        (format t "~&[ACME-DEBUG] TLS-ALPN-01 server listening on port ~A~%" port)
+        (force-output)
         (setf *tls-alpn-server*
               (list :socket listen-socket
                     :cert-path cert-path
@@ -147,20 +167,27 @@
 
 (defun handle-tls-alpn-connection (client-socket cert-path key-path)
   "Handle a TLS-ALPN-01 validation connection."
+  (format t "~&[ACME-DEBUG] Received TLS-ALPN connection~%")
+  (force-output)
   (handler-case
       (let ((client-stream (usocket:socket-stream client-socket)))
+        (format t "~&[ACME-DEBUG] Starting TLS handshake with ALPN acme-tls/1~%")
+        (force-output)
         ;; Create TLS server stream with ONLY acme-tls/1 ALPN
         (let ((tls-stream (pure-tls:make-tls-server-stream
                           client-stream
                           :certificate (namestring cert-path)
                           :key (namestring key-path)
                           :alpn-protocols '("acme-tls/1"))))
+          (format t "~&[ACME-DEBUG] TLS handshake completed successfully~%")
+          (force-output)
           ;; The connection will be closed by the ACME server after validation
           ;; Just wait briefly and close
           (sleep 1)
           (close tls-stream)))
     (error (e)
-      (declare (ignore e))))
+      (format t "~&[ACME-DEBUG] TLS handshake error: ~A~%" e)
+      (force-output)))
   (ignore-errors (usocket:socket-close client-socket)))
 
 (defun stop-tls-alpn-server ()
