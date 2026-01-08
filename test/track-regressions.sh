@@ -82,8 +82,8 @@ run_tests() {
     local failed=0
     local skipped=0
     if [ -s "$output_file" ]; then
-        failed=$(grep "^FAIL " "$output_file" | wc -l | tr -d ' ')
-        skipped=$(grep "^SKIP " "$output_file" | wc -l | tr -d ' ')
+        failed=$(grep -c "^FAIL " "$output_file" 2>/dev/null || echo 0)
+        skipped=$(grep -c "^SKIP " "$output_file" 2>/dev/null || echo 0)
     fi
 
     # Get total from the progress line
