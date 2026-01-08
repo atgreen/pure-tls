@@ -64,6 +64,8 @@ run_tests() {
             2>&1 | tee "$tmplog" || true
     fi
 
+    echo "DEBUG: Tests completed, extracting results..." >&2
+
     # Extract test results
     # Format: PASS or FAIL followed by test name
     # Failed tests show as "FAILED (TestName)"
@@ -77,6 +79,8 @@ run_tests() {
         # Get unimplemented tests
         grep -oE "UNIMPLEMENTED \([^)]+\)" "$tmplog" | sed 's/UNIMPLEMENTED (\(.*\))/SKIP \1/' || true
     } | sort -k2 > "$output_file"
+
+    echo "DEBUG: Results extracted to $output_file ($(wc -l < "$output_file") lines)" >&2
 
     # Count results
     local failed=0
@@ -116,6 +120,7 @@ save_baseline() {
 }
 
 compare_results() {
+    echo "DEBUG: Starting compare_results" >&2
     if [ ! -f "$BASELINE_FILE" ]; then
         echo "No baseline found at $BASELINE_FILE"
         echo "Run with --save-baseline first"
@@ -125,7 +130,9 @@ compare_results() {
     local tmpresults=$(mktemp)
     trap "rm -f $tmpresults" RETURN
 
+    echo "DEBUG: Running tests..." >&2
     run_tests "$tmpresults"
+    echo "DEBUG: run_tests completed" >&2
 
     echo ""
     echo "=== Regression Analysis ==="
