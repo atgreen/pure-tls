@@ -55,13 +55,17 @@ run_tests() {
         timeout "$TIMEOUT" go test -v \
             -shim-path="$SHIM_PATH" \
             -allow-unimplemented \
-            2>&1 | tee "$tmplog" || true
+            2>&1 | tee "$tmplog"
+        local test_exit=$?
+        echo "DEBUG: go test exited with code $test_exit" >&2
     else
         timeout "$TIMEOUT" "$RUNNER_BIN" \
             -test.v \
             -shim-path="$SHIM_PATH" \
             -allow-unimplemented \
-            2>&1 | tee "$tmplog" || true
+            2>&1 | tee "$tmplog"
+        local test_exit=$?
+        echo "DEBUG: runner_test exited with code $test_exit" >&2
     fi
 
     echo "DEBUG: Tests completed, extracting results..." >&2
