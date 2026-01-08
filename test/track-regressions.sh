@@ -98,11 +98,13 @@ run_tests() {
 
     # Get total from the progress line
     local progress_line
-    progress_line=$(grep -oE "[0-9]+/[0-9]+/[0-9]+/[0-9]+/[0-9]+" "$tmplog" | tail -1) || true
+    progress_line=$(grep -oE "[0-9]+/[0-9]+/[0-9]+/[0-9]+/[0-9]+" "$tmplog" | tail -1 | tr -d '\n\r') || true
     if [ -n "$progress_line" ]; then
         local total done_count passed
-        total=$(echo "$progress_line" | cut -d/ -f5)
-        done_count=$(echo "$progress_line" | cut -d/ -f3)
+        total=$(echo "$progress_line" | cut -d/ -f5 | tr -d '[:space:]')
+        done_count=$(echo "$progress_line" | cut -d/ -f3 | tr -d '[:space:]')
+        failed=$(echo "$failed" | tr -d '[:space:]')
+        skipped=$(echo "$skipped" | tr -d '[:space:]')
         passed=$((done_count - failed - skipped))
         echo "" >&2
         echo "=== Summary ===" >&2
