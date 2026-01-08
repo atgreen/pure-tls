@@ -172,121 +172,124 @@ application fully portable pure Common Lisp for TLS.
 
 The `pure-tls/acme` system provides automatic certificate management using the ACME protocol (RFC 8555), compatible with Let's Encrypt and other ACME-compliant certificate authorities.
 
-### Quick Start
+### Hunchentoot Quick Start
+
+The easiest way to use automatic certificates is with Hunchentoot:
+
+```lisp
+(asdf:load-system :pure-tls/acme+hunchentoot)
+
+(defvar *server*
+  (pure-tls/acme:make-acme-acceptor "example.com" "admin@example.com"))
+
+(hunchentoot:start *server*)
+```
+
+That's it. The server will:
+1. Obtain a Let's Encrypt certificate on first start
+2. Handle TLS-ALPN-01 challenges inline on port 443
+3. Automatically renew the certificate before expiry
+
+### Multi-Domain Certificates
+
+```lisp
+(pure-tls/acme:make-acme-acceptor
+  '("example.com" "www.example.com" "api.example.com")
+  "admin@example.com"
+  :renewal-days 30)
+```
+
+### ACME Systems
+
+The ACME functionality is split into two systems:
+
+- **`pure-tls/acme`** - Core ACME client (no web server dependency)
+- **`pure-tls/acme+hunchentoot`** - Hunchentoot integration with `acme-acceptor`
+
+Use `pure-tls/acme` directly if you're using a different web server.
+
+### Non-Hunchentoot Usage
+
+For other web servers, use the ACME client directly with the `:certificate-provider` callback:
 
 ```lisp
 (asdf:load-system :pure-tls/acme)
 
-;; Obtain a certificate for your domain
-(pure-tls/acme:obtain-certificate "example.com" "admin@example.com")
+;; Create store and client
+(defvar *store* (pure-tls/acme:make-cert-store))
+(defvar *client* (pure-tls/acme:make-acme-client
+                   :directory-url pure-tls/acme:*production-url*
+                   :store *store*))
+
+;; Thread-safe validation state for challenges
+(defvar *validation-lock* (bt:make-lock "validation"))
+(defvar *validation-cert* nil)
+(defvar *validation-key* nil)
+
+;; Certificate provider for your TLS server
+(defun my-certificate-provider (hostname alpn-list)
+  (when (member "acme-tls/1" alpn-list :test #'string=)
+    (bt:with-lock-held (*validation-lock*)
+      (when (and *validation-cert* *validation-key*)
+        (values (list *validation-cert*) *validation-key* "acme-tls/1")))))
+
+;; Use with pure-tls server streams
+(pure-tls:make-tls-server-stream stream
+  :certificate "/path/to/cert.pem"
+  :key "/path/to/key.pem"
+  :certificate-provider #'my-certificate-provider)
 ```
 
-This will:
-1. Register an ACME account (or use existing)
-2. Create a certificate order
-3. Start a TLS-ALPN-01 validation server on port 443
-4. Complete domain validation
-5. Generate a CSR and obtain the certificate
-6. Save the certificate and private key to `~/certs/`
+### Certificate Storage
 
-### Automatic Certificate Management
+Certificates are stored in platform-appropriate locations:
 
-For production use, the cert-manager provides automatic renewal:
+| Platform | Default Path |
+|----------|-------------|
+| Linux    | `~/.local/state/pure-tls/` |
+| macOS    | `~/Library/Application Support/pure-tls/` |
+| Windows  | `%LOCALAPPDATA%\pure-tls\` |
 
-```lisp
-;; Start automatic certificate management
-(pure-tls/acme:start-cert-manager
-  :domains '("example.com" "www.example.com")
-  :email "admin@example.com"
-  :production t)  ; Use Let's Encrypt production (default is staging)
-
-;; Check certificate status
-(pure-tls/acme:cert-manager-status)
-
-;; Stop the manager
-(pure-tls/acme:stop-cert-manager)
-```
-
-The cert-manager:
-- Checks certificates daily for expiration
-- Renews certificates 30 days before expiry
-- Handles the TLS-ALPN-01 challenge automatically
-- Stores certificates in `~/certs/` by default
-
-### Manual ACME Workflow
-
-For more control over the certificate process:
+To use a custom location:
 
 ```lisp
-(in-package :pure-tls/acme)
-
-;; Initialize and register
-(acme-init)
-(acme-register-account "admin@example.com")
-
-;; Create order
-(multiple-value-bind (order order-url)
-    (acme-new-order "example.com")
-
-  ;; Get authorization and challenge
-  (let* ((auth-url (first (cdr (assoc :authorizations order))))
-         (auth (acme-get-authorization auth-url))
-         (challenge (get-tls-alpn-challenge auth))
-         (token (cdr (assoc :token challenge))))
-
-    ;; Start validation server
-    (start-tls-alpn-server "example.com"
-                           (compute-key-authorization token)
-                           443)
-
-    ;; Tell ACME to verify
-    (acme-respond-challenge (cdr (assoc :url challenge)))
-
-    ;; Wait for validation
-    (acme-poll-status auth-url)
-    (stop-tls-alpn-server)
-
-    ;; Generate CSR and finalize
-    (multiple-value-bind (priv pub) (generate-domain-key)
-      (let ((csr (generate-csr priv pub "example.com")))
-        (acme-finalize-order (cdr (assoc :finalize order)) csr)
-
-        ;; Download certificate
-        (let ((final (acme-poll-status order-url)))
-          (acme-download-certificate (cdr (assoc :certificate final))))))))
+(pure-tls/acme:make-cert-store :base-path #p"/etc/ssl/acme/")
 ```
 
 ### TLS-ALPN-01 Challenge
 
 pure-tls/acme uses the TLS-ALPN-01 challenge type, which validates domain ownership by serving a special self-signed certificate on port 443. This is ideal for:
 
-- Servers that already run on port 443
+- Servers that already run on port 443 (challenges handled inline)
 - Environments where HTTP port 80 is not available
-- Wildcard certificates (when combined with DNS challenges)
+- Automatic renewal without service interruption
 
 **Requirements:**
-- Port 443 must be available for the validation server
+- Port 443 must be accessible from the internet
 - The domain must resolve to your server's IP address
 
-### Configuration
+### Configuration Options
 
 ```lisp
-;; Use Let's Encrypt staging (for testing)
-(pure-tls/acme:use-staging)  ; Default
+(pure-tls/acme:make-acme-acceptor domains email
+  :port 443              ; HTTPS port (default 443)
+  :production nil        ; Use Let's Encrypt staging for testing (default T = production)
+  :renewal-days 30       ; Renew when cert expires within N days
+  :store store           ; Custom cert-store (optional)
+  :logger #'my-logger)   ; Custom logging function (optional)
+```
 
-;; Use Let's Encrypt production
-(pure-tls/acme:use-production)
+### Debugging
 
-;; Custom certificate directory
-(setf pure-tls/acme:*cert-directory* #p"/etc/certs/")
+Enable debug logging:
 
-;; Skip TLS verification (for testing with Pebble)
-(setf pure-tls/acme:*skip-tls-verify* t)
+```lisp
+(setf pure-tls/acme:*acme-debug* t)
 ```
 
 ### Testing with Pebble
 
-For local development, use [Pebble](https://github.com/letsencrypt/pebble), a small ACME server:
+For local development, use [Pebble](https://github.com/letsencrypt/pebble), a small ACME test server:
 
 ```bash
 # Start Pebble (requires podman or docker)

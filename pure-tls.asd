@@ -68,7 +68,7 @@
   :description "ACME client for automatic certificate management (Let's Encrypt)"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
-  :version "1.0.0"
+  :version "2.0.0"
   :depends-on ("pure-tls"
                "drakma"
                "cl-json"
@@ -76,16 +76,29 @@
                "ironclad"
                "flexi-streams"
                "bordeaux-threads"
-               "usocket")
+               "usocket"
+               "alexandria")
   :serial t
   :components ((:module "acme"
                 :serial t
                 :components ((:file "package")
                              (:file "asn1")
                              (:file "client")
+                             (:file "store")
+                             (:file "acme-client")
                              (:file "challenges")
-                             (:file "csr")
-                             (:file "cert-manager")))))
+                             (:file "csr")))))
+
+(asdf:defsystem "pure-tls/acme+hunchentoot"
+  :description "Hunchentoot integration for pure-tls/acme"
+  :author "Anthony Green <green@moxielogic.com>"
+  :license "MIT"
+  :version "2.0.0"
+  :depends-on ("pure-tls/acme"
+               "hunchentoot")
+  :serial t
+  :components ((:module "acme"
+                :components ((:file "hunchentoot")))))
 
 (asdf:defsystem "pure-tls/test"
   :description "Tests for pure-tls"

@@ -22,6 +22,11 @@
   ;; Called with (hostname) after ClientHello, should return
   ;; (values certificate-chain private-key) or NIL to use defaults
   (sni-callback nil)
+  ;; Certificate provider for dynamic cert selection (e.g., ACME TLS-ALPN-01)
+  ;; Called with (hostname alpn-list) before certificate selection
+  ;; Should return (values certificate-chain private-key alpn-protocol) or NIL
+  ;; If alpn-protocol is returned, it overrides normal ALPN negotiation
+  (certificate-provider nil)
   ;; Cipher suites we support (in preference order)
   ;; ChaCha20-Poly1305 is preferred for better side-channel resistance
   (cipher-suites (list +tls-chacha20-poly1305-sha256+
@@ -146,9 +151,29 @@
       (when sni-ext
         (setf (server-handshake-client-hostname hs)
               (server-name-ext-host-name (tls-extension-data sni-ext)))))
+    ;; Extract client ALPN list for certificate provider
+    (let* ((alpn-ext (find-extension extensions +extension-application-layer-protocol-negotiation+))
+           (client-alpn-list (when alpn-ext
+                               (alpn-ext-protocol-list (tls-extension-data alpn-ext)))))
+      ;; Call certificate provider if available (for ACME TLS-ALPN-01, etc.)
+      ;; Certificate provider can override certificate AND ALPN selection
+      (when (server-handshake-certificate-provider hs)
+        (multiple-value-bind (cert-chain priv-key selected-alpn)
+            (funcall (server-handshake-certificate-provider hs)
+                     (server-handshake-client-hostname hs)
+                     client-alpn-list)
+          (when cert-chain
+            (setf (server-handshake-certificate-chain hs) cert-chain)
+            (when priv-key
+              (setf (server-handshake-private-key hs) priv-key))
+            (when selected-alpn
+              ;; Provider selected ALPN - skip normal ALPN negotiation later
+              (setf (server-handshake-selected-alpn hs) selected-alpn)))))))
     ;; Call SNI callback if provided (for virtual hosting)
+    ;; Only if certificate-provider didn't already set a certificate
     (when (and (server-handshake-sni-callback hs)
-               (server-handshake-client-hostname hs))
+               (server-handshake-client-hostname hs)
+               (null (server-handshake-certificate-chain hs)))
       (multiple-value-bind (cert-chain priv-key)
           (funcall (server-handshake-sni-callback hs)
                    (server-handshake-client-hostname hs))
@@ -293,35 +318,37 @@
              ;; Return early - don't process ALPN etc. yet
              (return-from process-client-hello nil))))))
     ;; Handle ALPN per RFC 7301
-    ;; alpn-protocols can be:
-    ;;   nil - server doesn't care about ALPN
-    ;;   (:none) - server requires ALPN but supports no protocols (always fail)
-    ;;   list of strings - server supports these protocols
-    (let ((alpn-ext (find-extension extensions +extension-application-layer-protocol-negotiation+))
-          (server-protos (server-handshake-alpn-protocols hs)))
-      (cond
-        ;; Server doesn't care about ALPN - ignore client ALPN extension
-        ((null server-protos)
-         nil)
-        ;; Server requires ALPN but has no protocols - fail if client sends ALPN
-        ((equal server-protos '(:none))
-         (when alpn-ext
-           (record-layer-write-alert (server-handshake-record-layer hs)
-                                     +alert-level-fatal+ +alert-no-application-protocol+)
-           (error 'tls-alert-error
-                  :level +alert-level-fatal+
-                  :description +alert-no-application-protocol+)))
-        ;; Server has protocols - try to negotiate
-        (t
-         (when alpn-ext
-           (let* ((client-protos (alpn-ext-protocol-list (tls-extension-data alpn-ext)))
-                  (selected (find-if (lambda (p) (member p client-protos :test #'string=))
-                                     server-protos)))
-             (if selected
-                 (setf (server-handshake-selected-alpn hs) selected)
-                 ;; No match - send fatal alert per RFC 7301
-                 (progn
-                   (record-layer-write-alert (server-handshake-record-layer hs)
+    ;; Skip if certificate-provider already selected ALPN
+    (unless (server-handshake-selected-alpn hs)
+      ;; alpn-protocols can be:
+      ;;   nil - server doesn't care about ALPN
+      ;;   (:none) - server requires ALPN but supports no protocols (always fail)
+      ;;   list of strings - server supports these protocols
+      (let ((alpn-ext (find-extension extensions +extension-application-layer-protocol-negotiation+))
+            (server-protos (server-handshake-alpn-protocols hs)))
+        (cond
+          ;; Server doesn't care about ALPN - ignore client ALPN extension
+          ((null server-protos)
+           nil)
+          ;; Server requires ALPN but has no protocols - fail if client sends ALPN
+          ((equal server-protos '(:none))
+           (when alpn-ext
+             (record-layer-write-alert (server-handshake-record-layer hs)
+                                       +alert-level-fatal+ +alert-no-application-protocol+)
+             (error 'tls-alert-error
+                    :level +alert-level-fatal+
+                    :description +alert-no-application-protocol+)))
+          ;; Server has protocols - try to negotiate
+          (t
+           (when alpn-ext
+             (let* ((client-protos (alpn-ext-protocol-list (tls-extension-data alpn-ext)))
+                    (selected (find-if (lambda (p) (member p client-protos :test #'string=))
+                                       server-protos)))
+               (if selected
+                   (setf (server-handshake-selected-alpn hs) selected)
+                   ;; No match - send fatal alert per RFC 7301
+                   (progn
+                     (record-layer-write-alert (server-handshake-record-layer hs)
                                              +alert-level-fatal+ +alert-no-application-protocol+)
                    (error 'tls-alert-error
                           :level +alert-level-fatal+
@@ -837,13 +864,17 @@
 
 (defun perform-server-handshake (record-layer certificate-chain private-key
                                   &key alpn-protocols verify-mode trust-store
-                                       cipher-suites sni-callback)
+                                       cipher-suites sni-callback certificate-provider)
   "Perform the TLS 1.3 server handshake.
    Returns the server-handshake structure on success.
 
    SNI-CALLBACK, if provided, is called with the client's requested hostname.
    It should return (VALUES certificate-chain private-key) to use for that host,
-   or NIL to use the default certificate/key. This enables virtual hosting."
+   or NIL to use the default certificate/key. This enables virtual hosting.
+
+   CERTIFICATE-PROVIDER, if provided, is called with (hostname alpn-list) before
+   certificate selection. It should return (VALUES cert-chain key selected-alpn)
+   to override both certificate and ALPN selection. Useful for ACME TLS-ALPN-01."
   (let ((hs (make-server-handshake
              :record-layer record-layer
              :certificate-chain certificate-chain
@@ -855,7 +886,8 @@
                                 (list +tls-chacha20-poly1305-sha256+
                                       +tls-aes-256-gcm-sha384+
                                       +tls-aes-128-gcm-sha256+))
-             :sni-callback sni-callback)))
+             :sni-callback sni-callback
+             :certificate-provider certificate-provider)))
     ;; State machine loop
     (loop
       (case (server-handshake-state hs)

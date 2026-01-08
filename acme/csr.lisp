@@ -34,7 +34,7 @@
               finally (return (values a b c)))
       (let* ((phi (* (1- p) (1- q)))
              (d (ironclad::modular-inverse e phi)))
-        (format t "~&[ACME-DEBUG] Generated RSA key with e=65537, n=~A bits~%" (integer-length n))
+        (acme-log "~&[ACME] Generated RSA key with e=65537, n=~A bits~%" (integer-length n))
         (force-output)
         (values (ironclad:make-private-key :rsa :d d :n n :p p :q q)
                 (ironclad:make-public-key :rsa :e e :n n))))))
@@ -125,14 +125,14 @@
          (s (ironclad:expt-mod m d n))
          ;; Convert back to bytes, preserving leading zeros
          (signature (ironclad:integer-to-octets s :n-bits (* key-size-bytes 8))))
-    (format t "~&[ACME-DEBUG] PKCS1-v15-SHA256: key=~A bytes, e=~A bits, sig=~A bytes~%"
+    (acme-log "~&[ACME] PKCS1-v15-SHA256: key=~A bytes, e=~A bits, sig=~A bytes~%"
             key-size-bytes (integer-length e) (length signature))
     ;; Self-verify: decrypt signature and compare with padded message
     (let* ((decrypted (ironclad:expt-mod s e n))
            (matches (= m decrypted)))
-      (format t "~&[ACME-DEBUG] Self-verify: m == s^e mod n ? ~A~%" matches)
+      (acme-log "~&[ACME] Self-verify: m == s^e mod n ? ~A~%" matches)
       (unless matches
-        (format t "~&[ACME-DEBUG] ERROR: Signature self-verification failed!~%")))
+        (acme-log "~&[ACME] ERROR: Signature self-verification failed!~%")))
     (force-output)
     signature))
 
@@ -155,16 +155,16 @@
                csr-info
                algorithm-id
                (encode-bit-string signature))))
-    ;; Debug: save CSR for inspection
-    (let ((debug-path (merge-pathnames "debug-csr.der" (cert-directory))))
-      (ensure-directories-exist debug-path)
-      (with-open-file (out debug-path :direction :output
-                                       :if-exists :supersede
-                                       :element-type '(unsigned-byte 8))
-        (write-sequence csr out))
-      (format t "~&[ACME-DEBUG] CSR saved to ~A~%" debug-path)
-      (format t "~&[ACME-DEBUG] Verify with: openssl req -in ~A -inform DER -noout -text~%" debug-path)
-      (force-output))
+    ;; Debug: save CSR for inspection (only when debug enabled)
+    (when *acme-debug*
+      (let ((debug-path (merge-pathnames "debug-csr.der" (uiop:temporary-directory))))
+        (ensure-directories-exist debug-path)
+        (with-open-file (out debug-path :direction :output
+                                         :if-exists :supersede
+                                         :element-type '(unsigned-byte 8))
+          (write-sequence csr out))
+        (acme-log "~&[ACME] CSR saved to ~A~%" debug-path)
+        (acme-log "~&[ACME] Verify with: openssl req -in ~A -inform DER -noout -text~%" debug-path)))
     csr))
 
 ;;; ----------------------------------------------------------------------------
@@ -192,95 +192,6 @@
                             :element-type 'character)
     (write-string cert-pem out)))
 
-;;; ----------------------------------------------------------------------------
-;;; High-level certificate acquisition
-;;; ----------------------------------------------------------------------------
-
-(defun obtain-certificate (domain email &key (port 443))
-  "Complete workflow to obtain a certificate for domain using TLS-ALPN-01.
-   Returns T on success, signals an error on failure.
-   Saves certificate to (cert-path domain) and key to (key-path domain).
-
-   PORT is the port for the TLS-ALPN-01 validation server (default 443)."
-  ;; 1. Initialize
-  (acme-init)
-
-  ;; 2. Register/login account
-  (unless (acme-register-account email)
-    (error 'acme-error :message "Account registration failed"))
-
-  ;; 3. Create order
-  (multiple-value-bind (order order-url)
-      (acme-new-order domain)
-    (unless order
-      (error 'acme-order-error :message "Order creation failed"))
-
-    ;; 4. Process authorizations
-    (let ((auth-urls (cdr (assoc :authorizations order))))
-      (dolist (auth-url auth-urls)
-        (let* ((auth (acme-get-authorization auth-url))
-               (challenge (get-tls-alpn-challenge auth)))
-          (unless challenge
-            (error 'acme-challenge-error
-                   :message "TLS-ALPN-01 challenge not available"))
-
-          (let* ((token (cdr (assoc :token challenge)))
-                 (challenge-url (cdr (assoc :url challenge)))
-                 (key-auth (compute-key-authorization token)))
-
-            ;; 5. Start TLS-ALPN-01 validation server
-            (start-tls-alpn-server domain key-auth port)
-
-            ;; Give the server a moment to start
-            (sleep 1)
-
-            ;; 6. Tell ACME to verify
-            (acme-respond-challenge challenge-url)
-
-            ;; 7. Wait for validation
-            (unwind-protect
-                (multiple-value-bind (result status)
-                    (acme-poll-status auth-url)
-                  (declare (ignore result))
-                  (unless (eq status :valid)
-                    (error 'acme-challenge-error
-                           :message (format nil "Challenge validation failed: ~A" status))))
-              ;; Clean up validation server
-              (stop-tls-alpn-server))))))
-
-    ;; 8. Generate domain key and CSR, then finalize
-    (multiple-value-bind (private-key public-key)
-        (generate-domain-key)
-      (let* ((csr (generate-csr private-key public-key domain))
-             (finalize-url (cdr (assoc :finalize order))))
-
-        ;; Save the private key immediately (before finalization, in case of failure)
-        (save-private-key-pem private-key public-key (key-path domain))
-
-        ;; Finalize the order with CSR
-        (acme-finalize-order finalize-url csr)
-
-        ;; Poll until order is valid (wait through ready/processing states)
-        (multiple-value-bind (final-order status)
-            (acme-poll-status order-url :wait-for-valid t)
-          (unless (eq status :valid)
-            (error 'acme-order-error
-                   :message (format nil "Order finalization failed: ~A" status)))
-
-          ;; 9. Download and save certificate
-          (let ((cert-url (cdr (assoc :certificate final-order))))
-            (unless cert-url
-              (error 'acme-certificate-error :message "No certificate URL in finalized order"))
-
-            (let ((cert-pem (acme-download-certificate cert-url)))
-              (unless cert-pem
-                (error 'acme-certificate-error :message "Failed to download certificate"))
-
-              ;; Save the certificate
-              (save-certificate-pem cert-pem (cert-path domain))
-
-              ;; Return success
-              t)))))))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Certificate expiration checking
@@ -288,10 +199,20 @@
 
 (defun certificate-expires-soon-p (cert-path &optional (days 30))
   "Check if certificate expires within DAYS days.
-   Returns T if certificate will expire soon or doesn't exist."
-  (declare (ignore days))
-  ;; TODO: Parse certificate and check notAfter
-  ;; For now, always return NIL (certificate is fine)
+   Returns T if certificate will expire soon or doesn't exist.
+   Returns NIL if certificate is valid for more than DAYS days."
   (unless (probe-file cert-path)
     (return-from certificate-expires-soon-p t))
-  nil)
+  (handler-case
+      (let* ((certs (pure-tls:load-certificate-chain (namestring cert-path)))
+             (leaf-cert (first certs)))
+        (unless leaf-cert
+          (return-from certificate-expires-soon-p t))
+        (let* ((not-after (pure-tls:certificate-not-after leaf-cert))
+               (now (get-universal-time))
+               (seconds-until-expiry (- not-after now))
+               (days-until-expiry (floor seconds-until-expiry (* 24 60 60))))
+          (<= days-until-expiry days)))
+    (error ()
+      ;; If we can't parse the certificate, treat it as expired
+      t)))

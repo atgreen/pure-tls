@@ -562,6 +562,7 @@
                                         trust-store
                                         alpn-protocols
                                         sni-callback
+                                        certificate-provider
                                         close-callback
                                         external-format
                                         (buffer-size *default-buffer-size*)
@@ -578,6 +579,9 @@
    SNI-CALLBACK - Function called with the client's requested hostname.
                   Should return (VALUES certificate-chain private-key) for that host,
                   or NIL to use the default certificate/key.
+   CERTIFICATE-PROVIDER - Function called with (hostname alpn-list) before cert selection.
+                          Should return (VALUES cert-chain key selected-alpn) to override
+                          certificate and ALPN, or NIL to use defaults. For ACME TLS-ALPN-01.
    CLOSE-CALLBACK - Function called when stream is closed.
    EXTERNAL-FORMAT - If non-NIL, wrap in a flexi-stream.
    BUFFER-SIZE - Size of I/O buffers.
@@ -629,7 +633,8 @@
                :alpn-protocols alpn
                :verify-mode verify
                :trust-store client-trust-store
-               :sni-callback sni-callback)))
+               :sni-callback sni-callback
+               :certificate-provider certificate-provider)))
       (setf (tls-stream-handshake stream) hs))
     ;; Wrap with flexi-stream if external-format specified
     (if external-format

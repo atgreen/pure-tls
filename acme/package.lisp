@@ -4,9 +4,7 @@
 ;;;
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 ;;;
-;;; ACME (Automatic Certificate Management Environment) client for pure-tls.
-;;; Supports automatic certificate acquisition from Let's Encrypt and other
-;;; ACME-compatible certificate authorities.
+;;; ACME client for automatic certificate management (Let's Encrypt).
 
 (in-package #:cl-user)
 
@@ -15,57 +13,40 @@
   (:nicknames #:acme)
   (:export
    ;; Configuration
-   #:*directory-url*
    #:*staging-url*
    #:*production-url*
-   #:*skip-tls-verify*
-   #:use-staging
-   #:use-production
+   #:*acme-debug*
 
-   ;; Certificate paths
-   #:*cert-directory*
-   #:cert-directory
-   #:cert-path
-   #:key-path
-   #:certificates-exist-p
+   ;; Certificate store
+   #:cert-store
+   #:make-cert-store
+   #:cert-store-base-path
+   #:store-domain-cert-path
+   #:store-domain-key-path
+   #:store-has-certificate-p
+   #:store-certificate-expires-soon-p
 
-   ;; Low-level ACME client
-   #:acme-init
-   #:acme-register-account
-   #:acme-new-order
-   #:acme-get-authorization
-   #:acme-respond-challenge
-   #:acme-poll-status
-   #:acme-finalize-order
-   #:acme-download-certificate
+   ;; ACME client
+   #:acme-client
+   #:make-acme-client
+   #:acme-client-store
+   #:client-init
+   #:client-register-account
+   #:client-new-order
+   #:client-get-authorization
+   #:client-respond-challenge
+   #:client-poll-status
+   #:client-finalize-order
+   #:client-download-certificate
+   #:client-compute-key-authorization
 
-   ;; Challenge helpers
-   #:get-tls-alpn-challenge
-   #:compute-key-authorization
+   ;; Hunchentoot integration
+   #:acme-acceptor
+   #:make-acme-acceptor
 
-   ;; TLS-ALPN-01 challenge
-   #:start-tls-alpn-server
-   #:stop-tls-alpn-server
-   #:generate-validation-certificate
-
-   ;; High-level API
-   #:obtain-certificate
-   #:certificate-expires-soon-p
-
-   ;; Certificate manager
-   #:make-cert-manager
-   #:cert-manager-start
-   #:cert-manager-stop
-   #:cert-manager-certificate
-   #:cert-manager-private-key
-
-   ;; CSR generation
+   ;; CSR generation (for advanced use)
    #:generate-csr
    #:generate-domain-key
-
-   ;; TLS server convenience
-   #:with-auto-tls-server
-   #:make-auto-tls-acceptor
 
    ;; Conditions
    #:acme-error

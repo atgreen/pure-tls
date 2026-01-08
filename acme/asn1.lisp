@@ -256,8 +256,8 @@
          (n (getf priv-data :n))
          ;; Get E from public key - ironclad generates random e, so it can be large
          (e (getf pub-data :e)))
-    (format t "~&[ACME-DEBUG] RSA modulus N bit-length: ~A~%" (integer-length n))
-    (format t "~&[ACME-DEBUG] RSA exponent E bit-length: ~A~%" (integer-length e))
+    (acme-log "~&[ACME] RSA modulus N bit-length: ~A~%" (integer-length n))
+    (acme-log "~&[ACME] RSA exponent E bit-length: ~A~%" (integer-length e))
     (force-output)
     (values n e)))
 
