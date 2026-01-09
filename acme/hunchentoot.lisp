@@ -143,17 +143,29 @@
     (setf (acceptor-acme-client acceptor) client)))
 
 (defmethod hunchentoot:start ((acceptor acme-acceptor))
-  "Start the acceptor, ensuring certificates exist first."
+  "Start the acceptor, obtaining certificates via TLS-ALPN-01 if needed.
+   The server must be listening to handle ALPN challenge connections."
   (let ((primary-domain (first (acceptor-domains acceptor))))
-    ;; Ensure we have valid certificates before starting
-    (unless (and (store-has-certificate-p (acceptor-cert-store acceptor) primary-domain)
-                 (not (store-certificate-expires-soon-p
-                       (acceptor-cert-store acceptor) primary-domain 0)))
-      (acceptor-obtain-certificate acceptor))
-    ;; Start renewal thread
-    (acceptor-start-renewal-thread acceptor)
-    ;; Call parent start
-    (call-next-method)))
+    ;; Check if we need to obtain a certificate
+    (let* ((store (acceptor-cert-store acceptor))
+           (have-cert (store-has-certificate-p store primary-domain))
+           (need-real-cert (not (and have-cert
+                                     (not (store-certificate-expires-soon-p store primary-domain 0))))))
+      ;; If no certificate at all, generate a placeholder BEFORE starting the server
+      ;; This allows the TLS server to start and handle ALPN challenges
+      (unless have-cert
+        (acceptor-log acceptor :info "Generating placeholder certificate for ~A" primary-domain)
+        (multiple-value-bind (cert-pem key-pem)
+            (generate-placeholder-certificate primary-domain)
+          (store-save-certificate store primary-domain cert-pem key-pem))
+        (acceptor-log acceptor :info "Placeholder certificate ready"))
+      ;; Start the server - now we always have SOME certificate
+      (call-next-method)
+      ;; Now obtain real certificate if needed (server is listening for ALPN challenges)
+      (when need-real-cert
+        (acceptor-obtain-certificate acceptor))
+      ;; Start renewal thread
+      (acceptor-start-renewal-thread acceptor))))
 
 (defmethod hunchentoot:stop ((acceptor acme-acceptor) &key soft)
   "Stop the acceptor and renewal thread."
@@ -169,24 +181,51 @@
   (let* ((primary-domain (first (acceptor-domains acceptor)))
          (cert-path (store-domain-cert-path (acceptor-cert-store acceptor) primary-domain))
          (key-path (store-domain-key-path (acceptor-cert-store acceptor) primary-domain)))
-    (pure-tls:make-tls-server-stream
-     stream
-     :certificate (namestring cert-path)
-     :key (namestring key-path)
-     :certificate-provider (make-certificate-provider acceptor))))
+    ;; Only log per-connection start when debugging
+    (when pure-tls::*handshake-debug*
+      (acceptor-log acceptor :info "TLS connection starting, cert from ~A" cert-path))
+    ;; Certificate should exist (placeholder was created at startup if needed)
+    (handler-case
+        (let ((tls-stream (pure-tls:make-tls-server-stream
+                           stream
+                           :certificate (namestring cert-path)
+                           :key (namestring key-path)
+                           :certificate-provider (make-certificate-provider acceptor))))
+          ;; Only log per-connection success when debugging
+          (when pure-tls::*handshake-debug*
+            (acceptor-log acceptor :info "TLS handshake completed successfully"))
+          tls-stream)
+      (error (e)
+        (acceptor-log acceptor :error "TLS handshake failed: ~A" e)
+        (error e)))))
 
 (defun make-certificate-provider (acceptor)
   "Create a certificate provider function for TLS-ALPN-01 challenge handling.
    This is called during TLS handshake to potentially override the certificate."
   (lambda (hostname alpn-list)
-    (declare (ignore hostname))
+    ;; Only log when handshake debug is enabled (reduces per-connection noise)
+    (when pure-tls::*handshake-debug*
+      (acceptor-log acceptor :info "Certificate provider called: hostname=~A alpn=~A" hostname alpn-list))
     ;; Check if this is an ACME TLS-ALPN-01 challenge
-    (when (member "acme-tls/1" alpn-list :test #'string=)
-      ;; Atomically get both cert and key
-      (multiple-value-bind (cert key)
-          (acceptor-get-validation acceptor)
-        (when (and cert key)
-          (values (list cert) key "acme-tls/1"))))))
+    (if (member "acme-tls/1" alpn-list :test #'string=)
+        (progn
+          (acceptor-log acceptor :info "ALPN acme-tls/1 detected - returning validation cert")
+          ;; Atomically get both cert and key
+          (multiple-value-bind (cert key)
+              (acceptor-get-validation acceptor)
+            (if (and cert key)
+                (progn
+                  (acceptor-log acceptor :info "Validation cert available: cert-len=~A key-type=~A"
+                                (length cert) (type-of key))
+                  (values (list cert) key "acme-tls/1"))
+                (progn
+                  (acceptor-log acceptor :error "NO VALIDATION CERT AVAILABLE!")
+                  nil))))
+        ;; Regular TLS connection - only log in debug mode
+        (progn
+          (when pure-tls::*handshake-debug*
+            (acceptor-log acceptor :info "Regular TLS connection (no acme-tls/1)"))
+          nil))))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Certificate Acquisition
@@ -272,35 +311,50 @@
            (domain (cdr (assoc :value (cdr (assoc :identifier auth))))))
 
       ;; Generate validation certificate
+      (acceptor-log acceptor :info "Generating validation certificate for ~A" domain)
       (multiple-value-bind (cert-pem key-pem priv-key)
           (generate-validation-certificate domain key-auth)
         (declare (ignore key-pem))
+        (acceptor-log acceptor :info "Validation certificate generated, cert-pem length=~A" (length cert-pem))
 
         ;; Parse cert to DER for in-memory use
         (let ((cert-der (extract-pem-der cert-pem "CERTIFICATE")))
+          (acceptor-log acceptor :info "Cert DER parsed, length=~A bytes" (length cert-der))
 
           ;; Set validation cert/key atomically
+          (acceptor-log acceptor :info "Setting validation cert in acceptor...")
           (acceptor-set-validation acceptor cert-der priv-key)
+          (acceptor-log acceptor :info "Validation cert SET - ready for ALPN challenge")
 
           (unwind-protect
                (progn
                  ;; Small delay to ensure memory visibility across threads
                  (sleep 0.1)
 
-                 (acceptor-log acceptor :debug "Validation cert ready for ~A" domain)
+                 (acceptor-log acceptor :info "Telling Let's Encrypt to validate (they will connect to port 443)...")
 
                  ;; Tell ACME server to validate
                  ;; Let's Encrypt will connect to our port 443 with ALPN "acme-tls/1"
                  (client-respond-challenge client challenge-url)
+                 (acceptor-log acceptor :info "Challenge response sent, now polling for result...")
 
                  ;; Poll for completion - Let's Encrypt may retry multiple times
                  ;; Keep validation cert available throughout
                  (multiple-value-bind (result status)
                      (client-poll-status client auth-url :max-attempts 60 :delay 2)
-                   (declare (ignore result))
                    (unless (eq status :valid)
-                     (error 'acme-challenge-error
-                            :message (format nil "Challenge validation failed: ~A" status)))
+                     ;; Extract error details from challenges in the response
+                     (let* ((challenges (cdr (assoc :challenges result)))
+                            (error-details
+                              (loop for ch in challenges
+                                    for err = (cdr (assoc :error ch))
+                                    when err
+                                      collect (format nil "~A: ~A"
+                                                      (cdr (assoc :type err))
+                                                      (cdr (assoc :detail err))))))
+                       (error 'acme-challenge-error
+                              :message (format nil "Challenge validation failed: ~A~@[~%  ~{~A~^~%  ~}~]"
+                                               status error-details))))
                    (acceptor-log acceptor :debug "Challenge validated for ~A" domain)))
 
             ;; Always clear validation cert when done (success or failure)

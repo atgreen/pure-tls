@@ -136,6 +136,7 @@
 
 (defun process-client-hello (hs message raw-bytes)
   "Process a ClientHello message from the client."
+  (hs-log "~&[HS] process-client-hello: starting~%")
   (let* ((client-hello (handshake-message-body message))
          (extensions (client-hello-extensions client-hello)))
     ;; Update transcript with ClientHello
@@ -151,17 +152,22 @@
       (when sni-ext
         (setf (server-handshake-client-hostname hs)
               (server-name-ext-host-name (tls-extension-data sni-ext)))))
+    (hs-log "~&[HS] process-client-hello: hostname=~A~%" (server-handshake-client-hostname hs))
     ;; Extract client ALPN list for certificate provider
     (let* ((alpn-ext (find-extension extensions +extension-application-layer-protocol-negotiation+))
            (client-alpn-list (when alpn-ext
                                (alpn-ext-protocol-list (tls-extension-data alpn-ext)))))
+      (hs-log "~&[HS] process-client-hello: ALPN=~A~%" client-alpn-list)
       ;; Call certificate provider if available (for ACME TLS-ALPN-01, etc.)
       ;; Certificate provider can override certificate AND ALPN selection
       (when (server-handshake-certificate-provider hs)
+        (hs-log "~&[HS] process-client-hello: calling cert provider~%")
         (multiple-value-bind (cert-chain priv-key selected-alpn)
             (funcall (server-handshake-certificate-provider hs)
                      (server-handshake-client-hostname hs)
                      client-alpn-list)
+          (hs-log "~&[HS] process-client-hello: provider returned chain=~A key=~A alpn=~A~%"
+                  (and cert-chain t) (and priv-key t) selected-alpn)
           (when cert-chain
             (setf (server-handshake-certificate-chain hs) cert-chain)
             (when priv-key
@@ -192,9 +198,11 @@
              (setf (server-handshake-private-key hs) priv-key))))))
     ;; Verify we have a certificate after SNI callback
     (unless (server-handshake-certificate-chain hs)
+      (hs-log "~&[HS] process-client-hello: NO CERTIFICATE - erroring~%")
       (error 'tls-handshake-error
              :message "No certificate available for this hostname"
              :state :wait-client-hello))
+    (hs-log "~&[HS] process-client-hello: have certificate, checking supported_versions~%")
     ;; Check for supported_versions extension (required for TLS 1.3)
     ;; If missing or doesn't include TLS 1.3, send protocol_version alert
     ;; This helps scanners like TLS-Anvil understand we only support TLS 1.3
@@ -238,16 +246,21 @@
                :message ":INVALID_COMPRESSION_LIST: TLS 1.3 requires legacy_compression_methods to be [0]"
                :state :wait-client-hello)))
     ;; Select cipher suite (first mutually supported)
+    (hs-log "~&[HS] process-client-hello: selecting cipher suite~%")
     (let ((client-suites (client-hello-cipher-suites client-hello))
           (server-suites (server-handshake-cipher-suites hs)))
+      (hs-log "~&[HS] process-client-hello: client-suites=~A server-suites=~A~%"
+              client-suites server-suites)
       (let ((selected (find-if (lambda (s) (member s client-suites))
                                server-suites)))
         (unless selected
+          (hs-log "~&[HS] process-client-hello: NO COMMON CIPHER SUITE~%")
           (record-layer-write-alert (server-handshake-record-layer hs)
                                     +alert-level-fatal+ +alert-handshake-failure+)
           (error 'tls-handshake-error
                  :message ":HANDSHAKE_FAILURE_ON_CLIENT_HELLO: No common cipher suite"
                  :state :wait-client-hello))
+        (hs-log "~&[HS] process-client-hello: selected cipher=~A~%" selected)
         (setf (server-handshake-selected-cipher-suite hs) selected)))
     ;; Capture client's signature algorithm preferences (may be nil if missing)
     (let ((sig-ext (find-extension extensions +extension-signature-algorithms+)))
@@ -274,6 +287,7 @@
               (setf (server-handshake-accepted-psk hs) accepted-psk)
               (setf (server-handshake-selected-psk-index hs) selected-psk-index)))))
       ;; Process key_share extension (may trigger HelloRetryRequest)
+      (hs-log "~&[HS] process-client-hello: processing key_share~%")
       (let* ((ks-ext (find-extension extensions +extension-key-share+))
              (sg-ext (find-extension extensions +extension-supported-groups+))
              (our-groups (list +group-x25519+ +group-secp256r1+ +group-secp384r1+))
@@ -283,6 +297,8 @@
              (selected-share (find-if (lambda (share)
                                         (member (key-share-entry-group share) our-groups))
                                       client-shares)))
+        (hs-log "~&[HS] process-client-hello: ks-ext=~A client-shares=~A selected-share=~A~%"
+                (and ks-ext t) (length client-shares) (and selected-share t))
         (cond
           ;; Happy path: client offered a key share we can use
           (selected-share
@@ -291,13 +307,16 @@
                   (key-exchange (generate-key-exchange group)))
              (setf (server-handshake-key-exchange hs) key-exchange)
              ;; Compute shared secret
+             (hs-log "~&[HS] process-client-hello: computing shared secret for group ~A~%" group)
              (let ((shared-secret (compute-shared-secret key-exchange client-public)))
+               (hs-log "~&[HS] process-client-hello: shared secret computed, initializing key schedule~%")
                ;; Initialize key schedule
                (let ((ks (make-key-schedule-state (server-handshake-selected-cipher-suite hs))))
                  ;; Use PSK if accepted, otherwise nil (for regular handshake)
                  (key-schedule-init ks accepted-psk)
                  (key-schedule-derive-handshake-secret ks shared-secret)
-                 (setf (server-handshake-key-schedule hs) ks)))))
+                 (setf (server-handshake-key-schedule hs) ks)
+                 (hs-log "~&[HS] process-client-hello: key schedule initialized~%")))))
           ;; Need HelloRetryRequest: no usable key_share
           (t
            ;; RFC 8446: Only one HRR allowed
@@ -329,6 +348,8 @@
              (return-from process-client-hello nil))))))
     ;; Handle ALPN per RFC 7301
     ;; Skip if certificate-provider already selected ALPN
+    (hs-log "~&[HS] process-client-hello: handling ALPN, selected-alpn=~A~%"
+            (server-handshake-selected-alpn hs))
     (unless (server-handshake-selected-alpn hs)
       ;; alpn-protocols can be:
       ;;   nil - server doesn't care about ALPN
@@ -362,8 +383,9 @@
                                              +alert-level-fatal+ +alert-no-application-protocol+)
                    (error 'tls-alert-error
                           :level +alert-level-fatal+
-                          :description +alert-no-application-protocol+))))))))
-    (setf (server-handshake-state hs) :send-server-hello))))
+                          :description +alert-no-application-protocol+)))))))))
+    (hs-log "~&[HS] process-client-hello: COMPLETE - transitioning to :send-server-hello~%")
+    (setf (server-handshake-state hs) :send-server-hello)))
 
 ;;;; Server Message Generation
 
@@ -457,17 +479,21 @@
 
 (defun send-server-hello (hs)
   "Send the ServerHello message."
+  (hs-log "~&[HS] send-server-hello: generating~%")
   (let* ((hello (generate-server-hello hs))
          (hello-bytes (serialize-server-hello hello))
          (message (wrap-handshake-message +handshake-server-hello+ hello-bytes)))
     ;; Update transcript
     (server-handshake-update-transcript hs message)
     ;; Send ServerHello (unencrypted)
+    (hs-log "~&[HS] send-server-hello: sending ServerHello~%")
     (record-layer-write-handshake (server-handshake-record-layer hs) message)
     ;; Send dummy CCS for middlebox compatibility (RFC 8446 Appendix D.4)
     ;; This must be sent immediately after ServerHello, before encrypted messages
+    (hs-log "~&[HS] send-server-hello: sending CCS~%")
     (record-layer-write-change-cipher-spec (server-handshake-record-layer hs))
     ;; Derive handshake traffic secrets from transcript (ClientHello + ServerHello)
+    (hs-log "~&[HS] send-server-hello: deriving secrets~%")
     (let ((ks (server-handshake-key-schedule hs)))
       (key-schedule-derive-handshake-traffic-secrets
        ks (server-handshake-transcript hs))
@@ -477,6 +503,7 @@
       ;; Feed transcript into key schedule for Finished verification
       (key-schedule-update-transcript ks (server-handshake-transcript hs))
       ;; Install server handshake write keys
+      (hs-log "~&[HS] send-server-hello: installing keys~%")
       (multiple-value-bind (key iv)
           (key-schedule-derive-server-traffic-keys ks :handshake)
         (record-layer-install-keys
@@ -490,6 +517,7 @@
          (server-handshake-record-layer hs)
          :read key iv
          (server-handshake-selected-cipher-suite hs))))
+    (hs-log "~&[HS] send-server-hello: done~%")
     (setf (server-handshake-state hs) :send-encrypted-extensions)))
 
 (defun generate-encrypted-extensions (hs)
@@ -506,6 +534,7 @@
 
 (defun send-encrypted-extensions (hs)
   "Send the EncryptedExtensions message."
+  (hs-log "~&[HS] send-encrypted-extensions: generating~%")
   (let* ((ee (generate-encrypted-extensions hs))
          (ee-bytes (serialize-encrypted-extensions ee))
          (message (wrap-handshake-message +handshake-encrypted-extensions+ ee-bytes)))
@@ -513,7 +542,9 @@
     (server-handshake-update-transcript hs message)
     (key-schedule-update-transcript (server-handshake-key-schedule hs) message)
     ;; Send (encrypted with server handshake keys)
+    (hs-log "~&[HS] send-encrypted-extensions: sending~%")
     (record-layer-write-handshake (server-handshake-record-layer hs) message)
+    (hs-log "~&[HS] send-encrypted-extensions: done~%")
     ;; Decide next state based on verify mode
     (if (plusp (server-handshake-verify-mode hs))
         (setf (server-handshake-state hs) :send-certificate-request)
@@ -570,6 +601,7 @@
 
 (defun send-certificate (hs)
   "Send the server's Certificate message."
+  (hs-log "~&[HS] send-certificate: generating~%")
   (let* ((cert-msg (generate-certificate-message hs))
          (cert-bytes (serialize-certificate-message cert-msg))
          (message (wrap-handshake-message +handshake-certificate+ cert-bytes)))
@@ -577,32 +609,42 @@
     (server-handshake-update-transcript hs message)
     (key-schedule-update-transcript (server-handshake-key-schedule hs) message)
     ;; Send
+    (hs-log "~&[HS] send-certificate: sending (~A bytes)~%" (length cert-bytes))
     (record-layer-write-handshake (server-handshake-record-layer hs) message)
+    (hs-log "~&[HS] send-certificate: done~%")
     (setf (server-handshake-state hs) :send-certificate-verify)))
 
 (defun send-certificate-verify (hs)
   "Send the CertificateVerify message."
+  (hs-log "~&[HS] send-certificate-verify: building content~%")
   (let* ((ks (server-handshake-key-schedule hs))
          (transcript-hash (key-schedule-transcript-hash-value ks))
          ;; Build the content to sign (per RFC 8446 Section 4.4.3)
-         (content (make-certificate-verify-content transcript-hash nil)) ; nil = server
-         ;; Sign with server's private key
-         (algorithm (select-signature-algorithm-for-key
-                     (server-handshake-private-key hs)
-                     (server-handshake-client-signature-algorithms hs)))
-         (signature (sign-data-with-algorithm content (server-handshake-private-key hs) algorithm))
-         (cv (make-certificate-verify :algorithm algorithm :signature signature))
-         (cv-bytes (serialize-certificate-verify cv))
-         (message (wrap-handshake-message +handshake-certificate-verify+ cv-bytes)))
-    ;; Update transcript
-    (server-handshake-update-transcript hs message)
-    (key-schedule-update-transcript (server-handshake-key-schedule hs) message)
-    ;; Send
-    (record-layer-write-handshake (server-handshake-record-layer hs) message)
-    (setf (server-handshake-state hs) :send-finished)))
+         (content (make-certificate-verify-content transcript-hash nil))) ; nil = server
+    ;; Sign with server's private key
+    (hs-log "~&[HS] send-certificate-verify: key type=~A~%" (type-of (server-handshake-private-key hs)))
+    (hs-log "~&[HS] send-certificate-verify: client sig algs=~A~%" (server-handshake-client-signature-algorithms hs))
+    (let* ((algorithm (select-signature-algorithm-for-key
+                       (server-handshake-private-key hs)
+                       (server-handshake-client-signature-algorithms hs))))
+      (hs-log "~&[HS] send-certificate-verify: selected alg=~A, signing...~%" algorithm)
+      (let* ((signature (sign-data-with-algorithm content (server-handshake-private-key hs) algorithm))
+             (cv (make-certificate-verify :algorithm algorithm :signature signature))
+             (cv-bytes (serialize-certificate-verify cv))
+             (message (wrap-handshake-message +handshake-certificate-verify+ cv-bytes)))
+        (hs-log "~&[HS] send-certificate-verify: sig len=~A~%" (length signature))
+        ;; Update transcript
+        (server-handshake-update-transcript hs message)
+        (key-schedule-update-transcript (server-handshake-key-schedule hs) message)
+        ;; Send
+        (hs-log "~&[HS] send-certificate-verify: sending~%")
+        (record-layer-write-handshake (server-handshake-record-layer hs) message)
+        (hs-log "~&[HS] send-certificate-verify: done~%")
+        (setf (server-handshake-state hs) :send-finished)))))
 
 (defun send-server-finished (hs)
   "Send the server's Finished message."
+  (hs-log "~&[HS] send-server-finished: computing verify data~%")
   (let* ((ks (server-handshake-key-schedule hs))
          (cipher-suite (server-handshake-selected-cipher-suite hs))
          ;; Compute verify_data
@@ -618,19 +660,23 @@
     (server-handshake-update-transcript hs message)
     (key-schedule-update-transcript (server-handshake-key-schedule hs) message)
     ;; Send
+    (hs-log "~&[HS] send-server-finished: sending~%")
     (record-layer-write-handshake (server-handshake-record-layer hs) message)
     ;; Derive master secret and application secrets
+    (hs-log "~&[HS] send-server-finished: deriving app secrets~%")
     (key-schedule-derive-master-secret ks)
     (key-schedule-derive-application-traffic-secrets ks (server-handshake-transcript hs))
     ;; Log application secrets for Wireshark
     (keylog-write-application-secrets ks)
     ;; Install server application write keys
+    (hs-log "~&[HS] send-server-finished: installing app keys~%")
     (multiple-value-bind (key iv)
         (key-schedule-derive-server-traffic-keys ks :application)
       (record-layer-install-keys
        (server-handshake-record-layer hs)
        :write key iv
        cipher-suite))
+    (hs-log "~&[HS] send-server-finished: done, waiting for client~%")
     ;; Next state depends on whether we requested a client certificate
     (if (server-handshake-certificate-requested hs)
         (setf (server-handshake-state hs) :wait-client-certificate)
@@ -872,6 +918,15 @@
 
 ;;;; Main Handshake Orchestration
 
+(defvar *handshake-debug* nil
+  "When T, log detailed handshake progress for debugging.")
+
+(defun hs-log (format-string &rest args)
+  "Log handshake debug message."
+  (when *handshake-debug*
+    (apply #'format t format-string args)
+    (force-output)))
+
 (defun perform-server-handshake (record-layer certificate-chain private-key
                                   &key alpn-protocols verify-mode trust-store
                                        cipher-suites sni-callback certificate-provider)
@@ -885,6 +940,7 @@
    CERTIFICATE-PROVIDER, if provided, is called with (hostname alpn-list) before
    certificate selection. It should return (VALUES cert-chain key selected-alpn)
    to override both certificate and ALPN selection. Useful for ACME TLS-ALPN-01."
+  (hs-log "~&[HS] Starting server handshake~%")
   (let ((hs (make-server-handshake
              :record-layer record-layer
              :certificate-chain certificate-chain
@@ -900,6 +956,7 @@
              :certificate-provider certificate-provider)))
     ;; State machine loop
     (loop
+      (hs-log "~&[HS] State: ~A~%" (server-handshake-state hs))
       (case (server-handshake-state hs)
         (:start
          (setf (server-handshake-state hs) :wait-client-hello))

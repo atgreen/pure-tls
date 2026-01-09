@@ -15,6 +15,39 @@
 (defvar *tls-alpn-server* nil
   "Currently running TLS-ALPN-01 validation server state.")
 
+(defun generate-placeholder-certificate (domain)
+  "Generate a simple self-signed placeholder certificate for TLS startup.
+   This is used when no real certificate exists yet.
+   Returns (VALUES cert-pem key-pem)."
+  (multiple-value-bind (private-key public-key)
+      (ironclad:generate-key-pair :secp256r1)
+    (let* ((not-before (get-universal-time))
+           (not-after (+ not-before (* 1 24 60 60)))  ; 1 day validity
+           (serial (random (expt 2 64)))
+           (subject (encode-subject domain))
+           (san-ext (encode-critical-extension
+                     *oid-subject-alt-name*
+                     (encode-san-extension domain)))
+           (tbs-cert (encode-sequence
+                      (encode-context-tag 0 (encode-integer 2))
+                      (encode-integer serial)
+                      (encode-sequence (encode-oid *oid-ecdsa-with-sha256*))
+                      subject
+                      (encode-validity not-before not-after)
+                      subject
+                      (encode-ec-public-key public-key)
+                      (encode-x509-extensions (list san-ext))))
+           (raw-signature (let ((digest (ironclad:digest-sequence :sha256 tbs-cert)))
+                            (ironclad:sign-message private-key digest)))
+           (der-signature (encode-ecdsa-signature raw-signature))
+           (certificate (encode-sequence
+                         tbs-cert
+                         (encode-sequence (encode-oid *oid-ecdsa-with-sha256*))
+                         (encode-bit-string der-signature)))
+           (cert-pem (wrap-pem "CERTIFICATE" certificate))
+           (key-pem (encode-ec-private-key-pem private-key)))
+      (values cert-pem key-pem))))
+
 (defun generate-validation-certificate (domain key-authorization)
   "Generate a self-signed validation certificate for TLS-ALPN-01.
    Uses ECDSA P-256 for TLS 1.3 compatibility.
