@@ -251,7 +251,8 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
               :message (format nil "Unsupported group: ~X" group))))))
 
 (defun key-exchange-public-key-length (group)
-  "Return the public key length in bytes for the given named group."
+  "Return the client's public key length in bytes for the given named group.
+For hybrid, this is what the client sends (encapsulation key + ECDH public key)."
   (case group
     (#.+group-x25519+ 32)
     (#.+group-x448+ 56)
@@ -259,6 +260,18 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
     (#.+group-secp384r1+ 97)  ; uncompressed point
     (#.+group-secp521r1+ 133) ; uncompressed point
     (#.+group-x25519-mlkem768+ 1216)  ; 1184 + 32 (ML-KEM ek + X25519)
+    (otherwise 0)))
+
+(defun key-exchange-server-share-length (group)
+  "Return the server's key_share length in bytes for the given named group.
+For hybrid, this is what the server sends (ciphertext + ECDH public key)."
+  (case group
+    (#.+group-x25519+ 32)
+    (#.+group-x448+ 56)
+    (#.+group-secp256r1+ 65)  ; uncompressed point
+    (#.+group-secp384r1+ 97)  ; uncompressed point
+    (#.+group-secp521r1+ 133) ; uncompressed point
+    (#.+group-x25519-mlkem768+ 1120)  ; 1088 + 32 (ML-KEM ct + X25519)
     (otherwise 0)))
 
 (defun named-group-name (group)

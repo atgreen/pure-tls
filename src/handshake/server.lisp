@@ -35,6 +35,10 @@
                  :type list)
   ;; Key exchange state
   (key-exchange nil)
+  ;; Selected key exchange group
+  (selected-group nil)
+  ;; Server's key share bytes for ServerHello (public key or ct||pk for hybrid)
+  (server-share-bytes nil :type (or null octet-vector))
   ;; Selected parameters
   (selected-cipher-suite nil)
   (client-session-id nil :type (or null octet-vector))
@@ -290,7 +294,7 @@
       (hs-log "~&[HS] process-client-hello: processing key_share~%")
       (let* ((ks-ext (find-extension extensions +extension-key-share+))
              (sg-ext (find-extension extensions +extension-supported-groups+))
-             (our-groups (list +group-x25519+ +group-secp256r1+ +group-secp384r1+))
+             (our-groups (list +group-x25519-mlkem768+ +group-x25519+ +group-secp256r1+ +group-secp384r1+))
              (client-shares (when ks-ext
                               (key-share-ext-client-shares (tls-extension-data ks-ext))))
              ;; Find first share for a group we support
@@ -304,11 +308,35 @@
           (selected-share
            (let* ((group (key-share-entry-group selected-share))
                   (client-public (key-share-entry-key-exchange selected-share))
-                  (key-exchange (generate-key-exchange group)))
-             (setf (server-handshake-key-exchange hs) key-exchange)
-             ;; Compute shared secret
+                  (expected-len (key-exchange-public-key-length group)))
+             ;; Validate key_share length
+             (when (and (plusp expected-len)
+                        (/= (length client-public) expected-len))
+               (record-layer-write-alert (server-handshake-record-layer hs)
+                                         +alert-level-fatal+ +alert-illegal-parameter+)
+               (error 'tls-handshake-error
+                      :message (format nil ":DECODE_ERROR: Invalid key_share length for ~A: ~D (expected ~D)"
+                                      (named-group-name group) (length client-public) expected-len)
+                      :state :wait-client-hello))
+             ;; Store selected group
+             (setf (server-handshake-selected-group hs) group)
+             ;; Compute shared secret - different path for hybrid vs regular key exchange
              (hs-log "~&[HS] process-client-hello: computing shared secret for group ~A~%" group)
-             (let ((shared-secret (compute-shared-secret key-exchange client-public)))
+             (let ((shared-secret
+                     (cond
+                       ;; Hybrid X25519MLKEM768: use hybrid-server-encaps
+                       ((= group +group-x25519-mlkem768+)
+                        (multiple-value-bind (ss server-share)
+                            (hybrid-server-encaps client-public)
+                          (setf (server-handshake-server-share-bytes hs) server-share)
+                          ss))
+                       ;; Regular key exchange: generate keys and compute shared secret
+                       (t
+                        (let ((key-exchange (generate-key-exchange group)))
+                          (setf (server-handshake-key-exchange hs) key-exchange)
+                          (setf (server-handshake-server-share-bytes hs)
+                                (key-exchange-public-key key-exchange))
+                          (compute-shared-secret key-exchange client-public))))))
                (hs-log "~&[HS] process-client-hello: shared secret computed, initializing key schedule~%")
                ;; Initialize key schedule
                (let ((ks (make-key-schedule-state (server-handshake-selected-cipher-suite hs))))
@@ -391,21 +419,20 @@
 
 (defun generate-server-hello (hs)
   "Generate the ServerHello message."
-  (let* ((key-exchange (server-handshake-key-exchange hs))
-         (random (random-bytes 32))
+  (let* ((random (random-bytes 32))
          (extensions
            (list
             ;; supported_versions extension (required)
             (make-tls-extension
              :type +extension-supported-versions+
              :data (make-supported-versions-ext :selected-version +tls-1.3+))
-            ;; key_share extension
+            ;; key_share extension (uses pre-computed server share bytes)
             (make-tls-extension
              :type +extension-key-share+
              :data (make-key-share-ext
                     :server-share (make-key-share-entry
-                                   :group (key-exchange-group key-exchange)
-                                   :key-exchange (key-exchange-public-key key-exchange)))))))
+                                   :group (server-handshake-selected-group hs)
+                                   :key-exchange (server-handshake-server-share-bytes hs)))))))
     ;; Add pre_shared_key extension if PSK was accepted
     (when (server-handshake-psk-accepted hs)
       (push (make-tls-extension

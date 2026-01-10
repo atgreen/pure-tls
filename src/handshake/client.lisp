@@ -157,8 +157,8 @@
                               (if requested-group
                                   ;; CH2 after HRR with key_share: only the requested group
                                   (list (make-key-share-entry
-                                         :group (key-exchange-group key-exchange)
-                                         :key-exchange (key-exchange-public-key key-exchange)))
+                                         :group (get-key-exchange-group key-exchange)
+                                         :key-exchange (get-key-exchange-public-key key-exchange)))
                                   ;; CH1 or CH2 without HRR key_share: include GREASE + real
                                   (list
                                ;; GREASE key share entry (RFC 8701 §3.1)
@@ -170,8 +170,8 @@
                                                         (random-bytes 1))))
                                    ;; Real key share
                                    (make-key-share-entry
-                                    :group (key-exchange-group key-exchange)
-                                    :key-exchange (key-exchange-public-key key-exchange)))))))))
+                                    :group (get-key-exchange-group key-exchange)
+                                    :key-exchange (get-key-exchange-public-key key-exchange)))))))))
     ;; Add SNI if hostname provided
     (when (client-handshake-hostname hs)
       (push (make-tls-extension
@@ -499,12 +499,22 @@
              (server-group (key-share-entry-group server-share))
              (server-public (key-share-entry-key-exchange server-share)))
         ;; Verify server used our offered group
-        (unless (= server-group (key-exchange-group (client-handshake-key-exchange hs)))
+        (unless (= server-group (get-key-exchange-group (client-handshake-key-exchange hs)))
           (record-layer-write-alert (client-handshake-record-layer hs)
                                     +alert-level-fatal+ +alert-illegal-parameter+)
           (error 'tls-handshake-error
                  :message ":WRONG_CURVE: Server used different key exchange group"
                  :state :wait-server-hello))
+        ;; Validate server key_share length
+        (let ((expected-len (key-exchange-server-share-length server-group)))
+          (when (and (plusp expected-len)
+                     (/= (length server-public) expected-len))
+            (record-layer-write-alert (client-handshake-record-layer hs)
+                                      +alert-level-fatal+ +alert-illegal-parameter+)
+            (error 'tls-handshake-error
+                   :message (format nil ":DECODE_ERROR: Invalid server key_share length for ~A: ~D (expected ~D)"
+                                   (named-group-name server-group) (length server-public) expected-len)
+                   :state :wait-server-hello)))
         ;; Check for PSK acceptance
         (let ((psk-ext (find-extension extensions +extension-pre-shared-key+)))
           (when (and psk-ext (client-handshake-offered-psk hs))
