@@ -512,7 +512,7 @@
             (record-layer-write-alert (client-handshake-record-layer hs)
                                       +alert-level-fatal+ +alert-illegal-parameter+)
             (error 'tls-handshake-error
-                   :message (format nil ":ILLEGAL_PARAMETER: Invalid server key_share length for ~A: ~D (expected ~D)"
+                   :message (format nil ":BAD_ECPOINT: Invalid server key_share length for ~A: ~D (expected ~D)"
                                    (named-group-name server-group) (length server-public) expected-len)
                    :state :wait-server-hello)))
         ;; Check for PSK acceptance

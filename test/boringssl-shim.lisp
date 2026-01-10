@@ -72,7 +72,10 @@
   (channel-id nil :type boolean)  ; Channel ID
   (require-any-client-certificate nil :type boolean)  ; Require client cert (mTLS)
   (max-send-fragment 0 :type fixnum)  ; Max send fragment size (0 = default)
-  (max-cert-list 0 :type fixnum))  ; Max certificate list size (0 = default)
+  (max-cert-list 0 :type fixnum)  ; Max certificate list size (0 = default)
+  ;; Compliance policy flags (not implemented - will skip tests)
+  (fips-202205 nil :type boolean)
+  (wpa-202304 nil :type boolean))
 
 ;;;; Argument Parsing
 (defun parse-args (args)
@@ -272,6 +275,14 @@
                   (setf (shim-config-max-cert-list config)
                         (parse-integer (elt args i)))))
 
+               ;; FIPS compliance mode (not implemented)
+               ((string= arg "-fips-202205")
+                (setf (shim-config-fips-202205 config) t))
+
+               ;; WPA compliance mode (not implemented)
+               ((string= arg "-wpa-202304")
+                (setf (shim-config-wpa-202304 config) t))
+
                ;; Skip unknown flags but continue
                (t
                 ;; Check if next arg is a value for this flag
@@ -345,6 +356,14 @@
     ;; Channel ID not supported (deprecated)
     ((shim-config-channel-id config)
      :channel-id-not-supported)
+
+    ;; FIPS compliance mode not implemented
+    ((shim-config-fips-202205 config)
+     :fips-compliance-not-supported)
+
+    ;; WPA compliance mode not implemented
+    ((shim-config-wpa-202304 config)
+     :wpa-compliance-not-supported)
 
     (t nil)))
 
