@@ -33,6 +33,7 @@ Use with drakma via cl+ssl compatibility layer (drop-in OpenSSL replacement):
 
 - **Pure Common Lisp** - No foreign libraries or OpenSSL dependency
 - **TLS 1.3 only** - Modern, secure protocol with simplified handshake
+- **Post-quantum ready** - X25519MLKEM768 hybrid key exchange (FIPS 203)
 - **Automatic certificates** - Built-in ACME client for Let's Encrypt
 - **Gray streams** - Seamless integration with existing I/O code
 - **cl+ssl compatible** - Drop-in replacement API available
@@ -46,6 +47,7 @@ Use with drakma via cl+ssl compatibility layer (drop-in OpenSSL replacement):
 
 ### Supported Key Exchange
 
+- **X25519MLKEM768** (hybrid post-quantum) - Combines X25519 with ML-KEM-768 (FIPS 203)
 - X25519 (Curve25519)
 - secp256r1 (P-256)
 - secp384r1 (P-384)
@@ -520,6 +522,76 @@ Record padding helps mitigate traffic analysis by hiding the true length of appl
 - **ChaCha20-Poly1305 (Recommended)**: This cipher suite uses only ARX (add-rotate-xor) operations, which are inherently constant-time and resistant to cache-timing attacks. It is the preferred cipher suite for pure software implementations.
 - **AES-GCM**: Since Ironclad implements AES in pure Common Lisp using table lookups (rather than hardware AES-NI instructions), the AES-GCM cipher suites may be susceptible to cache-timing attacks. When possible, prefer ChaCha20-Poly1305 for better side-channel resistance.
 
+## Post-Quantum Key Exchange
+
+pure-tls supports **X25519MLKEM768**, a hybrid post-quantum key exchange that combines classical X25519 with the ML-KEM-768 lattice-based algorithm (FIPS 203). This provides defense against "harvest now, decrypt later" attacks where adversaries collect encrypted traffic today to decrypt with future quantum computers.
+
+### How It Works
+
+X25519MLKEM768 performs two key exchanges in parallel:
+
+1. **X25519** - Classical elliptic curve Diffie-Hellman (128-bit security)
+2. **ML-KEM-768** - Lattice-based key encapsulation (192-bit post-quantum security)
+
+The shared secrets are concatenated, ensuring security even if one algorithm is broken.
+
+### Automatic Negotiation
+
+Post-quantum key exchange is negotiated automatically when both client and server support it:
+
+```lisp
+;; Client and server negotiate X25519MLKEM768 if both support it
+;; No configuration needed - it's the preferred key exchange
+(pure-tls:make-tls-client-stream stream :hostname "example.com")
+```
+
+### Browser Compatibility
+
+Major browsers support X25519MLKEM768:
+- **Chrome 124+** - Enabled by default
+- **Firefox** - Behind flag
+- **Safari** - Not yet supported
+
+### Testing Post-Quantum with Chrome
+
+A test server is included for Chrome interoperability testing:
+
+```bash
+cd test/chrome-interop
+./generate-localhost-cert.sh  # Generate self-signed cert (once)
+sbcl --load chrome-server.lisp
+
+# Open Chrome to https://localhost:8443/
+# The page shows whether post-quantum key exchange was negotiated
+```
+
+### FIPS 203 Compliance
+
+The ML-KEM-768 implementation:
+- Passes all 1000 NIST FIPS 203 Known Answer Test (KAT) vectors
+- Uses constant-time modular arithmetic (Barrett reduction)
+- Implements implicit rejection for CCA security
+
+To run the KAT tests:
+
+```bash
+# Download test vectors
+curl -sL https://raw.githubusercontent.com/post-quantum-cryptography/KAT/main/MLKEM/kat_MLKEM_768.rsp \
+     -o test/vectors/kat_MLKEM_768.rsp
+
+# Run tests
+sbcl --eval '(asdf:load-system :pure-tls)' \
+     --load test/ml-kem-kat.lisp \
+     --eval '(ml-kem-kat:run-tests)'
+```
+
+### Security Considerations
+
+- **Hybrid design** - Security relies on the stronger of X25519 or ML-KEM-768
+- **Larger key shares** - Client sends 1216 bytes, server sends 1120 bytes (vs 32 bytes for X25519 alone)
+- **Constant-time** - All secret-dependent operations use constant-time arithmetic
+- **Implicit rejection** - Invalid ciphertexts produce pseudorandom output (CCA security)
+
 ## Debugging with Wireshark
 
 pure-tls supports the NSS Key Log format via the `SSLKEYLOGFILE` environment variable. This allows you to decrypt TLS traffic in Wireshark for debugging purposes.
@@ -674,8 +746,8 @@ The shim implements the BoringSSL test protocol, allowing pure-tls to be tested 
 
 - **0-RTT early data** - Disabled for security (replay attack concerns)
 - **DTLS** - Datagram TLS (UDP-based) is not implemented
-- **Post-quantum algorithms** - ML-KEM, ML-DSA, etc. are not yet supported
 - **Certificate compression** - RFC 8879 is not implemented
+- **Post-quantum signatures** - ML-DSA (FIPS 204) is not yet supported for certificates
 
 ### Limited Support
 
@@ -719,6 +791,7 @@ Copyright (c) 2026 Anthony Green <green@moxielogic.com>
 ## See Also
 
 - [RFC 8446](https://tools.ietf.org/html/rfc8446) - TLS 1.3 specification
+- [FIPS 203](https://csrc.nist.gov/pubs/fips/203/final) - ML-KEM (Module-Lattice-Based Key-Encapsulation Mechanism)
 - [RFC 8555](https://tools.ietf.org/html/rfc8555) - ACME protocol specification
 - [RFC 8737](https://tools.ietf.org/html/rfc8737) - TLS-ALPN-01 challenge
 - [Let's Encrypt](https://letsencrypt.org/) - Free, automated certificate authority
