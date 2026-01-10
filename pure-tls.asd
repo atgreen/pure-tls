@@ -29,7 +29,8 @@
                 :serial t
                 :components ((:file "hkdf")
                              (:file "aead")
-                             (:file "key-exchange")))
+                             (:file "key-exchange")
+                             (:file "ml-kem")))
                (:module "src/record"
                 :serial t
                 :components ((:file "record-layer")))

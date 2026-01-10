@@ -232,6 +232,110 @@
     (is (not (bytes-equal a b))
         "Two random byte vectors should be different (with overwhelming probability)")))
 
+;;;; ML-KEM-768 Tests
+
+(test ml-kem-768-roundtrip
+  "Test ML-KEM-768 key generation, encapsulation, and decapsulation"
+  (multiple-value-bind (ek dk)
+      (pure-tls::ml-kem-768-keygen)
+    ;; Check key sizes
+    (is (= (length ek) 1184)
+        "Encapsulation key should be 1184 bytes")
+    (is (= (length dk) 2400)
+        "Decapsulation key should be 2400 bytes")
+    ;; Test encapsulation
+    (multiple-value-bind (ss ct)
+        (pure-tls::ml-kem-768-encaps ek)
+      (is (= (length ss) 32)
+          "Shared secret should be 32 bytes")
+      (is (= (length ct) 1088)
+          "Ciphertext should be 1088 bytes")
+      ;; Test decapsulation
+      (let ((ss-dec (pure-tls::ml-kem-768-decaps dk ct)))
+        (is (= (length ss-dec) 32)
+            "Decapsulated shared secret should be 32 bytes")
+        (is (bytes-equal ss ss-dec)
+            "Decapsulated shared secret should match encapsulated one")))))
+
+(test ml-kem-768-deterministic
+  "Test ML-KEM-768 with deterministic randomness"
+  (let ((d (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x42))
+        (z (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x43))
+        (m (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x44)))
+    (multiple-value-bind (ek dk)
+        (pure-tls::ml-kem-768-keygen-internal d z)
+      (multiple-value-bind (ss ct)
+          (pure-tls::ml-kem-768-encaps-internal ek m)
+        (let ((ss-dec (pure-tls::ml-kem-768-decaps dk ct)))
+          (is (bytes-equal ss ss-dec)
+              "Deterministic encaps/decaps should produce same shared secret"))))))
+
+(test ml-kem-768-implicit-rejection
+  "Test ML-KEM-768 implicit rejection with modified ciphertext"
+  (multiple-value-bind (ek dk)
+      (pure-tls::ml-kem-768-keygen)
+    (multiple-value-bind (ss ct)
+        (pure-tls::ml-kem-768-encaps ek)
+      ;; Modify the ciphertext
+      (let ((bad-ct (copy-seq ct)))
+        (setf (aref bad-ct 0) (logxor (aref bad-ct 0) #xff))
+        (let ((bad-ss (pure-tls::ml-kem-768-decaps dk bad-ct)))
+          ;; Implicit rejection: different shared secret, not an error
+          (is (= (length bad-ss) 32)
+              "Implicit rejection should still return 32 bytes")
+          (is (not (bytes-equal ss bad-ss))
+              "Modified ciphertext should produce different shared secret"))))))
+
+(test ml-kem-ntt-roundtrip
+  "Test NTT forward and inverse transforms"
+  (let ((poly (pure-tls::make-ml-kem-poly)))
+    ;; Initialize with some values
+    (dotimes (i 256)
+      (setf (aref poly i) (mod i pure-tls::+ml-kem-q+)))
+    (let ((original (copy-seq poly)))
+      ;; Apply NTT and inverse NTT
+      (pure-tls::ntt-forward poly)
+      (pure-tls::ntt-inverse poly)
+      ;; Should get back the original
+      (is (every #'= original poly)
+          "NTT inverse should restore original polynomial"))))
+
+(test hybrid-x25519-ml-kem-768-roundtrip
+  "Test hybrid X25519+ML-KEM-768 key exchange"
+  ;; Client generates hybrid key exchange
+  (let ((client-kex (pure-tls::make-hybrid-x25519-ml-kem-768)))
+    ;; Get client's public key share
+    (let ((client-share (pure-tls::hybrid-public-key client-kex)))
+      (is (= (length client-share) 1216)
+          "Client share should be 1216 bytes (32 + 1184)")
+      ;; Server performs encapsulation
+      (multiple-value-bind (server-ss server-share)
+          (pure-tls::hybrid-server-encaps client-share)
+        (is (= (length server-ss) 64)
+            "Server shared secret should be 64 bytes")
+        (is (= (length server-share) 1120)
+            "Server share should be 1120 bytes (32 + 1088)")
+        ;; Client computes shared secret
+        (let ((client-ss (pure-tls::hybrid-compute-shared-secret client-kex server-share)))
+          (is (= (length client-ss) 64)
+              "Client shared secret should be 64 bytes")
+          (is (bytes-equal server-ss client-ss)
+              "Client and server should derive same shared secret"))))))
+
+(test ml-kem-poly-arithmetic
+  "Test polynomial addition and subtraction"
+  (let ((a (pure-tls::make-ml-kem-poly))
+        (b (pure-tls::make-ml-kem-poly)))
+    ;; Set some values
+    (dotimes (i 256)
+      (setf (aref a i) (mod (* i 13) pure-tls::+ml-kem-q+))
+      (setf (aref b i) (mod (* i 7) pure-tls::+ml-kem-q+)))
+    ;; Test a + b - b = a
+    (let* ((sum (pure-tls::poly-add a b))
+           (diff (pure-tls::poly-sub sum b)))
+      (is (every #'= a diff)
+          "a + b - b should equal a"))))
+
 ;;;; Test Runner
 
 (defun run-crypto-tests ()

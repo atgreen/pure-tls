@@ -224,6 +224,8 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
      (make-secp256r1-key-exchange))
     (#.+group-secp384r1+
      (make-secp384r1-key-exchange))
+    (#.+group-x25519-kyber768-draft00+
+     (make-hybrid-x25519-ml-kem-768))
     (otherwise
      (error 'tls-crypto-error
             :operation "key exchange"
@@ -231,6 +233,10 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
 
 (defun compute-shared-secret (key-exchange peer-public-key)
   "Compute the shared secret using the key exchange and peer's public key."
+  ;; Handle hybrid key exchange separately
+  (when (hybrid-key-exchange-p key-exchange)
+    (return-from compute-shared-secret
+      (hybrid-compute-shared-secret key-exchange peer-public-key)))
   (let ((group (key-exchange-group key-exchange)))
     (case group
       (#.+group-x25519+
@@ -252,6 +258,7 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
     (#.+group-secp256r1+ 65)  ; uncompressed point
     (#.+group-secp384r1+ 97)  ; uncompressed point
     (#.+group-secp521r1+ 133) ; uncompressed point
+    (#.+group-x25519-kyber768-draft00+ 1216)  ; 32 + 1184 (X25519 + ML-KEM ek)
     (otherwise 0)))
 
 (defun named-group-name (group)
@@ -265,7 +272,23 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
     (#.+group-ffdhe2048+ "ffdhe2048")
     (#.+group-ffdhe3072+ "ffdhe3072")
     (#.+group-ffdhe4096+ "ffdhe4096")
+    (#.+group-x25519-kyber768-draft00+ "X25519Kyber768Draft00")
+    (#.+group-secp256r1-kyber768-draft00+ "SecP256r1Kyber768Draft00")
     (otherwise (format nil "unknown(~X)" group))))
+
+;;;; Generic Key Exchange Accessors (works with both regular and hybrid)
+
+(defun get-key-exchange-public-key (kex)
+  "Get the public key from any type of key exchange."
+  (if (hybrid-key-exchange-p kex)
+      (hybrid-public-key kex)
+      (key-exchange-public-key kex)))
+
+(defun get-key-exchange-group (kex)
+  "Get the named group from any type of key exchange."
+  (if (hybrid-key-exchange-p kex)
+      +group-x25519-kyber768-draft00+
+      (key-exchange-group kex)))
 
 ;;;; Supported Groups for ClientHello
 

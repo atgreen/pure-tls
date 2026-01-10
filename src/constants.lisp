@@ -121,6 +121,12 @@
 (defconstant +group-ffdhe6144+ #x0103)
 (defconstant +group-ffdhe8192+ #x0104)
 
+;; Hybrid Post-Quantum Key Exchange (draft-ietf-tls-hybrid-design)
+(defconstant +group-x25519-kyber768-draft00+ #x6399
+  "X25519Kyber768Draft00 hybrid post-quantum key exchange.")
+(defconstant +group-secp256r1-kyber768-draft00+ #x639a
+  "SecP256r1Kyber768Draft00 hybrid post-quantum key exchange.")
+
 ;;;; Signature Algorithms (RFC 8446 Section 4.2.3)
 
 (defconstant +sig-rsa-pkcs1-md5+ #x0101)
