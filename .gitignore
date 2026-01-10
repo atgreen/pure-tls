@@ -30,3 +30,10 @@ RCS
 
 # Build artifacts
 pure-tls-shim
+
+# Generated test certificates
+test/chrome-interop/localhost-cert.pem
+test/chrome-interop/localhost-key.pem
+
+# Large test vector files (download separately)
+test/vectors/*.rsp
