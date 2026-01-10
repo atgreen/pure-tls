@@ -315,7 +315,7 @@
                (record-layer-write-alert (server-handshake-record-layer hs)
                                          +alert-level-fatal+ +alert-illegal-parameter+)
                (error 'tls-handshake-error
-                      :message (format nil ":DECODE_ERROR: Invalid key_share length for ~A: ~D (expected ~D)"
+                      :message (format nil ":ILLEGAL_PARAMETER: Invalid key_share length for ~A: ~D (expected ~D)"
                                       (named-group-name group) (length client-public) expected-len)
                       :state :wait-client-hello))
              ;; Store selected group
