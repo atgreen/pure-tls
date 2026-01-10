@@ -747,18 +747,19 @@ Returns 32-byte shared secret."
                     finally (return diff)))))
 
 ;;;; =========================================================================
-;;;; TLS Hybrid Key Exchange: X25519 + ML-KEM-768
+;;;; TLS Hybrid Key Exchange: X25519MLKEM768 (FIPS 203)
+;;;; Per draft-kwiatkowski-tls-ecdhe-mlkem, ML-KEM comes FIRST
 ;;;; =========================================================================
 
 (defstruct hybrid-key-exchange
-  "Hybrid key exchange state for X25519Kyber768."
+  "Hybrid key exchange state for X25519MLKEM768."
   (x25519 nil)          ; X25519 key exchange state
   (ml-kem-ek nil)       ; ML-KEM encapsulation key (for client, sent to server)
   (ml-kem-dk nil)       ; ML-KEM decapsulation key (for client, kept secret)
   (ml-kem-ct nil))      ; ML-KEM ciphertext (for server response)
 
 (defun make-hybrid-x25519-ml-kem-768 ()
-  "Generate hybrid X25519 + ML-KEM-768 key exchange for client."
+  "Generate hybrid X25519MLKEM768 key exchange for client."
   (let ((x25519-kex (make-x25519-key-exchange)))
     (multiple-value-bind (ek dk)
         (ml-kem-768-keygen)
@@ -767,31 +768,32 @@ Returns 32-byte shared secret."
                                 :ml-kem-dk dk))))
 
 (defun hybrid-public-key (kex)
-  "Return the hybrid public key (X25519 || ML-KEM ek) for ClientHello."
-  (let ((x25519-pk (key-exchange-public-key (hybrid-key-exchange-x25519 kex)))
-        (ml-kem-ek (hybrid-key-exchange-ml-kem-ek kex)))
-    (concatenate '(vector (unsigned-byte 8)) x25519-pk ml-kem-ek)))
+  "Return the hybrid public key (ML-KEM ek || X25519) for ClientHello.
+Per X25519MLKEM768 spec, ML-KEM comes first."
+  (let ((ml-kem-ek (hybrid-key-exchange-ml-kem-ek kex))
+        (x25519-pk (key-exchange-public-key (hybrid-key-exchange-x25519 kex))))
+    (concatenate '(vector (unsigned-byte 8)) ml-kem-ek x25519-pk)))
 
 (defun hybrid-compute-shared-secret (kex server-share)
   "Compute hybrid shared secret from server's key share.
-SERVER-SHARE is X25519 public key (32 bytes) || ML-KEM ciphertext (1088 bytes).
-Returns 64-byte shared secret (X25519 ss || ML-KEM ss)."
-  (let* ((x25519-pk (subseq server-share 0 32))
-         (ml-kem-ct (subseq server-share 32))
-         (x25519-ss (x25519-compute-shared-secret
-                     (hybrid-key-exchange-x25519 kex)
-                     x25519-pk))
+SERVER-SHARE is ML-KEM ciphertext (1088 bytes) || X25519 public key (32 bytes).
+Returns 64-byte shared secret (ML-KEM ss || X25519 ss)."
+  (let* ((ml-kem-ct (subseq server-share 0 1088))
+         (x25519-pk (subseq server-share 1088))
          (ml-kem-ss (ml-kem-768-decaps
                      (hybrid-key-exchange-ml-kem-dk kex)
-                     ml-kem-ct)))
-    (concatenate '(vector (unsigned-byte 8)) x25519-ss ml-kem-ss)))
+                     ml-kem-ct))
+         (x25519-ss (x25519-compute-shared-secret
+                     (hybrid-key-exchange-x25519 kex)
+                     x25519-pk)))
+    (concatenate '(vector (unsigned-byte 8)) ml-kem-ss x25519-ss)))
 
 (defun hybrid-server-encaps (client-share)
   "Server-side hybrid encapsulation.
-CLIENT-SHARE is X25519 public key (32 bytes) || ML-KEM ek (1184 bytes).
+CLIENT-SHARE is ML-KEM ek (1184 bytes) || X25519 public key (32 bytes).
 Returns (values shared-secret server-share)."
-  (let* ((x25519-client-pk (subseq client-share 0 32))
-         (ml-kem-ek (subseq client-share 32))
+  (let* ((ml-kem-ek (subseq client-share 0 1184))
+         (x25519-client-pk (subseq client-share 1184))
          ;; X25519 key exchange
          (x25519-kex (make-x25519-key-exchange))
          (x25519-ss (x25519-compute-shared-secret x25519-kex x25519-client-pk))
@@ -800,7 +802,7 @@ Returns (values shared-secret server-share)."
     (multiple-value-bind (ml-kem-ss ml-kem-ct)
         (ml-kem-768-encaps ml-kem-ek)
       (let ((shared-secret (concatenate '(vector (unsigned-byte 8))
-                                        x25519-ss ml-kem-ss))
+                                        ml-kem-ss x25519-ss))
             (server-share (concatenate '(vector (unsigned-byte 8))
-                                       x25519-server-pk ml-kem-ct)))
+                                       ml-kem-ct x25519-server-pk)))
         (values shared-secret server-share)))))

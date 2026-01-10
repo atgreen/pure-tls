@@ -121,11 +121,15 @@
 (defconstant +group-ffdhe6144+ #x0103)
 (defconstant +group-ffdhe8192+ #x0104)
 
-;; Hybrid Post-Quantum Key Exchange (draft-ietf-tls-hybrid-design)
+;; Hybrid Post-Quantum Key Exchange
+;; X25519MLKEM768 uses FIPS 203 ML-KEM-768 (draft-kwiatkowski-tls-ecdhe-mlkem)
+(defconstant +group-x25519-mlkem768+ #x11ec
+  "X25519MLKEM768 hybrid post-quantum key exchange (FIPS 203).")
+;; Legacy Kyber drafts (not compatible with ML-KEM)
 (defconstant +group-x25519-kyber768-draft00+ #x6399
-  "X25519Kyber768Draft00 hybrid post-quantum key exchange.")
+  "X25519Kyber768Draft00 - pre-FIPS draft, NOT compatible with ML-KEM.")
 (defconstant +group-secp256r1-kyber768-draft00+ #x639a
-  "SecP256r1Kyber768Draft00 hybrid post-quantum key exchange.")
+  "SecP256r1Kyber768Draft00 - pre-FIPS draft, NOT compatible with ML-KEM.")
 
 ;;;; Signature Algorithms (RFC 8446 Section 4.2.3)
 

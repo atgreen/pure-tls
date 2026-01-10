@@ -224,7 +224,7 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
      (make-secp256r1-key-exchange))
     (#.+group-secp384r1+
      (make-secp384r1-key-exchange))
-    (#.+group-x25519-kyber768-draft00+
+    (#.+group-x25519-mlkem768+
      (make-hybrid-x25519-ml-kem-768))
     (otherwise
      (error 'tls-crypto-error
@@ -258,7 +258,7 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
     (#.+group-secp256r1+ 65)  ; uncompressed point
     (#.+group-secp384r1+ 97)  ; uncompressed point
     (#.+group-secp521r1+ 133) ; uncompressed point
-    (#.+group-x25519-kyber768-draft00+ 1216)  ; 32 + 1184 (X25519 + ML-KEM ek)
+    (#.+group-x25519-mlkem768+ 1216)  ; 1184 + 32 (ML-KEM ek + X25519)
     (otherwise 0)))
 
 (defun named-group-name (group)
@@ -272,6 +272,7 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
     (#.+group-ffdhe2048+ "ffdhe2048")
     (#.+group-ffdhe3072+ "ffdhe3072")
     (#.+group-ffdhe4096+ "ffdhe4096")
+    (#.+group-x25519-mlkem768+ "X25519MLKEM768")
     (#.+group-x25519-kyber768-draft00+ "X25519Kyber768Draft00")
     (#.+group-secp256r1-kyber768-draft00+ "SecP256r1Kyber768Draft00")
     (otherwise (format nil "unknown(~X)" group))))
@@ -287,16 +288,17 @@ Rejects all-zero shared secrets per RFC 7748 §6.1 and RFC 8446 §7.4.2."
 (defun get-key-exchange-group (kex)
   "Get the named group from any type of key exchange."
   (if (hybrid-key-exchange-p kex)
-      +group-x25519-kyber768-draft00+
+      +group-x25519-mlkem768+
       (key-exchange-group kex)))
 
 ;;;; Supported Groups for ClientHello
 
 (defparameter *supported-groups*
-  (list +group-x25519+ +group-secp256r1+ +group-secp384r1+)
-  "List of named groups we support, in preference order.")
+  (list +group-x25519-mlkem768+ +group-x25519+ +group-secp256r1+ +group-secp384r1+)
+  "List of named groups we support, in preference order.
+X25519MLKEM768 is preferred for post-quantum security.")
 
-(defparameter *preferred-group* +group-x25519+
+(defparameter *preferred-group* +group-x25519-mlkem768+
   "The preferred named group to offer in ClientHello key_share.")
 
 ;;;; Signature Algorithms
