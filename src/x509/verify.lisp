@@ -208,13 +208,15 @@
 ;;;
 ;;; For now, we provide basic building blocks.
 
-(defun verify-certificate-chain (chain trusted-roots &optional (now (get-universal-time)) hostname)
+(defun verify-certificate-chain (chain trusted-roots &optional (now (get-universal-time)) hostname
+                                 &key check-revocation)
   "Verify a certificate chain against trusted roots.
    CHAIN is a list of certificates, leaf first.
    TRUSTED-ROOTS is a list of trusted CA certificates (may be NIL on Windows/macOS with native verification).
    HOSTNAME is optional; if provided on Windows/macOS, enables native verification.
+   CHECK-REVOCATION if T, checks CRL Distribution Points for each certificate.
    Returns T if verification succeeds, signals an error otherwise."
-  (declare (ignorable hostname))  ; Only used with native verification
+  (declare (ignorable hostname check-revocation))  ; Only used conditionally
   (when (null chain)
     (error 'tls-certificate-error :message "Empty certificate chain"))
 
@@ -282,7 +284,15 @@
            ;; Verify the cryptographic signature
            (unless (verify-certificate-signature cert issuer)
              (error 'tls-certificate-error
-                    :message "Certificate signature verification failed in chain")))
+                    :message "Certificate signature verification failed in chain"))
+
+           ;; Check CRL revocation if requested (with signature verification)
+           (when check-revocation
+             (let ((status (check-certificate-revocation cert :issuer-cert issuer)))
+               (when (eq status :revoked)
+                 (error 'tls-certificate-error
+                        :message (format nil "Certificate has been revoked (serial: ~X)"
+                                        (x509-certificate-serial-number cert)))))))
   ;; Check if chain is anchored in trusted roots.
   (let* ((root (first (last chain)))
          (anchored (or (find-if (lambda (trusted)

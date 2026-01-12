@@ -296,8 +296,13 @@ Per DER (X.690): integers must be minimally encoded."
     ((2 5 29 15) . :key-usage)
     ((2 5 29 17) . :subject-alt-name)
     ((2 5 29 19) . :basic-constraints)
+    ((2 5 29 31) . :crl-distribution-points)
     ((2 5 29 35) . :authority-key-identifier)
     ((2 5 29 37) . :extended-key-usage)
+    ;; Authority Information Access (RFC 5280)
+    ((1 3 6 1 5 5 7 1 1) . :authority-info-access)
+    ((1 3 6 1 5 5 7 48 1) . :ocsp)
+    ((1 3 6 1 5 5 7 48 2) . :ca-issuers)
     ;; Signature Algorithms
     ((1 2 840 113549 1 1 1) . :rsa-encryption)
     ((1 2 840 113549 1 1 5) . :sha1-with-rsa-encryption)

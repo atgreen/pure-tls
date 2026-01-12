@@ -303,6 +303,8 @@ instance of a particular extension."
        (parse-basic-constraints value-bytes))
       (:key-usage
        (parse-key-usage value-bytes))
+      (:crl-distribution-points
+       (parse-crl-distribution-points value-bytes))
       (otherwise
        ;; Return raw bytes for unknown extensions
        value-bytes))))
@@ -359,6 +361,37 @@ instance of a particular extension."
         (when (logbitp 0 byte0) (push :encipher-only usages))
         (when (logbitp 7 byte1) (push :decipher-only usages))))
     (nreverse usages)))
+
+(defun parse-crl-distribution-points (bytes)
+  "Parse CRLDistributionPoints extension value (RFC 5280 s4.2.1.13).
+   Returns a list of distribution point URIs.
+
+   CRLDistributionPoints ::= SEQUENCE SIZE (1..MAX) OF DistributionPoint
+   DistributionPoint ::= SEQUENCE {
+       distributionPoint       [0]     DistributionPointName OPTIONAL,
+       reasons                 [1]     ReasonFlags OPTIONAL,
+       cRLIssuer               [2]     GeneralNames OPTIONAL }
+   DistributionPointName ::= CHOICE {
+       fullName                [0]     GeneralNames,
+       nameRelativeToCRLIssuer [1]     RelativeDistinguishedName }"
+  (let* ((node (parse-der bytes))
+         (uris nil))
+    (dolist (dp (asn1-children node))
+      ;; Each DistributionPoint is a SEQUENCE
+      (dolist (child (asn1-children dp))
+        ;; Look for [0] distributionPoint
+        (when (asn1-context-p child 0)
+          ;; Inside distributionPoint, look for [0] fullName (GeneralNames)
+          (dolist (dp-name-child (asn1-children child))
+            (when (asn1-context-p dp-name-child 0)
+              ;; GeneralNames is a SEQUENCE of GeneralName
+              ;; Each GeneralName is context-tagged
+              (dolist (general-name (asn1-children dp-name-child))
+                ;; Tag 6 = uniformResourceIdentifier (URI)
+                (when (and (= (asn1-node-class general-name) +asn1-class-context-specific+)
+                           (= (asn1-node-tag general-name) 6))
+                  (push (octets-to-string (asn1-node-value general-name)) uris))))))))
+    (nreverse uris)))
 
 ;;;; Certificate Accessors
 
@@ -429,6 +462,14 @@ instance of a particular extension."
     (when ku-ext
       (x509-extension-value ku-ext))))
 
+(defun certificate-crl-distribution-points (cert)
+  "Get the CRL Distribution Points URIs from the certificate.
+   Returns a list of URI strings where CRLs can be fetched, or NIL if not present."
+  (let ((cdp-ext (find :crl-distribution-points (x509-certificate-extensions cert)
+                       :key #'x509-extension-oid)))
+    (when cdp-ext
+      (x509-extension-value cdp-ext))))
+
 (defun certificate-has-key-usage-p (cert usage)
   "Check if certificate has a specific key usage bit set.
    USAGE is a keyword like :key-cert-sign or :digital-signature."
@@ -461,7 +502,8 @@ instance of a particular extension."
                                      :policy-mappings
                                      :policy-constraints
                                      :inhibit-any-policy
-                                     :extended-key-usage)))
+                                     :extended-key-usage
+                                     :crl-distribution-points)))
     (loop for ext in (x509-certificate-extensions cert)
           when (and (x509-extension-critical ext)
                     (not (member (x509-extension-oid ext) known-critical-extensions)))

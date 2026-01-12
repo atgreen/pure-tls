@@ -17,6 +17,8 @@
                "cl-base64"
                "trivial-features"
                "idna"
+               "bordeaux-threads"
+               "usocket"
                ;; CFFI needed on Windows and macOS for native cert validation
                (:feature :windows "cffi")
                (:feature (:or :darwin :macos) "cffi"))
@@ -46,6 +48,7 @@
                 :serial t
                 :components ((:file "asn1")
                              (:file "certificate")
+                             (:file "crl")
                              ;; Windows native cert validation via CryptoAPI
                              (:file "windows-verify" :if-feature :windows)
                              ;; macOS native cert validation via Security.framework
@@ -110,7 +113,8 @@
                "usocket"
                "iparse"
                "cl-ppcre"
-               "bordeaux-threads")
+               "bordeaux-threads"
+               "drakma")
   :serial t
   :components ((:module "test"
                 :serial t

@@ -59,6 +59,26 @@ Use with drakma via cl+ssl compatibility layer (drop-in OpenSSL replacement):
 - ECDSA with P-256 (SHA-256)
 - ECDSA with P-384 (SHA-384)
 
+### Certificate Revocation
+
+- **CRL Support** - Checks Certificate Revocation Lists (RFC 5280)
+- Parses CRL Distribution Points extension from certificates
+- Built-in HTTP client fetches CRLs (no external dependencies)
+- **CRL signature verification** - Validates CRL authenticity using issuer's public key
+- Honors `HTTP_PROXY` environment variable
+- Thread-safe caching of fetched CRLs
+- Optional revocation checking during certificate verification
+
+```lisp
+;; Enable CRL checking during verification
+(pure-tls::verify-certificate-chain chain roots now hostname
+                                    :check-revocation t)
+
+;; Check a single certificate
+(pure-tls::check-certificate-revocation cert)
+;; Returns :valid, :revoked, :unknown, or :error
+```
+
 ## Installation
 
 Using [ocicl](https://github.com/ocicl/ocicl):
