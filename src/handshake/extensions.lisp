@@ -60,9 +60,10 @@
                          +extension-renegotiation-info+        ; 65281
                          +extension-next-protocol-negotiation+)))
 
-(defun parse-extensions (data &key validate-tls13)
+(defun parse-extensions (data &key validate-tls13 (context :client-hello))
   "Parse a list of extensions from bytes.
-   If VALIDATE-TLS13 is true, reject TLS 1.2-only extensions with an error."
+   If VALIDATE-TLS13 is true, reject TLS 1.2-only extensions with an error.
+   CONTEXT is :client-hello (default) or :encrypted-extensions."
   (let ((buf (make-tls-buffer data))
         (extensions nil)
         (seen-types nil))
@@ -80,11 +81,12 @@
                  (error 'tls-handshake-error
                         :message (format nil ":ERROR_PARSING_EXTENSION: TLS 1.2-only extension ~D received in TLS 1.3"
                                         ext-type)))
-               (push (parse-extension ext-type ext-data) extensions)))
+               (push (parse-extension ext-type ext-data :context context) extensions)))
     (nreverse extensions)))
 
-(defun parse-extension (ext-type data)
-  "Parse a single extension."
+(defun parse-extension (ext-type data &key (context :client-hello))
+  "Parse a single extension.
+   CONTEXT is :client-hello (default) or :encrypted-extensions."
   (make-tls-extension
    :type ext-type
    :data (case ext-type
@@ -107,7 +109,7 @@
             ;; ServerHello format (just selected index) is only 2 bytes
             (parse-pre-shared-key-extension data :server-hello-p (= (length data) 2)))
            (#.+extension-ech+
-            (parse-ech-extension data))
+            (parse-ech-extension data :context context))
            (otherwise data))))  ; Return raw bytes for unknown extensions
 
 (defun serialize-extension (ext)
@@ -529,9 +531,10 @@
   "encrypted_client_hello extension data.
    For ClientHelloOuter: type=:outer, has config-id, cipher-suite, enc, payload
    For ClientHelloInner: type=:inner, empty
+   For HelloRetryRequest: type=:hrr, has config-id and enc (echoed from CH1)
    For EncryptedExtensions: type=:retry, has retry-configs"
-  (type :outer :type (member :outer :inner :retry))
-  ;; For outer
+  (type :outer :type (member :outer :inner :hrr :retry))
+  ;; For outer and hrr
   (config-id 0 :type (unsigned-byte 8))
   (cipher-suite nil :type (or null ech-hpke-cipher-suite))
   (enc nil :type (or null octet-vector))
@@ -539,17 +542,55 @@
   ;; For retry (EncryptedExtensions)
   (retry-configs nil :type (or null list)))
 
-(defun parse-ech-extension (data)
+(defun parse-ech-extension (data &key (context :client-hello))
   "Parse ECH extension.
-   The format depends on context:
-   - Empty (0 bytes): Server acceptance confirmation
+   CONTEXT should be :client-hello for ClientHello extensions,
+   :server-hello for ServerHello/HelloRetryRequest,
+   or :encrypted-extensions for server's EncryptedExtensions.
+
+   In ClientHello:
    - 1 byte with value 1: ClientHelloInner marker
    - Starts with 0: ClientHelloOuter format
+
+   In ServerHello/HelloRetryRequest:
+   - Empty (0 bytes): ECH confirmation not sent
+   - 1 byte with value 0: ECH confirmation (draft-ietf-tls-esni)
+
+   In EncryptedExtensions:
+   - Empty (0 bytes): Server acceptance confirmation
    - Otherwise: retry_configs (ECHConfigList)"
   (cond
-    ;; Empty extension - server acceptance in EncryptedExtensions
+    ;; Empty extension - server acceptance confirmation
     ((zerop (length data))
      (make-ech-ext :type :retry :retry-configs nil))
+    ;; In ServerHello/HRR context: 1 byte = 0 means ECH confirmation (legacy draft)
+    ((and (eq context :server-hello)
+          (= (length data) 1)
+          (zerop (aref data 0)))
+     (make-ech-ext :type :retry :retry-configs nil))
+    ;; In ServerHello/HRR context: 8 bytes = ECH acceptance confirmation
+    ;; RFC 9639 Section 7.1.1: Server sends 8-byte confirmation when ECH accepted
+    ((and (eq context :server-hello)
+          (= (length data) 8))
+     ;; Store the confirmation for later validation
+     (make-ech-ext :type :hrr :enc data))  ; Use enc slot to store confirmation
+    ;; In ServerHello context with config_id + enc: HRR echoing our values
+    ;; RFC 9639 Section 7.1: Format: uint8 config_id; opaque enc<0..2^16-1>;
+    ;; The length would be 1 + 2 + enc_length, so at least 35 bytes for X25519
+    ((and (eq context :server-hello)
+          (>= (length data) 35))
+     (let ((buf (make-tls-buffer data)))
+       (let ((config-id (buffer-read-octet buf))
+             (enc (buffer-read-vector16 buf)))
+         (make-ech-ext :type :hrr :config-id config-id :enc enc))))
+    ;; ServerHello context with unexpected size - wrap as raw data
+    ((eq context :server-hello)
+     (make-ech-ext :type :hrr :enc data))
+    ;; In EncryptedExtensions context, non-empty means retry_configs
+    ((eq context :encrypted-extensions)
+     (make-ech-ext
+      :type :retry
+      :retry-configs (parse-ech-config-list data)))
     ;; ClientHelloInner marker
     ((and (= (length data) 1)
           (= (aref data 0) +ech-client-type-inner+))
@@ -569,7 +610,7 @@
           :cipher-suite (make-ech-hpke-cipher-suite :kdf-id kdf-id :aead-id aead-id)
           :enc enc
           :payload payload))))
-    ;; retry_configs in EncryptedExtensions
+    ;; Fallback - try as retry_configs
     (t
      (make-ech-ext
       :type :retry

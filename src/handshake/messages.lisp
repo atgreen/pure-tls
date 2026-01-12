@@ -118,7 +118,8 @@
            ;; Extensions are optional but consume all remaining data
            (extensions (when (plusp (buffer-remaining buf))
                          (parse-extensions (buffer-read-vector16 buf)
-                                           :validate-tls13 t))))
+                                           :validate-tls13 t
+                                           :context :server-hello))))
       ;; Check for trailing data after extensions
       (when (plusp (buffer-remaining buf))
         (error 'tls-handshake-error
@@ -171,7 +172,8 @@
   "Parse EncryptedExtensions from bytes."
   (let ((buf (make-tls-buffer data)))
     (let ((extensions (parse-extensions (buffer-read-vector16 buf)
-                                        :validate-tls13 t)))
+                                        :validate-tls13 t
+                                        :context :encrypted-extensions)))
       ;; Check for trailing data
       (when (plusp (buffer-remaining buf))
         (error 'tls-handshake-error

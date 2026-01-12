@@ -80,9 +80,12 @@
   (ech-config-used nil)  ; The ECHConfig we selected
   (ech-cipher-suite nil)  ; Selected HPKE cipher suite
   (ech-hpke-context nil)  ; HPKE context for accept confirmation
+  (ech-enc nil :type (or null octet-vector))  ; HPKE enc from CH1 (reused in CH2)
   (ech-inner-random nil :type (or null octet-vector))  ; Inner CH random for verification
+  (ech-inner-ch-bytes nil :type (or null octet-vector))  ; Serialized inner CH for accept confirmation
   (ech-accepted nil :type boolean)  ; Server accepted ECH
   (ech-retry-configs nil :type list)  ; Retry configs from server
+  (ech-hrr-confirmation nil :type (or null octet-vector))  ; 8-byte HRR confirmation
   ;; State
   (state :start))
 
@@ -246,41 +249,82 @@
 (defun generate-client-hello-with-ech (hs inner-hello)
   "Generate outer ClientHello with ECH extension containing encrypted inner.
    INNER-HELLO is the ClientHello for the real server (with actual SNI).
-   Returns the outer ClientHello."
+   Returns the outer ClientHello.
+   For CH2 after HRR, reuses the enc value and HPKE context from CH1 per RFC 9639."
   (let* ((config (client-handshake-ech-config-used hs))
          (cipher-suite (client-handshake-ech-cipher-suite hs))
          (contents (ech-config-contents config))
          (public-name (ech-config-contents-public-name contents))
-         (max-name-len (ech-config-contents-maximum-name-length contents)))
+         (max-name-len (ech-config-contents-maximum-name-length contents))
+         ;; Check if we have existing enc/context from CH1 (i.e., this is CH2 after HRR)
+         (existing-enc (client-handshake-ech-enc hs))
+         (existing-ctx (client-handshake-ech-hpke-context hs)))
     ;; Add ECH inner marker to inner ClientHello
     (let ((inner-with-marker (add-ech-inner-marker inner-hello)))
       ;; Save inner random for later verification
       (setf (client-handshake-ech-inner-random hs)
             (client-hello-random inner-with-marker))
+      ;; Save serialized inner CH for accept confirmation (as handshake message)
+      ;; The transcript uses the full handshake message format
+      (let ((inner-ch-body (serialize-client-hello inner-with-marker)))
+        (setf (client-handshake-ech-inner-ch-bytes hs)
+              (wrap-handshake-message +handshake-client-hello+ inner-ch-body)))
       ;; Encode inner ClientHello
       (let ((encoded-inner (encode-client-hello-inner inner-with-marker max-name-len)))
-        ;; Encrypt inner ClientHello
-        (multiple-value-bind (enc ciphertext hpke-ctx)
-            (encrypt-client-hello-inner encoded-inner config cipher-suite)
-          ;; Save HPKE context for accept confirmation verification
-          (setf (client-handshake-ech-hpke-context hs) hpke-ctx)
-          ;; Build outer ClientHello
-          ;; - Use different random than inner
-          ;; - Use public_name as SNI
-          ;; - Include ECH extension with encrypted inner
-          (let* ((outer-random (random-bytes 32))
-                 ;; Outer extensions: replace SNI with public_name, add ECH, remove sensitive ones
-                 (outer-extensions (build-outer-extensions
-                                    (client-hello-extensions inner-hello)
-                                    public-name
-                                    config cipher-suite enc ciphertext)))
-            (make-client-hello
-             :legacy-version +tls-1.2+
-             :random outer-random
-             :legacy-session-id (client-hello-legacy-session-id inner-hello)
-             :cipher-suites (client-hello-cipher-suites inner-hello)
-             :legacy-compression-methods (client-hello-legacy-compression-methods inner-hello)
-             :extensions outer-extensions)))))))
+        ;; Payload length = encoded_inner length + 16 (AEAD tag for AES-128-GCM)
+        (let* ((payload-len (+ (length encoded-inner) 16))
+               (placeholder-payload (make-octet-vector payload-len))
+               (outer-random (random-bytes 32))
+               ;; For CH1: Generate enc first, then compute AAD with actual enc
+               ;; For CH2: Use existing enc
+               (enc (or existing-enc
+                        (let* ((key-config (ech-config-contents-key-config contents))
+                               (pk-r (ech-hpke-key-config-public-key key-config))
+                               (info (concat-octet-vectors
+                                      (string-to-octets "tls ech")
+                                      (octet-vector 0)
+                                      (serialize-ech-config config))))
+                          ;; Set up HPKE to get enc, save context for later seal
+                          (multiple-value-bind (ctx new-enc)
+                              (hpke-setup-base-s pk-r info
+                                                 :kem-id (ech-hpke-key-config-kem-id key-config)
+                                                 :kdf-id (ech-hpke-cipher-suite-kdf-id cipher-suite)
+                                                 :aead-id (ech-hpke-cipher-suite-aead-id cipher-suite))
+                            ;; Save context for use in actual encryption
+                            (setf (client-handshake-ech-hpke-context hs) ctx)
+                            (setf (client-handshake-ech-enc hs) new-enc)
+                            new-enc))))
+               ;; Build outer CH with placeholder payload (but real enc) for AAD computation
+               (outer-extensions-placeholder (build-outer-extensions
+                                              (client-hello-extensions inner-hello)
+                                              public-name
+                                              config cipher-suite
+                                              enc  ; Use actual enc, not placeholder
+                                              placeholder-payload))
+               (outer-ch-placeholder (make-client-hello
+                                      :legacy-version +tls-1.2+
+                                      :random outer-random
+                                      :legacy-session-id (client-hello-legacy-session-id inner-hello)
+                                      :cipher-suites (client-hello-cipher-suites inner-hello)
+                                      :legacy-compression-methods (client-hello-legacy-compression-methods inner-hello)
+                                      :extensions outer-extensions-placeholder))
+               ;; Serialize outer CH - this is our AAD (payload is zeros, enc is real)
+               (aad (serialize-client-hello outer-ch-placeholder)))
+          ;; Now encrypt with proper AAD using the context we saved
+          (let ((ciphertext (hpke-context-seal (client-handshake-ech-hpke-context hs)
+                                               aad encoded-inner)))
+            ;; Build final outer ClientHello with actual ciphertext
+            (let ((outer-extensions (build-outer-extensions
+                                     (client-hello-extensions inner-hello)
+                                     public-name
+                                     config cipher-suite enc ciphertext)))
+              (make-client-hello
+               :legacy-version +tls-1.2+
+               :random outer-random
+               :legacy-session-id (client-hello-legacy-session-id inner-hello)
+               :cipher-suites (client-hello-cipher-suites inner-hello)
+               :legacy-compression-methods (client-hello-legacy-compression-methods inner-hello)
+               :extensions outer-extensions))))))))
 
 (defun build-outer-extensions (inner-extensions public-name config cipher-suite enc payload)
   "Build extensions for ClientHelloOuter.
@@ -371,16 +415,24 @@
         (setf (client-handshake-ech-cipher-suite hs) cipher-suite))))
   ;; Generate ClientHello (with or without ECH)
   (let* ((inner-hello (generate-client-hello hs :requested-group requested-group))
-         (hello (if (client-handshake-ech-config-used hs)
+         (using-ech (client-handshake-ech-config-used hs))
+         (hello (if using-ech
                     ;; Generate outer CH with encrypted inner
                     (generate-client-hello-with-ech hs inner-hello)
                     ;; Normal CH without ECH
                     inner-hello))
          (hello-bytes (serialize-client-hello hello))
          (message (wrap-handshake-message +handshake-client-hello+ hello-bytes)))
-    ;; Update transcript (always with outer/actual CH sent on wire)
-    (client-handshake-update-transcript hs message)
-    ;; Send ClientHello
+    ;; Update transcript
+    ;; RFC 9639 Section 7.3: For ECH, transcript uses INNER ClientHello
+    ;; (ClientHelloInner includes the ECH inner marker extension)
+    (if using-ech
+        (let* ((inner-with-marker (add-ech-inner-marker inner-hello))
+               (inner-bytes (serialize-client-hello inner-with-marker))
+               (inner-message (wrap-handshake-message +handshake-client-hello+ inner-bytes)))
+          (client-handshake-update-transcript hs inner-message))
+        (client-handshake-update-transcript hs message))
+    ;; Send outer/actual ClientHello on wire
     (record-layer-write-handshake (client-handshake-record-layer hs) message)
     ;; Note: CCS for middlebox compatibility is sent later, in send-client-finished,
     ;; after we confirm TLS 1.3 was negotiated
@@ -421,12 +473,14 @@
 
   (let ((extensions (server-hello-extensions server-hello)))
     ;; RFC 8446 Section 4.1.4: HRR can only contain supported_versions, cookie, and key_share
+    ;; RFC 9639 also allows encrypted_client_hello extension in HRR
     ;; Reject any unknown extensions with unsupported_extension
     (dolist (ext extensions)
       (let ((ext-type (tls-extension-type ext)))
         (unless (member ext-type (list +extension-supported-versions+
                                        +extension-cookie+
-                                       +extension-key-share+))
+                                       +extension-key-share+
+                                       +extension-ech+))
           (record-layer-write-alert (client-handshake-record-layer hs)
                                     +alert-level-fatal+ +alert-unsupported-extension+)
           (error 'tls-handshake-error
@@ -486,6 +540,44 @@
                      :message ":DECODE_ERROR: Empty cookie in HelloRetryRequest")))
           (setf (client-handshake-hrr-cookie hs) cookie-data))))
 
+    ;; RFC 9639 Section 7.1: Validate ECH extension in HRR if present
+    ;; Server sends either:
+    ;; - 8-byte confirmation (when ECH was accepted)
+    ;; - config_id + enc echo (when ECH was not decrypted)
+    (let ((ech-ext (find-extension extensions +extension-ech+)))
+      (when (and ech-ext (client-handshake-ech-enc hs))
+        (let ((ech-data (tls-extension-data ech-ext)))
+          (when (ech-ext-p ech-data)
+            (let ((hrr-enc (ech-ext-enc ech-data)))
+              ;; If 8 bytes, it's a confirmation signal (ECH accepted)
+              ;; We'll verify this later with the transcript
+              (if (and hrr-enc (= (length hrr-enc) 8))
+                  ;; Store confirmation for later verification
+                  (setf (client-handshake-ech-hrr-confirmation hs) hrr-enc)
+                  ;; Otherwise, validate config_id and enc match what we sent
+                  (let ((hrr-config-id (ech-ext-config-id ech-data))
+                        (our-config-id (ech-hpke-key-config-config-id
+                                        (ech-config-contents-key-config
+                                         (ech-config-contents (client-handshake-ech-config-used hs)))))
+                        (our-enc (client-handshake-ech-enc hs)))
+                    ;; Validate config_id matches (only if server echoed it)
+                    (when (and (plusp hrr-config-id)
+                               (/= hrr-config-id our-config-id))
+                      (record-layer-write-alert (client-handshake-record-layer hs)
+                                                +alert-level-fatal+ +alert-illegal-parameter+)
+                      (error 'tls-handshake-error
+                             :message ":ILLEGAL_PARAMETER: HRR ECH config_id mismatch"
+                             :state :wait-server-hello))
+                    ;; Validate enc matches (only if full enc was echoed)
+                    (when (and hrr-enc our-enc
+                               (>= (length hrr-enc) 32)
+                               (not (every #'= hrr-enc our-enc)))
+                      (record-layer-write-alert (client-handshake-record-layer hs)
+                                                +alert-level-fatal+ +alert-illegal-parameter+)
+                      (error 'tls-handshake-error
+                             :message ":ILLEGAL_PARAMETER: HRR ECH enc mismatch"
+                             :state :wait-server-hello)))))))))
+
     ;; RFC 8446 Section 4.2.8: HRR must result in a change to ClientHello
     ;; An HRR with no key_share and no cookie doesn't cause any change
     (unless (or (client-handshake-hrr-selected-group hs)
@@ -536,6 +628,28 @@
       (return-from process-server-hello nil))
     ;; Normal ServerHello - update transcript now
     (client-handshake-update-transcript hs raw-bytes)
+    ;; Verify ECH accept confirmation (RFC 9639 Section 7.1)
+    (when (client-handshake-ech-config-used hs)
+      (let* ((server-random (server-hello-random server-hello))
+             (actual-confirmation (subseq server-random 24 32))
+             ;; Create modified ServerHello with random[24..31] = zeros
+             (modified-sh-bytes (let ((sh-copy (copy-seq raw-bytes)))
+                                  ;; In handshake message, random starts at offset 4 (after type+length) + 2 (version)
+                                  ;; So random[24..31] is at offset 4 + 2 + 24 = 30
+                                  (fill sh-copy 0 :start 30 :end 38)
+                                  sh-copy))
+             ;; Compute transcript hash over inner CH + modified SH
+             (ech-transcript (concat-octet-vectors
+                              (client-handshake-ech-inner-ch-bytes hs)
+                              modified-sh-bytes))
+             (transcript-hash (ironclad:digest-sequence :sha256 ech-transcript))
+             ;; Compute expected accept confirmation using inner ClientHello random
+             (expected-confirmation (compute-ech-accept-confirmation
+                                     (client-handshake-ech-inner-random hs)
+                                     transcript-hash)))
+        ;; Compare actual vs expected
+        (setf (client-handshake-ech-accepted hs)
+              (constant-time-equal actual-confirmation expected-confirmation))))
     ;; RFC 8446 Section 4.2: Validate that only allowed extensions are present
     ;; Extensions that should appear in EncryptedExtensions are forbidden here
     (dolist (ext extensions)
@@ -759,27 +873,24 @@
               (error 'tls-decode-error
                      :message ":ILLEGAL_PARAMETER: ALPN selected protocol not offered by client"))
             (setf (client-handshake-selected-alpn hs) selected)))))
-    ;; Process ECH extension if we used ECH
+    ;; Process ECH extension if we used ECH (only for retry_configs)
+    ;; Note: ECH acceptance is determined in process-server-hello via accept_confirmation
+    ;; in ServerHello.random[24..31]. The ECH extension in EncryptedExtensions is only
+    ;; used to send retry_configs when ECH is rejected.
     (when (client-handshake-ech-config-used hs)
       (let ((ech-ext (find-extension extensions +extension-ech+)))
-        (if ech-ext
-            ;; Server responded to ECH
-            (let ((ech-data (tls-extension-data ech-ext)))
-              (if (and (ech-ext-p ech-data)
+        (when ech-ext
+          ;; Server responded to ECH - check for retry_configs
+          (let ((ech-data (tls-extension-data ech-ext)))
+            (when (and (ech-ext-p ech-data)
                        (eq (ech-ext-type ech-data) :retry)
                        (ech-ext-retry-configs ech-data))
-                  ;; ECH rejected with retry_configs
-                  (progn
-                    (setf (client-handshake-ech-retry-configs hs)
-                          (ech-ext-retry-configs ech-data))
-                    (error 'tls-ech-retry-error
-                           :message "Server rejected ECH and provided retry configs"
-                           :retry-configs (ech-ext-retry-configs ech-data)))
-                  ;; ECH accepted (empty extension or type :outer confirms)
-                  (setf (client-handshake-ech-accepted hs) t)))
-            ;; No ECH extension in response - ECH was rejected without retry configs
-            ;; This is allowed per RFC 9639 Section 7.1
-            (setf (client-handshake-ech-accepted hs) nil))))
+              ;; ECH rejected with retry_configs
+              (setf (client-handshake-ech-retry-configs hs)
+                    (ech-ext-retry-configs ech-data))
+              (error 'tls-ech-retry-error
+                     :message "Server rejected ECH and provided retry configs"
+                     :retry-configs (ech-ext-retry-configs ech-data)))))))
     ;; In PSK mode with resumption, server skips Certificate/CertificateVerify
     ;; Otherwise, expect Certificate next
     (setf (client-handshake-state hs) :wait-cert-or-finished)))
@@ -1714,7 +1825,7 @@
              :client-private-key client-private-key
              :client-certificate-chain client-certificate-chain
              :ech-configs ech-configs
-             :ech-enabled (and ech-enabled ech-configs)  ; Only enable if configs provided
+             :ech-enabled (and ech-enabled (not (null ech-configs)))  ; Only enable if configs provided
              :record-layer record-layer)))
     ;; Send ClientHello
     (send-client-hello hs)

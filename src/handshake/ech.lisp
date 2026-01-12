@@ -257,14 +257,28 @@
 
 (defun compute-ech-padding (inner-client-hello maximum-name-length server-name-len)
   "Compute padding needed for ClientHelloInner.
-   Returns the number of padding bytes needed."
+   Returns the number of padding bytes needed.
+
+   Per RFC 9639 Section 6.1.2:
+   1. First pad based on maximum_name_length to hide server name length:
+      - If SNI present: add max(0, L - D) where L = max_name_len, D = SNI length
+      - If no SNI: add L + 9 bytes
+   2. Then round up to a multiple of 32 bytes:
+      - N = 31 - ((len - 1) mod 32)"
   (let* ((current-len (length inner-client-hello))
-         ;; Padding should make the total size uniform regardless of actual SNI length
-         ;; The idea is to pad to maximum-name-length to hide the actual server name length
-         (target-len (if (> server-name-len maximum-name-length)
-                         current-len  ; Can't pad if actual name is longer
-                         (+ current-len (- maximum-name-length server-name-len)))))
-    (max 0 (- target-len current-len))))
+         ;; Step 1: Server name padding
+         (sni-padding (if (zerop server-name-len)
+                          ;; No SNI: add L + 9 bytes
+                          (+ maximum-name-length 9)
+                          ;; Has SNI: add max(0, L - D) bytes
+                          (max 0 (- maximum-name-length server-name-len))))
+         (len-after-sni-padding (+ current-len sni-padding))
+         ;; Step 2: Round up to multiple of 32 bytes
+         ;; N = 31 - ((len - 1) mod 32)
+         (round-padding (- 31 (mod (1- len-after-sni-padding) 32)))
+         ;; Total padding needed
+         (total-padding (+ sni-padding round-padding)))
+    total-padding))
 
 ;;;; ECH AAD Computation
 
@@ -302,17 +316,29 @@
 
 ;;;; ECH Accept Confirmation
 
-(defun compute-ech-accept-confirmation (client-hello-inner server-hello transcript-hash hpke-context)
+(defun compute-ech-accept-confirmation (inner-random transcript-hash)
   "Compute the ECH accept confirmation value.
-   This is derived from the HPKE exporter and placed in ServerHello.random[24..31].
-   Returns 8 bytes."
-  (declare (ignore client-hello-inner server-hello))
-  ;; accept_confirmation = HPKE.Export(context, "ech accept confirmation", Hash(transcript), 8)
-  (hpke-context-export hpke-context
-                       (concat-octet-vectors
-                        (string-to-octets "ech accept confirmation")
-                        transcript-hash)
-                       +ech-accept-confirmation-length+))
+   This is placed in ServerHello.random[24..31] to signal ECH acceptance.
+   Returns 8 bytes.
+
+   Per RFC 9639 Section 7.2:
+   accept_confirmation = HKDF-Expand-Label(
+       HKDF-Extract(0, ClientHelloInner.random),
+       \"ech accept confirmation\",
+       transcript_ech_conf,
+       8)
+
+   Where:
+   - 0 is a string of Hash.length zero bytes (salt for HKDF-Extract)
+   - ClientHelloInner.random is the 32-byte random from the inner ClientHello
+   - transcript_ech_conf is the transcript hash up through modified ServerHello"
+  (let* ((hash-len 32)  ; SHA-256 output length
+         ;; Step 1: HKDF-Extract(salt=zeros, ikm=inner_random)
+         (zero-salt (make-octet-vector hash-len))
+         (prk (hkdf-extract zero-salt inner-random)))
+    ;; Step 2: HKDF-Expand-Label with label "ech accept confirmation"
+    ;; Note: hkdf-expand-label prepends "tls13 " to make "tls13 ech accept confirmation"
+    (hkdf-expand-label prk "ech accept confirmation" transcript-hash +ech-accept-confirmation-length+)))
 
 ;;;; EncodedClientHelloInner (RFC 9639 Section 5.1)
 ;;;
@@ -358,10 +384,11 @@
 
 ;;;; ECH Encryption
 
-(defun encrypt-client-hello-inner (encoded-inner config cipher-suite)
+(defun encrypt-client-hello-inner (encoded-inner config cipher-suite &optional aad)
   "Encrypt EncodedClientHelloInner using HPKE.
    CONFIG is the ECHConfig to use.
    CIPHER-SUITE is the selected HPKE cipher suite.
+   AAD is the ClientHelloOuterAAD (outer CH with payload zeroed). If nil, empty AAD is used.
    Returns (values enc ciphertext hpke-context)."
   (let* ((contents (ech-config-contents config))
          (key-config (ech-config-contents-key-config contents))
@@ -376,8 +403,8 @@
                            :kem-id (ech-hpke-key-config-kem-id key-config)
                            :kdf-id (ech-hpke-cipher-suite-kdf-id cipher-suite)
                            :aead-id (ech-hpke-cipher-suite-aead-id cipher-suite))
-      ;; AAD is empty for ECH encryption
-      (let ((ciphertext (hpke-context-seal ctx (make-octet-vector 0) encoded-inner)))
+      ;; AAD is ClientHelloOuterAAD per RFC 9639 Section 5.1
+      (let ((ciphertext (hpke-context-seal ctx (or aad (make-octet-vector 0)) encoded-inner)))
         (values enc ciphertext ctx)))))
 
 ;;;; ECH Extension Building for ClientHelloOuter
