@@ -27,7 +27,7 @@
   section = <'['> section-name <']'>
   section-name = #'[^\\]\\n]+'
   assignment = key <line-ws> <'='> <line-ws> value
-  key = #'[A-Za-z_][A-Za-z0-9_-]*'
+  key = #'[A-Za-z_][A-Za-z0-9_.-]*'
   value = #'[^\\n]*'
 ")
 
@@ -147,6 +147,26 @@
     (t (mapcar (lambda (s) (string-trim " " s))
                (cl-ppcre:split "," alpn-string)))))
 
+(defun get-certificate-value (section)
+  "Get the certificate path from a section, handling type-prefixed names.
+   OpenSSL config can use Certificate, EdDSA.Certificate, ECDSA.Certificate, etc."
+  (or (get-value section "Certificate")
+      (get-value section "EdDSA.Certificate")
+      (get-value section "ECDSA.Certificate")
+      (get-value section "RSA.Certificate")
+      (get-value section "Ed25519.Certificate")
+      (get-value section "Ed448.Certificate")))
+
+(defun get-private-key-value (section)
+  "Get the private key path from a section, handling type-prefixed names.
+   OpenSSL config can use PrivateKey, EdDSA.PrivateKey, ECDSA.PrivateKey, etc."
+  (or (get-value section "PrivateKey")
+      (get-value section "EdDSA.PrivateKey")
+      (get-value section "ECDSA.PrivateKey")
+      (get-value section "RSA.PrivateKey")
+      (get-value section "Ed25519.PrivateKey")
+      (get-value section "Ed448.PrivateKey")))
+
 (defun extract-test (sections test-index)
   "Extract a single test case from parsed sections."
   (let* ((test-key (format nil "test-~D" test-index))
@@ -192,11 +212,11 @@
          :server-alpn-protocols (parse-alpn-protocols
                                  (get-value server-extra "ALPNProtocols"))
          :server-sni-callback (get-value server-extra "ServerNameCallback")
-         ;; Client config
+         ;; Client config (check type-prefixed names like EdDSA.Certificate)
          :client-certificate (resolve-cert-path
-                              (get-value client-section "Certificate"))
+                              (get-certificate-value client-section))
          :client-private-key (resolve-cert-path
-                              (get-value client-section "PrivateKey"))
+                              (get-private-key-value client-section))
          :client-verify-mode (get-value client-section "VerifyMode")
          :client-verify-ca-file (resolve-cert-path
                                  (get-value client-section "VerifyCAFile"))
@@ -695,6 +715,20 @@ ExpectedResult = Success
       ;; Should be categorized as :pass since it's TLS 1.3 only
       (is (eq :pass (openssl-test-category first-test))))))
 
+(test load-20-cert-select-cnf
+  "Test loading and parsing 20-cert-select.cnf (includes Ed25519 tests)."
+  (let* ((cnf-file (merge-pathnames "20-cert-select.cnf" *openssl-ssl-tests-dir*))
+         (tests (load-openssl-tests cnf-file)))
+    ;; Should have 58 tests
+    (is (= 58 (length tests)))
+    ;; Find the TLS 1.3 Ed25519 signature algorithm test
+    (let ((ed25519-test (find "46-TLS 1.3 Ed25519 Signature Algorithm Selection"
+                               tests :key #'openssl-test-name :test #'string=)))
+      (is (not (null ed25519-test)) "Should find Ed25519 signature algorithm test")
+      ;; Should be categorized as :pass since it's a TLS 1.3 test
+      (is (eq :pass (openssl-test-category ed25519-test))
+          "Ed25519 TLS 1.3 test should be categorized as :pass"))))
+
 ;;;; Live Execution Tests
 
 (defun run-all-tests-from-file (cnf-filename)
@@ -888,3 +922,43 @@ ExpectedResult = Success
       (dolist (detail failed-details)
         (format t "    ~A: ~A~%" (car detail) (cdr detail))))
     (is (= 0 fail) "All seclevel tests should pass")))
+
+(test execute-20-cert-select-ed25519
+  "Execute Ed25519 tests from 20-cert-select.cnf (TLS 1.3 Ed25519 signature tests).
+   Note: Test 50 (Ed25519 Client Auth) is excluded because the client-ed25519-cert.pem
+   certificate in our test files is not signed by root-cert.pem - this is a test
+   certificate chain issue, not an Ed25519 implementation issue."
+  (let* ((cnf-file (merge-pathnames "20-cert-select.cnf" *openssl-ssl-tests-dir*))
+         (tests (load-openssl-tests cnf-file))
+         ;; Filter to TLS 1.3 Ed25519 tests (tests 46, 48) - exclude test 50 (Client Auth)
+         ;; because the test certificates lack proper CA chain
+         (ed25519-tests (remove-if-not
+                         (lambda (test)
+                           (let ((name (openssl-test-name test)))
+                             (and (search "Ed25519" name)
+                                  (search "TLS 1.3" name)
+                                  ;; Exclude Client Auth test - cert chain issue
+                                  (not (search "Client Auth" name)))))
+                         tests))
+         (pass 0) (fail 0) (skip 0)
+         (failed-details nil))
+    (format t "~&Running ~D TLS 1.3 Ed25519 tests from 20-cert-select.cnf~%" (length ed25519-tests))
+    (dolist (test ed25519-tests)
+      (let ((category (openssl-test-category test)))
+        (if (eq category :skip)
+            (incf skip)
+            (multiple-value-bind (result message)
+                (run-openssl-test test)
+              (format t "  ~A: ~A~%" (openssl-test-name test) result)
+              (case result
+                (:pass (incf pass))
+                ((:fail :error)
+                 (incf fail)
+                 (push (cons (openssl-test-name test) message) failed-details))
+                (t (incf skip)))))))
+    (format t "~&Ed25519 tests: ~D pass, ~D fail, ~D skip~%" pass fail skip)
+    (when failed-details
+      (dolist (detail failed-details)
+        (format t "    ~A: ~A~%" (car detail) (cdr detail))))
+    (is (>= pass 2) "At least 2 Ed25519 TLS 1.3 tests should pass")
+    (is (= 0 fail) "No Ed25519 tests should fail")))

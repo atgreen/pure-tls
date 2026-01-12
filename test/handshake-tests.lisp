@@ -236,6 +236,119 @@
   (is (= pure-tls::+sig-rsa-pss-rsae-sha256+ #x0804))
   (is (= pure-tls::+sig-ed25519+ #x0807)))
 
+(test ed25519-key-loading
+  "Test Ed25519 key loading from PEM files"
+  (let ((key-path (merge-pathnames "test/certs/openssl/server-ed25519-key.pem"
+                                   (asdf:system-source-directory :pure-tls)))
+        (cert-path (merge-pathnames "test/certs/openssl/server-ed25519-cert.pem"
+                                    (asdf:system-source-directory :pure-tls))))
+    ;; Test private key loading
+    (let ((key (pure-tls:load-private-key key-path)))
+      (is (typep key 'ironclad::ed25519-private-key)
+          "Should load as Ed25519 private key"))
+    ;; Test certificate loading
+    (let* ((certs (pure-tls:load-certificate-chain cert-path))
+           (cert (first certs))
+           (spki (pure-tls::x509-certificate-subject-public-key-info cert)))
+      (is (= (length certs) 1) "Should load one certificate")
+      (is (eql (getf spki :algorithm) :ed25519)
+          "Certificate should have Ed25519 public key"))))
+
+(test ed25519-signing-verification
+  "Test Ed25519 signing and verification"
+  (let* ((key-path (merge-pathnames "test/certs/openssl/server-ed25519-key.pem"
+                                    (asdf:system-source-directory :pure-tls)))
+         (key (pure-tls:load-private-key key-path))
+         (data (make-array 64 :element-type '(unsigned-byte 8) :initial-element 42)))
+    ;; Test that Ed25519 is recognized as valid algorithm for this key
+    (let ((algos (pure-tls::signature-algorithms-for-private-key key)))
+      (is (member pure-tls::+sig-ed25519+ algos)
+          "Ed25519 should be in valid algorithms for key"))
+    ;; Test signing
+    (let ((sig (pure-tls::sign-data-with-algorithm data key pure-tls::+sig-ed25519+)))
+      (is (= (length sig) 64) "Ed25519 signature should be 64 bytes")
+      ;; Test verification
+      (let ((pub-key-bytes (ironclad:ed25519-key-y key)))
+        (is (= (length pub-key-bytes) 32) "Ed25519 public key should be 32 bytes")
+        ;; Verification should not throw
+        (finishes (pure-tls::verify-ed25519-signature pub-key-bytes data sig))))))
+
+(test ed25519-in-supported-algorithms
+  "Test Ed25519 is included in supported signature algorithms"
+  (let ((algos (pure-tls::supported-signature-algorithms-tls13)))
+    (is (member pure-tls::+sig-ed25519+ algos)
+        "Ed25519 should be in TLS 1.3 supported signature algorithms")))
+
+(test ed25519-server-handshake
+  "Test Ed25519 server-side TLS handshake"
+  (let* ((cert-path (merge-pathnames "test/certs/openssl/server-ed25519-cert.pem"
+                                     (asdf:system-source-directory :pure-tls)))
+         (key-path (merge-pathnames "test/certs/openssl/server-ed25519-key.pem"
+                                    (asdf:system-source-directory :pure-tls)))
+         (port (+ 20000 (random 1000)))
+         (server-result (list nil))
+         (ready-lock (bt:make-lock "server-ready"))
+         (ready-cv (bt:make-condition-variable :name "server-ready-cv"))
+         (ready-flag (list nil)))
+    ;; Start server in background
+    (bt:make-thread
+     (lambda ()
+       (let ((server-socket nil)
+             (client-socket nil))
+         (unwind-protect
+             (handler-case
+                 (progn
+                   (setf server-socket
+                         (usocket:socket-listen "127.0.0.1" port
+                                                :reuse-address t
+                                                :element-type '(unsigned-byte 8)))
+                   ;; Signal ready
+                   (bt:with-lock-held (ready-lock)
+                     (setf (car ready-flag) t)
+                     (bt:condition-notify ready-cv))
+                   ;; Accept connection
+                   (setf client-socket
+                         (usocket:socket-accept server-socket
+                                                :element-type '(unsigned-byte 8)))
+                   ;; Create TLS server stream with Ed25519 certificate
+                   (let ((tls-stream
+                           (pure-tls:make-tls-server-stream
+                            (usocket:socket-stream client-socket)
+                            :certificate cert-path
+                            :key key-path)))
+                     (close tls-stream)
+                     (setf (car server-result) :success)))
+               (error (e)
+                 (setf (car server-result) (format nil "~A" e))))
+           (when client-socket (ignore-errors (usocket:socket-close client-socket)))
+           (when server-socket (ignore-errors (usocket:socket-close server-socket))))))
+     :name "ed25519-test-server")
+    ;; Wait for server ready
+    (bt:with-lock-held (ready-lock)
+      (loop until (car ready-flag)
+            do (bt:condition-wait ready-cv ready-lock :timeout 5)))
+    (sleep 0.05)
+    ;; Connect client
+    (let ((client-socket nil))
+      (unwind-protect
+          (handler-case
+              (progn
+                (setf client-socket
+                      (usocket:socket-connect "127.0.0.1" port
+                                              :element-type '(unsigned-byte 8)))
+                (let ((tls-stream
+                        (pure-tls:make-tls-client-stream
+                         (usocket:socket-stream client-socket)
+                         :sni-hostname "ed25519-test"
+                         :verify pure-tls:+verify-none+)))
+                  (close tls-stream)
+                  (sleep 0.1)  ; Let server finish
+                  (is (eq (car server-result) :success)
+                      "Server handshake should succeed with Ed25519 certificate")))
+            (error (e)
+              (fail "Client connection failed: ~A" e)))
+        (when client-socket (ignore-errors (usocket:socket-close client-socket)))))))
+
 ;;;; Key Exchange Tests
 
 (test x25519-key-exchange

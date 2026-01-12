@@ -52,6 +52,13 @@ Use with drakma via cl+ssl compatibility layer (drop-in OpenSSL replacement):
 - secp256r1 (P-256)
 - secp384r1 (P-384)
 
+### Supported Signature Algorithms
+
+- **Ed25519** - Edwards curve digital signature (fast, compact)
+- RSA-PSS (SHA-256, SHA-384, SHA-512)
+- ECDSA with P-256 (SHA-256)
+- ECDSA with P-384 (SHA-384)
+
 ## Installation
 
 Using [ocicl](https://github.com/ocicl/ocicl):
@@ -756,8 +763,8 @@ The shim implements the BoringSSL test protocol, allowing pure-tls to be tested 
   - Brainpool curves (brainpoolP256r1, brainpoolP384r1, brainpoolP512r1)
   - Legacy curves (sect233k1, sect283k1, secp224r1, etc.)
 
-- **Signature algorithms** - Only RSA-PSS, ECDSA-P256, and ECDSA-P384 are supported. Not implemented:
-  - Ed25519, Ed448
+- **Signature algorithms** - RSA-PSS, ECDSA-P256, ECDSA-P384, and Ed25519 are supported. Not implemented:
+  - Ed448
   - DSA
   - RSA-PKCS1 (deprecated in TLS 1.3 but still seen in some certificates)
 

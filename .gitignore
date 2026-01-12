@@ -28,6 +28,10 @@ RCS
 /*.md
 !/README.md
 
+# Local planning docs
+ROADMAP.md
+PROJECT.md
+
 # Build artifacts
 pure-tls-shim
 
