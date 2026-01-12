@@ -859,6 +859,7 @@
       ((subtypep key-type 'ironclad::secp384r1-private-key) :ecdsa-p384)
       ((subtypep key-type 'ironclad::secp521r1-private-key) :ecdsa-p521)
       ((subtypep key-type 'ironclad::ed25519-private-key) :ed25519)
+      ((subtypep key-type 'ironclad::ed448-private-key) :ed448)
       (t :unknown))))
 
 (defun signature-required-key-type (sig-type)
@@ -888,6 +889,7 @@
     (:ecdsa-p384 (list +sig-ecdsa-secp384r1-sha384+))
     (:ecdsa-p521 (list +sig-ecdsa-secp521r1-sha512+))
     (:ed25519 (list +sig-ed25519+))
+    (:ed448 (list +sig-ed448+))
     (otherwise nil)))
 
 (defun select-signature-algorithm-for-key (private-key peer-algorithms)
@@ -968,6 +970,9 @@
         ;; Ed25519 (handles its own hashing internally)
         ((eql sig-type :ed25519)
          (verify-ed25519-signature public-key-bytes content signature))
+        ;; Ed448 (handles its own hashing internally)
+        ((eql sig-type :ed448)
+         (verify-ed448-signature public-key-bytes content signature))
         (t
          (error 'tls-handshake-error
                 :message (format nil "Unsupported signature type: ~A" sig-type)))))))
@@ -991,6 +996,7 @@
     (#.+sig-ecdsa-secp384r1-sha384+ (values :sha384 :ecdsa))
     (#.+sig-ecdsa-secp521r1-sha512+ (values :sha512 :ecdsa))
     (#.+sig-ed25519+ (values nil :ed25519))
+    (#.+sig-ed448+ (values nil :ed448))
     (otherwise (values nil nil))))
 
 (defun verify-rsa-pss-signature (public-key-der content signature hash-algo)
@@ -1065,6 +1071,18 @@
       (error 'tls-handshake-error
              :message ":BAD_SIGNATURE:"))))
 
+(defun verify-ed448-signature (public-key-der content signature)
+  "Verify an Ed448 signature."
+  (handler-case
+      (let ((public-key (ironclad:make-public-key :ed448 :y public-key-der)))
+        (unless (ironclad:verify-signature public-key content signature)
+          (error 'tls-handshake-error
+                 :message ":BAD_SIGNATURE:")))
+    (error (e)
+      (declare (ignore e))
+      (error 'tls-handshake-error
+             :message ":BAD_SIGNATURE:"))))
+
 (defun ecdsa-curve-from-algorithm (key-algorithm)
   "Determine the ECDSA curve from the key algorithm OID."
   (cond
@@ -1093,6 +1111,9 @@
       ;; Ed25519
       ((subtypep key-type 'ironclad::ed25519-private-key)
        +sig-ed25519+)
+      ;; Ed448
+      ((subtypep key-type 'ironclad::ed448-private-key)
+       +sig-ed448+)
       (t
        (error 'tls-handshake-error
               :message (format nil "Unsupported private key type: ~A" key-type))))))
@@ -1131,6 +1152,9 @@
         ;; Ed25519 signatures
         ((eql sig-type :ed25519)
          (ironclad:sign-message private-key content))
+        ;; Ed448 signatures
+        ((eql sig-type :ed448)
+         (ironclad:sign-message private-key content))
         (t
          (error 'tls-handshake-error
                 :message (format nil "Unsupported signature type: ~A" sig-type)))))))
@@ -1157,6 +1181,9 @@
          (encode-ecdsa-signature-der raw-sig)))
       ;; Ed25519
       ((subtypep key-type 'ironclad::ed25519-private-key)
+       (ironclad:sign-message private-key content))
+      ;; Ed448
+      ((subtypep key-type 'ironclad::ed448-private-key)
        (ironclad:sign-message private-key content))
       (t
        (error 'tls-handshake-error

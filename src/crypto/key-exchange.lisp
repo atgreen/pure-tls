@@ -326,7 +326,8 @@ X25519MLKEM768 is preferred for post-quantum security.")
         +sig-rsa-pkcs1-sha384+
         +sig-rsa-pss-rsae-sha512+
         +sig-rsa-pkcs1-sha512+
-        +sig-ed25519+))
+        +sig-ed25519+
+        +sig-ed448+))
 
 (defun supported-signature-algorithms-tls13 ()
   "Return the list of supported TLS 1.3 signature algorithms."
@@ -339,7 +340,8 @@ X25519MLKEM768 is preferred for post-quantum security.")
         +sig-ecdsa-secp521r1-sha512+
         +sig-rsa-pss-rsae-sha512+
         +sig-rsa-pss-pss-sha512+
-        +sig-ed25519+))
+        +sig-ed25519+
+        +sig-ed448+))
 
 (defun signature-algorithm-name (sig-alg)
   "Return the human-readable name for a signature algorithm."

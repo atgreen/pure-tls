@@ -208,6 +208,9 @@
               ;; Ed25519: 1.3.101.112
               ((equal alg-oid '(1 3 101 112))
                (parse-ed25519-private-key (asn1-node-value key-octet-string)))
+              ;; Ed448: 1.3.101.113
+              ((equal alg-oid '(1 3 101 113))
+               (parse-ed448-private-key (asn1-node-value key-octet-string)))
               (t
                (error 'tls-error
                       :message (format nil "Unsupported private key algorithm: ~A" alg-oid))))))))))
@@ -304,6 +307,15 @@
                  (subseq key-bytes 2)  ; Skip tag and length
                  key-bytes)))
     (ironclad:make-private-key :ed25519 :x key)))
+
+(defun parse-ed448-private-key (key-bytes)
+  "Parse an Ed448 private key."
+  ;; Ed448 private key is 57 bytes, but may be wrapped in OCTET STRING
+  (let ((key (if (and (> (length key-bytes) 57)
+                      (= (aref key-bytes 0) #x04))  ; OCTET STRING tag
+                 (subseq key-bytes 2)  ; Skip tag and length
+                 key-bytes)))
+    (ironclad:make-private-key :ed448 :x key)))
 
 (defun asn1-octet-string-p (node)
   "Check if ASN.1 node is an OCTET STRING."

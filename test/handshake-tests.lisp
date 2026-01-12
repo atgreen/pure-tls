@@ -349,6 +349,121 @@
               (fail "Client connection failed: ~A" e)))
         (when client-socket (ignore-errors (usocket:socket-close client-socket)))))))
 
+;;;; Ed448 Tests
+
+(test ed448-key-loading
+  "Test Ed448 key loading from PEM files"
+  (let ((key-path (merge-pathnames "test/certs/openssl/server-ed448-key.pem"
+                                   (asdf:system-source-directory :pure-tls)))
+        (cert-path (merge-pathnames "test/certs/openssl/server-ed448-cert.pem"
+                                    (asdf:system-source-directory :pure-tls))))
+    ;; Test private key loading
+    (let ((key (pure-tls:load-private-key key-path)))
+      (is (typep key 'ironclad::ed448-private-key)
+          "Should load as Ed448 private key"))
+    ;; Test certificate loading
+    (let* ((certs (pure-tls:load-certificate-chain cert-path))
+           (cert (first certs))
+           (spki (pure-tls::x509-certificate-subject-public-key-info cert)))
+      (is (= (length certs) 1) "Should load one certificate")
+      (is (eql (getf spki :algorithm) :ed448)
+          "Certificate should have Ed448 public key"))))
+
+(test ed448-signing-verification
+  "Test Ed448 signing and verification"
+  (let* ((key-path (merge-pathnames "test/certs/openssl/server-ed448-key.pem"
+                                    (asdf:system-source-directory :pure-tls)))
+         (key (pure-tls:load-private-key key-path))
+         (data (make-array 64 :element-type '(unsigned-byte 8) :initial-element 42)))
+    ;; Test that Ed448 is recognized as valid algorithm for this key
+    (let ((algos (pure-tls::signature-algorithms-for-private-key key)))
+      (is (member pure-tls::+sig-ed448+ algos)
+          "Ed448 should be in valid algorithms for key"))
+    ;; Test signing
+    (let ((sig (pure-tls::sign-data-with-algorithm data key pure-tls::+sig-ed448+)))
+      (is (= (length sig) 114) "Ed448 signature should be 114 bytes")
+      ;; Test verification
+      (let ((pub-key-bytes (ironclad:ed448-key-y key)))
+        (is (= (length pub-key-bytes) 57) "Ed448 public key should be 57 bytes")
+        ;; Verification should not throw
+        (finishes (pure-tls::verify-ed448-signature pub-key-bytes data sig))))))
+
+(test ed448-in-supported-algorithms
+  "Test Ed448 is included in supported signature algorithms"
+  (let ((algos (pure-tls::supported-signature-algorithms-tls13)))
+    (is (member pure-tls::+sig-ed448+ algos)
+        "Ed448 should be in TLS 1.3 supported signature algorithms")))
+
+(test ed448-server-handshake
+  "Test Ed448 server-side TLS handshake"
+  (let* ((cert-path (merge-pathnames "test/certs/openssl/server-ed448-cert.pem"
+                                     (asdf:system-source-directory :pure-tls)))
+         (key-path (merge-pathnames "test/certs/openssl/server-ed448-key.pem"
+                                    (asdf:system-source-directory :pure-tls)))
+         (port (+ 20000 (random 1000)))
+         (server-result (list nil))
+         (ready-lock (bt:make-lock "server-ready"))
+         (ready-cv (bt:make-condition-variable :name "server-ready-cv"))
+         (ready-flag (list nil)))
+    ;; Start server in background
+    (bt:make-thread
+     (lambda ()
+       (let ((server-socket nil)
+             (client-socket nil))
+         (unwind-protect
+             (handler-case
+                 (progn
+                   (setf server-socket
+                         (usocket:socket-listen "127.0.0.1" port
+                                                :reuse-address t
+                                                :element-type '(unsigned-byte 8)))
+                   ;; Signal ready
+                   (bt:with-lock-held (ready-lock)
+                     (setf (car ready-flag) t)
+                     (bt:condition-notify ready-cv))
+                   ;; Accept connection
+                   (setf client-socket
+                         (usocket:socket-accept server-socket
+                                                :element-type '(unsigned-byte 8)))
+                   ;; Create TLS server stream with Ed448 certificate
+                   (let ((tls-stream
+                           (pure-tls:make-tls-server-stream
+                            (usocket:socket-stream client-socket)
+                            :certificate cert-path
+                            :key key-path)))
+                     (close tls-stream)
+                     (setf (car server-result) :success)))
+               (error (e)
+                 (setf (car server-result) (format nil "~A" e))))
+           (when client-socket (ignore-errors (usocket:socket-close client-socket)))
+           (when server-socket (ignore-errors (usocket:socket-close server-socket))))))
+     :name "ed448-test-server")
+    ;; Wait for server ready
+    (bt:with-lock-held (ready-lock)
+      (loop until (car ready-flag)
+            do (bt:condition-wait ready-cv ready-lock :timeout 5)))
+    (sleep 0.05)
+    ;; Connect client
+    (let ((client-socket nil))
+      (unwind-protect
+          (handler-case
+              (progn
+                (setf client-socket
+                      (usocket:socket-connect "127.0.0.1" port
+                                              :element-type '(unsigned-byte 8)))
+                (let ((tls-stream
+                        (pure-tls:make-tls-client-stream
+                         (usocket:socket-stream client-socket)
+                         :sni-hostname "ed448-test"
+                         :verify pure-tls:+verify-none+)))
+                  (close tls-stream)
+                  (sleep 0.1)  ; Let server finish
+                  (is (eq (car server-result) :success)
+                      "Server handshake should succeed with Ed448 certificate")))
+            (error (e)
+              (fail "Client connection failed: ~A" e)))
+        (when client-socket (ignore-errors (usocket:socket-close client-socket)))))))
+
 ;;;; Key Exchange Tests
 
 (test x25519-key-exchange

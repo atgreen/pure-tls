@@ -236,6 +236,10 @@
           ((member algorithm '(:ed25519))
            (let ((public-key (ironclad:make-public-key :ed25519 :y public-key-bytes)))
              (ironclad:verify-signature public-key tbs signature)))
+          ;; Ed448
+          ((member algorithm '(:ed448))
+           (let ((public-key (ironclad:make-public-key :ed448 :y public-key-bytes)))
+             (ironclad:verify-signature public-key tbs signature)))
           (t
            (warn "Unknown CRL signature algorithm: ~A" algorithm)
            nil))
