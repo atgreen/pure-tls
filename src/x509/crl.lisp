@@ -398,19 +398,15 @@
                                                    :timeout timeout
                                                    :element-type '(unsigned-byte 8)))
               (setf stream (usocket:socket-stream socket))
-              ;; Send request
-              (let ((request (format nil "GET ~A HTTP/1.1~C~C~
-                                         Host: ~A~C~C~
-                                         Connection: close~C~C~
-                                         Accept: */*~C~C~
-                                         User-Agent: pure-tls/1.0~C~C~
-                                         ~C~C"
-                                     request-path #\Return #\Linefeed
-                                     host #\Return #\Linefeed
-                                     #\Return #\Linefeed
-                                     #\Return #\Linefeed
-                                     #\Return #\Linefeed
-                                     #\Return #\Linefeed)))
+              ;; Send request (use explicit CRLF to avoid Windows line ending issues)
+              (let* ((crlf (coerce '(#\Return #\Linefeed) 'string))
+                     (request (concatenate 'string
+                                           "GET " request-path " HTTP/1.1" crlf
+                                           "Host: " host crlf
+                                           "Connection: close" crlf
+                                           "Accept: */*" crlf
+                                           "User-Agent: pure-tls/1.0" crlf
+                                           crlf)))
                 (write-sequence (flexi-streams:string-to-octets request :external-format :latin-1)
                                 stream)
                 (force-output stream))
