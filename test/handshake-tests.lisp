@@ -532,6 +532,200 @@
     (is (= (pure-tls::decode-uint16 serialized 0) pure-tls::+group-x25519+)
         "Serialized group should match")))
 
+;;;; ECH (Encrypted Client Hello) Tests
+
+(test hpke-round-trip
+  "Test HPKE encryption/decryption round-trip"
+  ;; Generate receiver key pair using Ironclad's X25519
+  ;; generate-key-pair returns (values private-key public-key)
+  (multiple-value-bind (sk-r pk-r-key)
+      (ironclad:generate-key-pair :curve25519)
+    (let* ((pk-r (ironclad:curve25519-key-y pk-r-key))
+           (info (pure-tls::make-octet-vector 0))
+           (aad (make-array 16 :element-type '(unsigned-byte 8) :initial-element #xAB))
+           (plaintext (make-array 100 :element-type '(unsigned-byte 8) :initial-element 42)))
+      ;; Test single-shot API
+      (multiple-value-bind (enc ciphertext)
+          (pure-tls::hpke-seal pk-r info aad plaintext
+                                :kem-id pure-tls::+hpke-kem-x25519-sha256+
+                                :kdf-id pure-tls::+hpke-kdf-hkdf-sha256+
+                                :aead-id pure-tls::+hpke-aead-aes-128-gcm+)
+        (is (= (length enc) 32) "X25519 encapsulated key should be 32 bytes")
+        (is (> (length ciphertext) (length plaintext)) "Ciphertext should be longer (AEAD tag)")
+        ;; Decrypt - note: hpke-open arg order is (enc sk-r info aad ct ...)
+        (let ((decrypted (pure-tls::hpke-open enc sk-r info aad ciphertext
+                                              :kem-id pure-tls::+hpke-kem-x25519-sha256+
+                                              :kdf-id pure-tls::+hpke-kdf-hkdf-sha256+
+                                              :aead-id pure-tls::+hpke-aead-aes-128-gcm+)))
+          (is (bytes-equal decrypted plaintext) "Decrypted should match plaintext"))))))
+
+(test ech-config-serialization
+  "Test ECH config serialization/parsing round-trip"
+  (let* ((key-config (pure-tls::make-ech-hpke-key-config
+                      :config-id 42
+                      :kem-id pure-tls::+hpke-kem-x25519-sha256+
+                      :public-key (pure-tls:random-bytes 32)
+                      :cipher-suites (list (pure-tls::make-ech-hpke-cipher-suite
+                                            :kdf-id pure-tls::+hpke-kdf-hkdf-sha256+
+                                            :aead-id pure-tls::+hpke-aead-aes-128-gcm+))))
+         (contents (pure-tls::make-ech-config-contents
+                    :key-config key-config
+                    :maximum-name-length 128
+                    :public-name "test.example.com"
+                    :extensions (pure-tls::make-octet-vector 0)))
+         (config (pure-tls::make-ech-config
+                  :version pure-tls::+ech-version+
+                  :contents contents))
+         (serialized (pure-tls::serialize-ech-config-list (list config)))
+         (parsed (pure-tls::parse-ech-config-list serialized)))
+    (is (= (length parsed) 1) "Should parse one config")
+    (let* ((parsed-config (first parsed))
+           (parsed-contents (pure-tls::ech-config-contents parsed-config))
+           (parsed-key-config (pure-tls::ech-config-contents-key-config parsed-contents)))
+      (is (= (pure-tls::ech-config-version parsed-config) pure-tls::+ech-version+)
+          "Version should match")
+      (is (= (pure-tls::ech-hpke-key-config-config-id parsed-key-config) 42)
+          "Config ID should match")
+      (is (string= (pure-tls::ech-config-contents-public-name parsed-contents) "test.example.com")
+          "Public name should match"))))
+
+(test ech-extension-serialization
+  "Test ECH extension serialization/parsing"
+  ;; Test outer extension
+  (let* ((outer-ext (pure-tls::make-ech-ext
+                     :type :outer
+                     :config-id 99
+                     :cipher-suite (pure-tls::make-ech-hpke-cipher-suite
+                                    :kdf-id pure-tls::+hpke-kdf-hkdf-sha256+
+                                    :aead-id pure-tls::+hpke-aead-aes-128-gcm+)
+                     :enc (pure-tls:random-bytes 32)
+                     :payload (pure-tls:random-bytes 100)))
+         (serialized (pure-tls::serialize-ech-extension outer-ext))
+         (parsed (pure-tls::parse-ech-extension serialized)))
+    (is (eq (pure-tls::ech-ext-type parsed) :outer) "Type should be :outer")
+    (is (= (pure-tls::ech-ext-config-id parsed) 99) "Config ID should match"))
+  ;; Test inner extension
+  (let* ((inner-ext (pure-tls::make-ech-ext :type :inner))
+         (serialized (pure-tls::serialize-ech-extension inner-ext))
+         (parsed (pure-tls::parse-ech-extension serialized)))
+    (is (eq (pure-tls::ech-ext-type parsed) :inner) "Type should be :inner")
+    (is (= (length serialized) 1) "Inner extension should be 1 byte")))
+
+(test ech-config-selection
+  "Test ECH config selection picks compatible config"
+  (let* ((key-config (pure-tls::make-ech-hpke-key-config
+                      :config-id 1
+                      :kem-id pure-tls::+hpke-kem-x25519-sha256+
+                      :public-key (pure-tls:random-bytes 32)
+                      :cipher-suites (list (pure-tls::make-ech-hpke-cipher-suite
+                                            :kdf-id pure-tls::+hpke-kdf-hkdf-sha256+
+                                            :aead-id pure-tls::+hpke-aead-aes-128-gcm+))))
+         (contents (pure-tls::make-ech-config-contents
+                    :key-config key-config
+                    :maximum-name-length 128
+                    :public-name "example.com"
+                    :extensions (pure-tls::make-octet-vector 0)))
+         (config (pure-tls::make-ech-config
+                  :version pure-tls::+ech-version+
+                  :contents contents)))
+    (multiple-value-bind (selected cipher-suite)
+        (pure-tls::select-ech-config (list config))
+      (is (not (null selected)) "Should select a config")
+      (is (not (null cipher-suite)) "Should select a cipher suite")
+      (is (= (pure-tls::ech-hpke-cipher-suite-kdf-id cipher-suite)
+             pure-tls::+hpke-kdf-hkdf-sha256+)
+          "Should select SHA256 KDF"))))
+
+(test ech-inner-clienthello-encoding
+  "Test inner ClientHello encoding and padding"
+  (let* ((inner-hello (pure-tls::make-client-hello
+                       :legacy-version pure-tls::+tls-1.2+
+                       :random (pure-tls:random-bytes 32)
+                       :legacy-session-id (pure-tls::make-octet-vector 0)
+                       :cipher-suites (list pure-tls::+tls-aes-128-gcm-sha256+)
+                       :legacy-compression-methods (pure-tls::octet-vector 0)
+                       :extensions (list
+                                    (pure-tls::make-tls-extension
+                                     :type pure-tls::+extension-server-name+
+                                     :data (pure-tls::make-server-name-ext
+                                            :host-name "secret.example.com"))
+                                    (pure-tls::make-tls-extension
+                                     :type pure-tls::+extension-supported-versions+
+                                     :data (pure-tls::make-supported-versions-ext
+                                            :versions (list pure-tls::+tls-1.3+))))))
+         ;; Add ECH inner marker
+         (with-marker (pure-tls::add-ech-inner-marker inner-hello)))
+    ;; Check inner has ECH extension
+    (let ((ech-ext (pure-tls::find-extension
+                    (pure-tls::client-hello-extensions with-marker)
+                    pure-tls::+extension-ech+)))
+      (is (not (null ech-ext)) "Inner CH should have ECH extension")
+      (is (eq (pure-tls::ech-ext-type (pure-tls::tls-extension-data ech-ext)) :inner)
+          "ECH extension should be inner type"))
+    ;; Test encoding with padding
+    (let ((encoded (pure-tls::encode-client-hello-inner with-marker 128)))
+      (is (> (length encoded) 0) "Encoded inner should have content"))))
+
+(test ech-outer-clienthello-construction
+  "Test outer ClientHello construction with ECH"
+  (let* ((key-config (pure-tls::make-ech-hpke-key-config
+                      :config-id 77
+                      :kem-id pure-tls::+hpke-kem-x25519-sha256+
+                      :public-key (pure-tls:random-bytes 32)
+                      :cipher-suites (list (pure-tls::make-ech-hpke-cipher-suite
+                                            :kdf-id pure-tls::+hpke-kdf-hkdf-sha256+
+                                            :aead-id pure-tls::+hpke-aead-aes-128-gcm+))))
+         (contents (pure-tls::make-ech-config-contents
+                    :key-config key-config
+                    :maximum-name-length 128
+                    :public-name "cloudflare-ech.com"
+                    :extensions (pure-tls::make-octet-vector 0)))
+         (config (pure-tls::make-ech-config
+                  :version pure-tls::+ech-version+
+                  :contents contents))
+         (cipher-suite (first (pure-tls::ech-hpke-key-config-cipher-suites key-config)))
+         (inner-hello (pure-tls::make-client-hello
+                       :legacy-version pure-tls::+tls-1.2+
+                       :random (pure-tls:random-bytes 32)
+                       :legacy-session-id (pure-tls:random-bytes 32)
+                       :cipher-suites (list pure-tls::+tls-aes-128-gcm-sha256+)
+                       :legacy-compression-methods (pure-tls::octet-vector 0)
+                       :extensions (list
+                                    (pure-tls::make-tls-extension
+                                     :type pure-tls::+extension-server-name+
+                                     :data (pure-tls::make-server-name-ext
+                                            :host-name "secret-server.example.com"))))))
+    ;; Build outer extensions
+    (let* ((inner-with-marker (pure-tls::add-ech-inner-marker inner-hello))
+           (encoded (pure-tls::encode-client-hello-inner inner-with-marker 128)))
+      (multiple-value-bind (enc ciphertext)
+          (pure-tls::encrypt-client-hello-inner encoded config cipher-suite)
+        (let ((outer-exts (pure-tls::build-outer-extensions
+                           (pure-tls::client-hello-extensions inner-hello)
+                           "cloudflare-ech.com"
+                           config cipher-suite enc ciphertext)))
+          ;; Check SNI is public_name
+          (let ((sni-ext (pure-tls::find-extension outer-exts pure-tls::+extension-server-name+)))
+            (is (not (null sni-ext)) "Outer should have SNI extension")
+            (is (string= (pure-tls::server-name-ext-host-name
+                          (pure-tls::tls-extension-data sni-ext))
+                         "cloudflare-ech.com")
+                "Outer SNI should be public_name"))
+          ;; Check ECH extension is present
+          (let ((ech-ext (pure-tls::find-extension outer-exts pure-tls::+extension-ech+)))
+            (is (not (null ech-ext)) "Outer should have ECH extension")
+            (is (eq (pure-tls::ech-ext-type (pure-tls::tls-extension-data ech-ext)) :outer)
+                "Outer ECH should be :outer type")))))))
+
+(test ech-constants
+  "Verify ECH and HPKE constants are defined"
+  (is (= pure-tls::+extension-ech+ #xfe0d))
+  (is (= pure-tls::+ech-version+ #xfe0d))
+  (is (= pure-tls::+hpke-mode-base+ #x00))
+  (is (= pure-tls::+hpke-kem-x25519-sha256+ #x0020))
+  (is (= pure-tls::+hpke-kdf-hkdf-sha256+ #x0001))
+  (is (= pure-tls::+hpke-aead-aes-128-gcm+ #x0001)))
+
 ;;;; Test Runner
 
 (defun run-handshake-tests ()

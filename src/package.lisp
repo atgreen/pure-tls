@@ -112,4 +112,10 @@
    #:*use-windows-certificate-store*
    #+windows #:verify-certificate-chain-windows
    #:*use-macos-keychain*
-   #+(or darwin macos) #:verify-certificate-chain-macos))
+   #+(or darwin macos) #:verify-certificate-chain-macos
+
+   ;; ECH (Encrypted Client Hello)
+   #:tls-ech-accepted-p
+   #:tls-ech-retry-error
+   #:tls-ech-retry-error-configs
+   #:parse-ech-config-list))

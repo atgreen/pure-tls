@@ -56,6 +56,7 @@
                          +extension-post-handshake-auth+       ; 49
                          +extension-signature-algorithms-cert+ ; 50
                          +extension-key-share+                 ; 51
+                         +extension-ech+                       ; 65037 (0xfe0d)
                          +extension-renegotiation-info+        ; 65281
                          +extension-next-protocol-negotiation+)))
 
@@ -105,6 +106,8 @@
             ;; Parse as ClientHello format (identities + binders)
             ;; ServerHello format (just selected index) is only 2 bytes
             (parse-pre-shared-key-extension data :server-hello-p (= (length data) 2)))
+           (#.+extension-ech+
+            (parse-ech-extension data))
            (otherwise data))))  ; Return raw bytes for unknown extensions
 
 (defun serialize-extension (ext)
@@ -130,6 +133,8 @@
                (serialize-psk-key-exchange-modes-extension ext-data))
               (#.+extension-pre-shared-key+
                (serialize-pre-shared-key-extension ext-data))
+              (#.+extension-ech+
+               (serialize-ech-extension ext-data))
               (otherwise
                (cond
                  ((typep ext-data 'grease-ext)
@@ -495,6 +500,7 @@
     (#.+extension-cookie+ "cookie")
     (#.+extension-psk-key-exchange-modes+ "psk_key_exchange_modes")
     (#.+extension-key-share+ "key_share")
+    (#.+extension-ech+ "encrypted_client_hello")
     (otherwise (format nil "unknown(~D)" ext-type))))
 
 ;;;; GREASE Extension (RFC 8701)
@@ -506,3 +512,91 @@
 (defun serialize-grease-extension (ext)
   "Serialize GREASE extension data."
   (grease-ext-data ext))
+
+;;;; ECH Extension (RFC 9639)
+;;;
+;;; The ECH extension has different formats depending on context:
+;;; - ClientHelloOuter: type(0=outer) + config_id + cipher_suite + enc + payload
+;;; - ClientHelloInner: type(1=inner) with empty contents
+;;; - EncryptedExtensions (retry): retry_configs (ECHConfigList)
+
+(defconstant +ech-client-type-outer+ 0
+  "ECH extension type for ClientHelloOuter")
+(defconstant +ech-client-type-inner+ 1
+  "ECH extension type for ClientHelloInner")
+
+(defstruct ech-ext
+  "encrypted_client_hello extension data.
+   For ClientHelloOuter: type=:outer, has config-id, cipher-suite, enc, payload
+   For ClientHelloInner: type=:inner, empty
+   For EncryptedExtensions: type=:retry, has retry-configs"
+  (type :outer :type (member :outer :inner :retry))
+  ;; For outer
+  (config-id 0 :type (unsigned-byte 8))
+  (cipher-suite nil :type (or null ech-hpke-cipher-suite))
+  (enc nil :type (or null octet-vector))
+  (payload nil :type (or null octet-vector))
+  ;; For retry (EncryptedExtensions)
+  (retry-configs nil :type (or null list)))
+
+(defun parse-ech-extension (data)
+  "Parse ECH extension.
+   The format depends on context:
+   - Empty (0 bytes): Server acceptance confirmation
+   - 1 byte with value 1: ClientHelloInner marker
+   - Starts with 0: ClientHelloOuter format
+   - Otherwise: retry_configs (ECHConfigList)"
+  (cond
+    ;; Empty extension - server acceptance in EncryptedExtensions
+    ((zerop (length data))
+     (make-ech-ext :type :retry :retry-configs nil))
+    ;; ClientHelloInner marker
+    ((and (= (length data) 1)
+          (= (aref data 0) +ech-client-type-inner+))
+     (make-ech-ext :type :inner))
+    ;; ClientHelloOuter format
+    ((= (aref data 0) +ech-client-type-outer+)
+     (let ((buf (make-tls-buffer data)))
+       (buffer-read-octet buf)  ; Skip type byte
+       (let* ((kdf-id (buffer-read-uint16 buf))
+              (aead-id (buffer-read-uint16 buf))
+              (config-id (buffer-read-octet buf))
+              (enc (buffer-read-vector16 buf))
+              (payload (buffer-read-vector16 buf)))
+         (make-ech-ext
+          :type :outer
+          :config-id config-id
+          :cipher-suite (make-ech-hpke-cipher-suite :kdf-id kdf-id :aead-id aead-id)
+          :enc enc
+          :payload payload))))
+    ;; retry_configs in EncryptedExtensions
+    (t
+     (make-ech-ext
+      :type :retry
+      :retry-configs (parse-ech-config-list data)))))
+
+(defun serialize-ech-extension (ext)
+  "Serialize ECH extension."
+  (case (ech-ext-type ext)
+    ;; ClientHelloInner - just the type byte
+    (:inner
+     (octet-vector +ech-client-type-inner+))
+    ;; ClientHelloOuter
+    (:outer
+     (let* ((cs (ech-ext-cipher-suite ext))
+            (buf (make-tls-write-buffer))
+            (enc (or (ech-ext-enc ext) (make-octet-vector 0)))
+            (payload (or (ech-ext-payload ext) (make-octet-vector 0))))
+       (write-buffer-append-octet buf +ech-client-type-outer+)
+       (write-buffer-append-uint16 buf (ech-hpke-cipher-suite-kdf-id cs))
+       (write-buffer-append-uint16 buf (ech-hpke-cipher-suite-aead-id cs))
+       (write-buffer-append-octet buf (ech-ext-config-id ext))
+       (write-buffer-append-vector16 buf enc)
+       (write-buffer-append-vector16 buf payload)
+       (write-buffer-contents buf)))
+    ;; retry_configs
+    (:retry
+     (let ((configs (ech-ext-retry-configs ext)))
+       (if configs
+           (serialize-ech-config-list configs)
+           (make-octet-vector 0))))))

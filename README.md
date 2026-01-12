@@ -34,6 +34,7 @@ Use with drakma via cl+ssl compatibility layer (drop-in OpenSSL replacement):
 - **Pure Common Lisp** - No foreign libraries or OpenSSL dependency
 - **TLS 1.3 only** - Modern, secure protocol with simplified handshake
 - **Post-quantum ready** - X25519MLKEM768 hybrid key exchange (FIPS 203)
+- **Encrypted Client Hello (ECH)** - Encrypts SNI to protect privacy (RFC 9639)
 - **Automatic certificates** - Built-in ACME client for Let's Encrypt
 - **Gray streams** - Seamless integration with existing I/O code
 - **cl+ssl compatible** - Drop-in replacement API available
@@ -362,7 +363,7 @@ Execute BODY with VAR bound to a TLS client stream. The stream is automatically 
 
 Execute BODY with VAR bound to a TLS server stream. The stream is automatically closed when BODY exits.
 
-#### `make-tls-client-stream` (socket &key hostname sni-hostname context verify alpn-protocols close-callback external-format buffer-size)
+#### `make-tls-client-stream` (socket &key hostname sni-hostname context verify alpn-protocols ech-configs ech-enabled close-callback external-format buffer-size)
 
 Create a TLS client stream over a TCP socket.
 
@@ -372,6 +373,8 @@ Create a TLS client stream over a TCP socket.
 - `context` - TLS context for configuration (optional)
 - `verify` - Certificate verification mode: `+verify-none+`, `+verify-peer+`, or `+verify-required+`
 - `alpn-protocols` - List of ALPN protocol names to offer
+- `ech-configs` - ECH configurations for Encrypted Client Hello (from DNS HTTPS record or manual)
+- `ech-enabled` - Whether to use ECH when configs are available (default T)
 - `close-callback` - Function called when stream is closed
 - `external-format` - If specified, wrap in a flexi-stream for character I/O
 - `buffer-size` - Size of I/O buffers (default 16384)
@@ -399,6 +402,7 @@ Create a TLS server stream over a TCP socket.
 - `(tls-cipher-suite stream)` - Returns the negotiated cipher suite
 - `(tls-version stream)` - Returns the TLS version (always 1.3)
 - `(tls-client-hostname stream)` - Returns the client's SNI hostname (server-side only)
+- `(tls-ech-accepted-p stream)` - Returns T if ECH was used and accepted (client-side only)
 - `(tls-request-key-update stream &key request-peer-update)` - Request a TLS 1.3 key update
 
 ### Context Management
@@ -620,6 +624,91 @@ sbcl --eval '(asdf:load-system :pure-tls)' \
 - **Constant-time** - All secret-dependent operations use constant-time arithmetic
 - **Implicit rejection** - Invalid ciphertexts produce pseudorandom output (CCA security)
 
+## Encrypted Client Hello (ECH)
+
+pure-tls supports **Encrypted Client Hello (ECH)** per RFC 9639, which encrypts the ClientHello message including the SNI (Server Name Indication) to protect user privacy from network observers.
+
+### How It Works
+
+Without ECH, the server hostname is sent in plaintext during the TLS handshake, allowing network observers to see which websites you're connecting to. ECH encrypts this information using a public key published in the server's DNS HTTPS record.
+
+1. **Client fetches ECH config** from DNS HTTPS record (caller's responsibility)
+2. **Inner ClientHello** contains the real SNI and is encrypted
+3. **Outer ClientHello** shows only the public "client-facing server" name
+4. **Server decrypts** the inner ClientHello and processes the real request
+
+### Client Usage
+
+```lisp
+;; ECH configs are typically obtained from DNS HTTPS records
+;; The caller is responsible for DNS lookup (following rustls/BoringSSL pattern)
+(let ((ech-configs (fetch-ech-configs-from-dns "example.com")))  ; Your DNS lookup
+  (pure-tls:make-tls-client-stream socket
+    :hostname "example.com"
+    :ech-configs ech-configs))
+
+;; Check if ECH was accepted by the server
+(pure-tls:tls-ech-accepted-p stream)  ; => T or NIL
+```
+
+### Handling ECH Retry
+
+If the server rejects ECH (e.g., config is outdated), it may provide new configs:
+
+```lisp
+(handler-case
+    (pure-tls:make-tls-client-stream socket
+      :hostname "example.com"
+      :ech-configs old-configs)
+  (pure-tls:tls-ech-retry-error (e)
+    ;; Server provided new configs - retry with them
+    (let ((new-configs (pure-tls:tls-ech-retry-error-configs e)))
+      (pure-tls:make-tls-client-stream new-socket
+        :hostname "example.com"
+        :ech-configs new-configs))))
+```
+
+### Disabling ECH
+
+ECH is only used when configs are provided. To disable:
+
+```lisp
+;; Simply don't provide ech-configs
+(pure-tls:make-tls-client-stream socket :hostname "example.com")
+
+;; Or explicitly disable even if configs are available
+(pure-tls:make-tls-client-stream socket
+  :hostname "example.com"
+  :ech-configs configs
+  :ech-enabled nil)
+```
+
+### ECH Config Format
+
+ECH configs can be provided as:
+- Raw bytes (ECHConfigList from DNS)
+- Parsed `ech-config` structures
+- List of configs (first compatible one is used)
+
+```lisp
+;; Parse raw ECHConfigList bytes
+(pure-tls:parse-ech-config-list raw-bytes)  ; => list of ech-config
+```
+
+### Security Considerations
+
+- **Privacy protection** - Network observers cannot see the target hostname
+- **HPKE encryption** - Inner ClientHello is encrypted with X25519 + AES-128-GCM
+- **Retry handling** - Servers can provide updated configs if current ones are stale
+- **Client-side only** - Server-side ECH is not yet implemented
+
+### Browser Compatibility
+
+ECH is supported by major browsers:
+- **Chrome 117+** - Enabled by default
+- **Firefox 118+** - Enabled by default
+- **Safari** - Not yet supported
+
 ## Debugging with Wireshark
 
 pure-tls supports the NSS Key Log format via the `SSLKEYLOGFILE` environment variable. This allows you to decrypt TLS traffic in Wireshark for debugging purposes.
@@ -818,6 +907,8 @@ Copyright (c) 2026 Anthony Green <green@moxielogic.com>
 ## See Also
 
 - [RFC 8446](https://tools.ietf.org/html/rfc8446) - TLS 1.3 specification
+- [RFC 9639](https://tools.ietf.org/html/rfc9639) - Encrypted Client Hello (ECH)
+- [RFC 9180](https://tools.ietf.org/html/rfc9180) - Hybrid Public Key Encryption (HPKE)
 - [FIPS 203](https://csrc.nist.gov/pubs/fips/203/final) - ML-KEM (Module-Lattice-Based Key-Encapsulation Mechanism)
 - [RFC 8555](https://tools.ietf.org/html/rfc8555) - ACME protocol specification
 - [RFC 8737](https://tools.ietf.org/html/rfc8737) - TLS-ALPN-01 challenge

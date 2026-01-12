@@ -107,6 +107,8 @@
 (defconstant +extension-quic-transport-parameters-legacy+ 65445)  ; 0xffa5 - legacy/draft
 ;; ALPS (Application-Layer Protocol Settings) - Google extension, not implemented
 (defconstant +extension-alps+ 17513)  ; 0x4469
+;; ECH (Encrypted Client Hello) - RFC 9639
+(defconstant +extension-ech+ #xfe0d)
 
 ;;;; Named Groups (RFC 8446 Section 4.2.7)
 
@@ -243,3 +245,53 @@
   "Maximum size in bytes for certificate list in Certificate message.
    0 means no limit. Set to a positive value to enforce a limit.
    Used to prevent DoS via excessively large certificate chains.")
+
+;;;; HPKE Constants (RFC 9180)
+
+;; HPKE Modes
+(defconstant +hpke-mode-base+ #x00
+  "Base mode: encryption with public key")
+(defconstant +hpke-mode-psk+ #x01
+  "PSK mode: pre-shared key only")
+(defconstant +hpke-mode-auth+ #x02
+  "Auth mode: authenticated sender")
+(defconstant +hpke-mode-auth-psk+ #x03
+  "AuthPSK mode: authenticated sender with PSK")
+
+;; HPKE KEM IDs (Key Encapsulation Mechanism)
+(defconstant +hpke-kem-p256-sha256+ #x0010
+  "DHKEM(P-256, HKDF-SHA256)")
+(defconstant +hpke-kem-p384-sha384+ #x0011
+  "DHKEM(P-384, HKDF-SHA384)")
+(defconstant +hpke-kem-p521-sha512+ #x0012
+  "DHKEM(P-521, HKDF-SHA512)")
+(defconstant +hpke-kem-x25519-sha256+ #x0020
+  "DHKEM(X25519, HKDF-SHA256)")
+(defconstant +hpke-kem-x448-sha512+ #x0021
+  "DHKEM(X448, HKDF-SHA512)")
+
+;; HPKE KDF IDs (Key Derivation Function)
+(defconstant +hpke-kdf-hkdf-sha256+ #x0001
+  "HKDF-SHA256")
+(defconstant +hpke-kdf-hkdf-sha384+ #x0002
+  "HKDF-SHA384")
+(defconstant +hpke-kdf-hkdf-sha512+ #x0003
+  "HKDF-SHA512")
+
+;; HPKE AEAD IDs
+(defconstant +hpke-aead-aes-128-gcm+ #x0001
+  "AES-128-GCM")
+(defconstant +hpke-aead-aes-256-gcm+ #x0002
+  "AES-256-GCM")
+(defconstant +hpke-aead-chacha20-poly1305+ #x0003
+  "ChaCha20-Poly1305")
+(defconstant +hpke-aead-export-only+ #xFFFF
+  "Export-only (no AEAD)")
+
+;;;; ECH Constants (RFC 9639)
+
+(defconstant +ech-version+ #xfe0d
+  "ECH version identifier")
+
+(defconstant +ech-accept-confirmation-length+ 8
+  "Length of ECH accept confirmation in ServerHello random")

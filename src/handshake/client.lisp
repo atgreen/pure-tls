@@ -74,6 +74,15 @@
   (client-certificate nil)  ; Parsed X.509 certificate (or raw DER)
   (client-private-key nil)  ; Private key for signing CertificateVerify
   (client-certificate-chain nil :type list)  ; Additional chain certificates
+  ;; ECH (Encrypted Client Hello) - RFC 9639
+  (ech-configs nil :type list)  ; List of ECHConfig from DNS/manual
+  (ech-enabled nil :type boolean)  ; Whether to use ECH
+  (ech-config-used nil)  ; The ECHConfig we selected
+  (ech-cipher-suite nil)  ; Selected HPKE cipher suite
+  (ech-hpke-context nil)  ; HPKE context for accept confirmation
+  (ech-inner-random nil :type (or null octet-vector))  ; Inner CH random for verification
+  (ech-accepted nil :type boolean)  ; Server accepted ECH
+  (ech-retry-configs nil :type list)  ; Retry configs from server
   ;; State
   (state :start))
 
@@ -232,6 +241,78 @@
         (setf hello (add-psk-extension-to-client-hello hs hello)))
       hello)))
 
+;;;; ECH-Aware ClientHello Generation
+
+(defun generate-client-hello-with-ech (hs inner-hello)
+  "Generate outer ClientHello with ECH extension containing encrypted inner.
+   INNER-HELLO is the ClientHello for the real server (with actual SNI).
+   Returns the outer ClientHello."
+  (let* ((config (client-handshake-ech-config-used hs))
+         (cipher-suite (client-handshake-ech-cipher-suite hs))
+         (contents (ech-config-contents config))
+         (public-name (ech-config-contents-public-name contents))
+         (max-name-len (ech-config-contents-maximum-name-length contents)))
+    ;; Add ECH inner marker to inner ClientHello
+    (let ((inner-with-marker (add-ech-inner-marker inner-hello)))
+      ;; Save inner random for later verification
+      (setf (client-handshake-ech-inner-random hs)
+            (client-hello-random inner-with-marker))
+      ;; Encode inner ClientHello
+      (let ((encoded-inner (encode-client-hello-inner inner-with-marker max-name-len)))
+        ;; Encrypt inner ClientHello
+        (multiple-value-bind (enc ciphertext hpke-ctx)
+            (encrypt-client-hello-inner encoded-inner config cipher-suite)
+          ;; Save HPKE context for accept confirmation verification
+          (setf (client-handshake-ech-hpke-context hs) hpke-ctx)
+          ;; Build outer ClientHello
+          ;; - Use different random than inner
+          ;; - Use public_name as SNI
+          ;; - Include ECH extension with encrypted inner
+          (let* ((outer-random (random-bytes 32))
+                 ;; Outer extensions: replace SNI with public_name, add ECH, remove sensitive ones
+                 (outer-extensions (build-outer-extensions
+                                    (client-hello-extensions inner-hello)
+                                    public-name
+                                    config cipher-suite enc ciphertext)))
+            (make-client-hello
+             :legacy-version +tls-1.2+
+             :random outer-random
+             :legacy-session-id (client-hello-legacy-session-id inner-hello)
+             :cipher-suites (client-hello-cipher-suites inner-hello)
+             :legacy-compression-methods (client-hello-legacy-compression-methods inner-hello)
+             :extensions outer-extensions)))))))
+
+(defun build-outer-extensions (inner-extensions public-name config cipher-suite enc payload)
+  "Build extensions for ClientHelloOuter.
+   Replaces SNI with public_name and adds ECH extension."
+  (let ((outer-exts nil))
+    ;; Copy most extensions, but replace SNI
+    (dolist (ext inner-extensions)
+      (let ((ext-type (tls-extension-type ext)))
+        (cond
+          ;; Replace SNI with public_name
+          ((= ext-type +extension-server-name+)
+           (push (make-tls-extension
+                  :type +extension-server-name+
+                  :data (make-server-name-ext :host-name public-name))
+                 outer-exts))
+          ;; Skip inner ECH marker if present (shouldn't be, but just in case)
+          ((= ext-type +extension-ech+)
+           nil)
+          ;; Copy other extensions
+          (t
+           (push ext outer-exts)))))
+    ;; Add ECH extension with encrypted inner
+    (push (build-ech-outer-extension config cipher-suite enc payload)
+          outer-exts)
+    ;; Ensure SNI is present even if inner didn't have it
+    (unless (find +extension-server-name+ outer-exts :key #'tls-extension-type)
+      (push (make-tls-extension
+             :type +extension-server-name+
+             :data (make-server-name-ext :host-name public-name))
+            outer-exts))
+    (nreverse outer-exts)))
+
 (defun add-psk-extension-to-client-hello (hs hello)
   "Add pre_shared_key extension with binder to ClientHello.
    The binder is computed over the partial ClientHello message.
@@ -278,10 +359,26 @@
 (defun send-client-hello (hs &key requested-group)
   "Send ClientHello message.
    REQUESTED-GROUP is used when responding to HelloRetryRequest."
-  (let* ((hello (generate-client-hello hs :requested-group requested-group))
+  ;; Check if ECH should be used
+  (when (and (client-handshake-ech-enabled hs)
+             (client-handshake-ech-configs hs)
+             (not (client-handshake-ech-config-used hs)))  ; Not already selected
+    ;; Select best ECH config
+    (multiple-value-bind (config cipher-suite)
+        (select-ech-config (client-handshake-ech-configs hs))
+      (when config
+        (setf (client-handshake-ech-config-used hs) config)
+        (setf (client-handshake-ech-cipher-suite hs) cipher-suite))))
+  ;; Generate ClientHello (with or without ECH)
+  (let* ((inner-hello (generate-client-hello hs :requested-group requested-group))
+         (hello (if (client-handshake-ech-config-used hs)
+                    ;; Generate outer CH with encrypted inner
+                    (generate-client-hello-with-ech hs inner-hello)
+                    ;; Normal CH without ECH
+                    inner-hello))
          (hello-bytes (serialize-client-hello hello))
          (message (wrap-handshake-message +handshake-client-hello+ hello-bytes)))
-    ;; Update transcript
+    ;; Update transcript (always with outer/actual CH sent on wire)
     (client-handshake-update-transcript hs message)
     ;; Send ClientHello
     (record-layer-write-handshake (client-handshake-record-layer hs) message)
@@ -597,7 +694,8 @@
                    :message ":DECODE_ERROR: Duplicate extension in EncryptedExtensions"))
           (setf (gethash ext-type seen) t)
           (unless (member ext-type (list +extension-application-layer-protocol-negotiation+
-                                         +extension-server-name+))
+                                         +extension-server-name+
+                                         +extension-ech+))
             (record-layer-write-alert (client-handshake-record-layer hs)
                                       +alert-level-fatal+
                                       +alert-unsupported-extension+)
@@ -661,6 +759,27 @@
               (error 'tls-decode-error
                      :message ":ILLEGAL_PARAMETER: ALPN selected protocol not offered by client"))
             (setf (client-handshake-selected-alpn hs) selected)))))
+    ;; Process ECH extension if we used ECH
+    (when (client-handshake-ech-config-used hs)
+      (let ((ech-ext (find-extension extensions +extension-ech+)))
+        (if ech-ext
+            ;; Server responded to ECH
+            (let ((ech-data (tls-extension-data ech-ext)))
+              (if (and (ech-ext-p ech-data)
+                       (eq (ech-ext-type ech-data) :retry)
+                       (ech-ext-retry-configs ech-data))
+                  ;; ECH rejected with retry_configs
+                  (progn
+                    (setf (client-handshake-ech-retry-configs hs)
+                          (ech-ext-retry-configs ech-data))
+                    (error 'tls-ech-retry-error
+                           :message "Server rejected ECH and provided retry configs"
+                           :retry-configs (ech-ext-retry-configs ech-data)))
+                  ;; ECH accepted (empty extension or type :outer confirms)
+                  (setf (client-handshake-ech-accepted hs) t)))
+            ;; No ECH extension in response - ECH was rejected without retry configs
+            ;; This is allowed per RFC 9639 Section 7.1
+            (setf (client-handshake-ech-accepted hs) nil))))
     ;; In PSK mode with resumption, server skips Certificate/CertificateVerify
     ;; Otherwise, expect Certificate next
     (setf (client-handshake-state hs) :wait-cert-or-finished)))
@@ -1574,13 +1693,17 @@
                                                    skip-hostname-verify
                                                    client-certificate
                                                    client-private-key
-                                                   client-certificate-chain)
+                                                   client-certificate-chain
+                                                   ech-configs
+                                                   (ech-enabled t))
   "Perform the TLS 1.3 client handshake.
    Returns a CLIENT-HANDSHAKE structure on success.
    TRUST-STORE is used for certificate chain verification when verify-mode is +verify-required+.
    SKIP-HOSTNAME-VERIFY when true skips hostname verification (for SNI-only hostname).
    CLIENT-CERTIFICATE and CLIENT-PRIVATE-KEY are used for client authentication (mTLS)
-   when the server requests it. CLIENT-CERTIFICATE-CHAIN provides additional chain certificates."
+   when the server requests it. CLIENT-CERTIFICATE-CHAIN provides additional chain certificates.
+   ECH-CONFIGS is a list of ECHConfig structures from DNS HTTPS records or manual configuration.
+   ECH-ENABLED controls whether to use ECH when configs are available (default T)."
   (let ((hs (make-client-handshake
              :hostname hostname
              :alpn-protocols alpn-protocols
@@ -1590,6 +1713,8 @@
              :client-certificate client-certificate
              :client-private-key client-private-key
              :client-certificate-chain client-certificate-chain
+             :ech-configs ech-configs
+             :ech-enabled (and ech-enabled ech-configs)  ; Only enable if configs provided
              :record-layer record-layer)))
     ;; Send ClientHello
     (send-client-hello hs)

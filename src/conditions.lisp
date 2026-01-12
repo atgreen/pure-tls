@@ -231,6 +231,19 @@
 
 ;;;; Utility Functions
 
+;;;; ECH Errors
+
+(define-condition tls-ech-retry-error (tls-handshake-error)
+  ((retry-configs :initarg :retry-configs
+                  :initform nil
+                  :reader tls-ech-retry-error-configs))
+  (:report (lambda (condition stream)
+             (format stream "ECH rejected, server provided ~D retry config~:P"
+                     (length (tls-ech-retry-error-configs condition)))))
+  (:documentation "Server rejected ECH and provided retry configs"))
+
+;;;; Utility Functions
+
 (defun tls-error (message &rest args)
   "Signal a TLS-ERROR with a formatted message."
   (error 'tls-error :message (apply #'format nil message args)))

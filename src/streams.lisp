@@ -456,6 +456,13 @@
                          sending keys are updated."
   (tls-stream-send-key-update stream :request-update request-peer-update))
 
+(defun tls-ech-accepted-p (stream)
+  "Return T if ECH (Encrypted Client Hello) was used and accepted by the server.
+   Returns NIL if ECH was not used, was rejected, or this is a server stream."
+  (let ((hs (tls-stream-handshake stream)))
+    (when (client-handshake-p hs)
+      (client-handshake-ech-accepted hs))))
+
 ;;;; Stream Creation
 
 (defun make-tls-client-stream (socket &key
@@ -466,6 +473,8 @@
                                         alpn-protocols
                                         client-certificate
                                         client-key
+                                        ech-configs
+                                        (ech-enabled t)
                                         close-callback
                                         external-format
                                         (buffer-size *default-buffer-size*)
@@ -480,6 +489,9 @@
    ALPN-PROTOCOLS - List of ALPN protocol names to offer.
    CLIENT-CERTIFICATE - Certificate for client authentication (mTLS).
    CLIENT-KEY - Private key for client authentication (mTLS).
+   ECH-CONFIGS - ECH configurations for Encrypted Client Hello (from DNS or manual).
+                 Can be raw bytes (ECHConfigList) or parsed ECH-CONFIG structures.
+   ECH-ENABLED - Enable ECH when configs available (default T).
    CLOSE-CALLBACK - Function called when stream is closed.
    EXTERNAL-FORMAT - If non-NIL, wrap in a flexi-stream.
    BUFFER-SIZE - Size of I/O buffers.
@@ -520,35 +532,48 @@
     (setf (tls-stream-record-layer stream) record-layer)
     ;; Perform handshake (CertificateVerify is verified during handshake)
     ;; Skip hostname verification if only sni-hostname is provided (no hostname)
-    (let ((hs (perform-client-handshake
-               record-layer
-               :hostname sni-name
-               :alpn-protocols (or alpn-protocols
-                                   (tls-context-alpn-protocols context))
-               :verify-mode verify
-               :trust-store trust-store
-               :skip-hostname-verify (and sni-hostname (null hostname))
-               :client-certificate client-cert
-               :client-private-key private-key
-               :client-certificate-chain chain-certs)))
-      (setf (tls-stream-handshake stream) hs)
-      ;; Verify certificate chain and hostname if verification enabled
-      (when (and (member verify (list +verify-peer+ +verify-required+))
-                 (client-handshake-peer-certificate hs))
-        (let ((cert (client-handshake-peer-certificate hs))
-              (chain (client-handshake-peer-certificate-chain hs)))
-          ;; Verify hostname - only if hostname (not just sni-hostname) was provided
-          (when hostname
-            (verify-hostname cert hostname))
-          ;; Verify certificate chain for both +verify-peer+ and +verify-required+
-          ;; (+verify-peer+ means "verify if presented" - servers always present certs)
-          (when chain
-            ;; On Windows/macOS with native verification enabled, verify even without trust-store
-            ;; (they use their own trusted root stores)
-            (let ((trusted-roots (when trust-store
-                                   (trust-store-certificates trust-store))))
-              (verify-certificate-chain chain trusted-roots
-                                        (get-universal-time) hostname))))))
+    ;; Parse ECH configs if raw bytes provided
+    (let ((parsed-ech-configs
+            (when ech-configs
+              (if (and (typep ech-configs '(simple-array (unsigned-byte 8) (*)))
+                       (> (length ech-configs) 2))
+                  ;; Raw ECHConfigList bytes - parse them
+                  (parse-ech-config-list ech-configs)
+                  ;; Already parsed or list of configs
+                  (if (listp ech-configs)
+                      ech-configs
+                      (list ech-configs))))))
+      (let ((hs (perform-client-handshake
+                  record-layer
+                  :hostname sni-name
+                  :alpn-protocols (or alpn-protocols
+                                      (tls-context-alpn-protocols context))
+                  :verify-mode verify
+                  :trust-store trust-store
+                  :skip-hostname-verify (and sni-hostname (null hostname))
+                  :client-certificate client-cert
+                  :client-private-key private-key
+                  :client-certificate-chain chain-certs
+                  :ech-configs parsed-ech-configs
+                  :ech-enabled ech-enabled)))
+        (setf (tls-stream-handshake stream) hs)
+        ;; Verify certificate chain and hostname if verification enabled
+        (when (and (member verify (list +verify-peer+ +verify-required+))
+                   (client-handshake-peer-certificate hs))
+          (let ((cert (client-handshake-peer-certificate hs))
+                (chain (client-handshake-peer-certificate-chain hs)))
+            ;; Verify hostname - only if hostname (not just sni-hostname) was provided
+            (when hostname
+              (verify-hostname cert hostname))
+            ;; Verify certificate chain for both +verify-peer+ and +verify-required+
+            ;; (+verify-peer+ means "verify if presented" - servers always present certs)
+            (when chain
+              ;; On Windows/macOS with native verification enabled, verify even without trust-store
+              ;; (they use their own trusted root stores)
+              (let ((trusted-roots (when trust-store
+                                     (trust-store-certificates trust-store))))
+                (verify-certificate-chain chain trusted-roots
+                                          (get-universal-time) hostname)))))))
     ;; Wrap with flexi-stream if external-format specified
     (if external-format
         (flexi-streams:make-flexi-stream stream :external-format external-format)

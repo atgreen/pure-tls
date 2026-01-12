@@ -32,7 +32,8 @@
                 :components ((:file "hkdf")
                              (:file "aead")
                              (:file "key-exchange")
-                             (:file "ml-kem")))
+                             (:file "ml-kem")
+                             (:file "hpke")))
                (:module "src/record"
                 :serial t
                 :components ((:file "record-layer")))
@@ -40,6 +41,7 @@
                 :serial t
                 :components ((:file "messages")
                              (:file "key-schedule")
+                             (:file "ech")
                              (:file "extensions")
                              (:file "resumption")
                              (:file "client")
