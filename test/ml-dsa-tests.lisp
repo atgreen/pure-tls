@@ -56,45 +56,48 @@
 
 (test ml-dsa-65-signature-size
   "Test ML-DSA-65 signature has correct size"
-  (let ((seed (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x42)))
+  (let ((seed (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x42))
+        (randomizer (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x55)))
     (multiple-value-bind (pk sk)
         (pure-tls::ml-dsa-65-keygen seed)
       (declare (ignore pk))
       (let* ((msg (pure-tls::string-to-octets "Test message"))
-             (sig (pure-tls::ml-dsa-65-sign sk msg)))
+             (sig (pure-tls::ml-dsa-65-sign sk msg randomizer)))
         ;; Check signature size (FIPS 204: 3309 bytes for ML-DSA-65)
         (is (= (length sig) 3309)
             "Signature should be 3309 bytes")))))
 
 (test ml-dsa-65-sign-verify-roundtrip
   "Test ML-DSA-65 sign and verify roundtrip"
-  (let ((seed (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x42)))
+  (let ((seed (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x42))
+        (randomizer (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x55)))
     (multiple-value-bind (pk sk)
         (pure-tls::ml-dsa-65-keygen seed)
       (let* ((msg (pure-tls::string-to-octets "Hello, post-quantum world!"))
-             (sig (pure-tls::ml-dsa-65-sign sk msg)))
+             (sig (pure-tls::ml-dsa-65-sign sk msg randomizer)))
         (is (pure-tls::ml-dsa-65-verify pk msg sig)
             "Valid signature should verify")))))
 
 (test ml-dsa-65-verify-different-messages
   "Test ML-DSA-65 verification with different message lengths"
-  (let ((seed (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x42)))
+  (let ((seed (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x42))
+        (randomizer (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x55)))
     (multiple-value-bind (pk sk)
         (pure-tls::ml-dsa-65-keygen seed)
       ;; Empty message
       (let* ((msg (make-array 0 :element-type '(unsigned-byte 8)))
-             (sig (pure-tls::ml-dsa-65-sign sk msg)))
+             (sig (pure-tls::ml-dsa-65-sign sk msg randomizer)))
         (is (pure-tls::ml-dsa-65-verify pk msg sig)
             "Empty message signature should verify"))
       ;; Short message
       (let* ((msg (pure-tls::string-to-octets "Hi"))
-             (sig (pure-tls::ml-dsa-65-sign sk msg)))
+             (sig (pure-tls::ml-dsa-65-sign sk msg randomizer)))
         (is (pure-tls::ml-dsa-65-verify pk msg sig)
             "Short message signature should verify"))
       ;; Long message
       (let* ((msg (make-array 10000 :element-type '(unsigned-byte 8)
                               :initial-element #xAB))
-             (sig (pure-tls::ml-dsa-65-sign sk msg)))
+             (sig (pure-tls::ml-dsa-65-sign sk msg randomizer)))
         (is (pure-tls::ml-dsa-65-verify pk msg sig)
             "Long message signature should verify")))))
 
@@ -115,11 +118,12 @@
 
 (test ml-dsa-65-reject-modified-signature
   "Test ML-DSA-65 rejects modified signature"
-  (let ((seed (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x42)))
+  (let ((seed (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x42))
+        (randomizer (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x55)))
     (multiple-value-bind (pk sk)
         (pure-tls::ml-dsa-65-keygen seed)
       (let* ((msg (pure-tls::string-to-octets "Test message"))
-             (sig (pure-tls::ml-dsa-65-sign sk msg))
+             (sig (pure-tls::ml-dsa-65-sign sk msg randomizer))
              (bad-sig (copy-seq sig)))
         ;; Flip a bit in the signature
         (setf (aref bad-sig 100) (logxor (aref bad-sig 100) #xff))
@@ -128,11 +132,12 @@
 
 (test ml-dsa-65-reject-modified-message
   "Test ML-DSA-65 rejects signature for modified message"
-  (let ((seed (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x42)))
+  (let ((seed (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x42))
+        (randomizer (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x55)))
     (multiple-value-bind (pk sk)
         (pure-tls::ml-dsa-65-keygen seed)
       (let* ((msg (pure-tls::string-to-octets "Original message"))
-             (sig (pure-tls::ml-dsa-65-sign sk msg))
+             (sig (pure-tls::ml-dsa-65-sign sk msg randomizer))
              (bad-msg (pure-tls::string-to-octets "Modified message")))
         (is (not (pure-tls::ml-dsa-65-verify pk bad-msg sig))
             "Signature for different message should not verify")))))
@@ -140,7 +145,8 @@
 (test ml-dsa-65-reject-wrong-public-key
   "Test ML-DSA-65 rejects signature with wrong public key"
   (let ((seed1 (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x42))
-        (seed2 (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x43)))
+        (seed2 (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x43))
+        (randomizer (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x55)))
     (multiple-value-bind (pk1 sk1)
         (pure-tls::ml-dsa-65-keygen seed1)
       (declare (ignore pk1))
@@ -148,17 +154,18 @@
           (pure-tls::ml-dsa-65-keygen seed2)
         (declare (ignore sk2))
         (let* ((msg (pure-tls::string-to-octets "Test message"))
-               (sig (pure-tls::ml-dsa-65-sign sk1 msg)))
+               (sig (pure-tls::ml-dsa-65-sign sk1 msg randomizer)))
           (is (not (pure-tls::ml-dsa-65-verify pk2 msg sig))
               "Signature should not verify with wrong public key"))))))
 
 (test ml-dsa-65-reject-truncated-signature
   "Test ML-DSA-65 rejects truncated signature"
-  (let ((seed (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x42)))
+  (let ((seed (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x42))
+        (randomizer (make-array 32 :element-type '(unsigned-byte 8) :initial-element #x55)))
     (multiple-value-bind (pk sk)
         (pure-tls::ml-dsa-65-keygen seed)
       (let* ((msg (pure-tls::string-to-octets "Test message"))
-             (sig (pure-tls::ml-dsa-65-sign sk msg))
+             (sig (pure-tls::ml-dsa-65-sign sk msg randomizer))
              (truncated-sig (subseq sig 0 3000)))
         (is (not (pure-tls::ml-dsa-65-verify pk msg truncated-sig))
             "Truncated signature should not verify")))))
