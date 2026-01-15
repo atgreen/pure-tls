@@ -123,6 +123,7 @@
                 :serial t
                 :components ((:file "package")
                              (:file "crypto-tests")
+                             (:file "ml-dsa-tests")
                              (:file "record-tests")
                              (:file "handshake-tests")
                              (:file "certificate-tests")
