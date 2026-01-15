@@ -71,6 +71,19 @@ jobs:
           mkdir -p ~/.config/common-lisp/source-registry.conf.d/
           echo '(:tree "'"$PWD"'")' > ~/.config/common-lisp/source-registry.conf.d/pure-tls.conf
 
+      - name: Build system (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          sbcl --non-interactive \
+            --eval '(asdf:load-system :pure-tls/test)'
+
+      - name: Build system (macOS/Windows)
+        if: runner.os != 'Linux'
+        run: |
+          sbcl --non-interactive \
+            --eval '(asdf:load-system :pure-tls/test)'
+
       - name: Run offline tests (Linux)
         if: runner.os == 'Linux'
         run: |
