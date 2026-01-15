@@ -495,6 +495,9 @@
           ((member algorithm '(:ed448))
            (let ((public-key (ironclad:make-public-key :ed448 :y public-key-bytes)))
              (ironclad:verify-signature public-key tbs signature)))
+          ;; ML-DSA-65 post-quantum signatures
+          ((member algorithm '(:mldsa65))
+           (ml-dsa-65-verify public-key-bytes tbs signature))
           (t
            (warn "Unknown certificate signature algorithm: ~A" algorithm)
            ;; Return NIL for unknown algorithms to indicate verification failure

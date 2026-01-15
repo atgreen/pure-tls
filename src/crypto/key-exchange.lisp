@@ -341,7 +341,9 @@ X25519MLKEM768 is preferred for post-quantum security.")
         +sig-rsa-pss-rsae-sha512+
         +sig-rsa-pss-pss-sha512+
         +sig-ed25519+
-        +sig-ed448+))
+        +sig-ed448+
+        ;; Post-quantum signatures (FIPS 204)
+        +sig-mldsa65+))
 
 (defun signature-algorithm-name (sig-alg)
   "Return the human-readable name for a signature algorithm."
@@ -360,4 +362,7 @@ X25519MLKEM768 is preferred for post-quantum security.")
     (#.+sig-rsa-pss-rsae-sha512+ "rsa_pss_rsae_sha512")
     (#.+sig-ed25519+ "ed25519")
     (#.+sig-ed448+ "ed448")
+    (#.+sig-mldsa44+ "mldsa44")
+    (#.+sig-mldsa65+ "mldsa65")
+    (#.+sig-mldsa87+ "mldsa87")
     (otherwise (format nil "unknown(~X)" sig-alg))))

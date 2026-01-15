@@ -153,6 +153,11 @@
 (defconstant +sig-rsa-pss-pss-sha384+ #x080a)
 (defconstant +sig-rsa-pss-pss-sha512+ #x080b)
 
+;; ML-DSA (Post-Quantum) Signatures (draft-ietf-tls-mldsa)
+(defconstant +sig-mldsa44+ #x0904)
+(defconstant +sig-mldsa65+ #x0905)
+(defconstant +sig-mldsa87+ #x0906)
+
 ;;;; Cipher Suites (RFC 8446 Section B.4)
 
 (defconstant +tls-aes-128-gcm-sha256+ #x1301)

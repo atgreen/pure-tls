@@ -429,9 +429,10 @@ Reduces coefficients mod q for defense against malformed inputs."
 ;;;; =========================================================================
 
 (defun cbd (bytes eta)
-  "Sample polynomial from centered binomial distribution with parameter ETA."
+  "Sample polynomial from centered binomial distribution with parameter ETA.
+   Supports eta=1,2,3 (ML-KEM) and eta=4 (ML-DSA-65)."
   (declare (type (simple-array (unsigned-byte 8) (*)) bytes)
-           (type (integer 1 3) eta)
+           (type (integer 1 4) eta)
            (optimize speed))
   (let ((poly (make-ml-kem-poly))
         (bit-pos 0))

@@ -322,7 +322,11 @@ Per DER (X.690): integers must be minimally encoded."
     ((1 3 101 112) . :ed25519)
     ((1 3 101 113) . :ed448)
     ;; RSA-PSS (RFC 4055)
-    ((1 2 840 113549 1 1 10) . :rsassa-pss))
+    ((1 2 840 113549 1 1 10) . :rsassa-pss)
+    ;; ML-DSA (FIPS 204 Post-Quantum Signatures)
+    ((2 16 840 1 101 3 4 3 17) . :mldsa44)
+    ((2 16 840 1 101 3 4 3 18) . :mldsa65)
+    ((2 16 840 1 101 3 4 3 19) . :mldsa87))
   "Mapping of well-known OIDs to symbolic names.")
 
 (defun oid-name (oid)

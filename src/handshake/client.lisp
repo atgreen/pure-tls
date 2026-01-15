@@ -1085,6 +1085,8 @@
     ((member key-algorithm '(:secp256r1 :secp384r1 :secp521r1 :prime256v1)) :ecdsa)
     ((eql key-algorithm :ed25519) :ed25519)
     ((eql key-algorithm :ed448) :ed448)
+    ;; ML-DSA post-quantum signatures
+    ((eql key-algorithm :mldsa65) :mldsa65)
     (t :unknown)))
 
 (defun signature-key-type-from-private-key (private-key)
@@ -1097,6 +1099,10 @@
       ((subtypep key-type 'ironclad::secp521r1-private-key) :ecdsa-p521)
       ((subtypep key-type 'ironclad::ed25519-private-key) :ed25519)
       ((subtypep key-type 'ironclad::ed448-private-key) :ed448)
+      ;; ML-DSA-65 secret key is 4032 bytes raw
+      ((and (typep private-key '(simple-array (unsigned-byte 8) (*)))
+            (= (length private-key) 4032))
+       :mldsa65)
       (t :unknown))))
 
 (defun signature-required-key-type (sig-type)
@@ -1106,6 +1112,7 @@
     (:ecdsa :ecdsa)
     (:ed25519 :ed25519)
     (:ed448 :ed448)
+    (:mldsa65 :mldsa65)
     (otherwise :unknown)))
 
 (defun signature-algorithm-allowed-p (algorithm)
@@ -1127,6 +1134,7 @@
     (:ecdsa-p521 (list +sig-ecdsa-secp521r1-sha512+))
     (:ed25519 (list +sig-ed25519+))
     (:ed448 (list +sig-ed448+))
+    (:mldsa65 (list +sig-mldsa65+))
     (otherwise nil)))
 
 (defun select-signature-algorithm-for-key (private-key peer-algorithms)
@@ -1210,6 +1218,9 @@
         ;; Ed448 (handles its own hashing internally)
         ((eql sig-type :ed448)
          (verify-ed448-signature public-key-bytes content signature))
+        ;; ML-DSA-65 post-quantum signatures (handles its own hashing internally)
+        ((eql sig-type :mldsa65)
+         (verify-mldsa65-signature public-key-bytes content signature))
         (t
          (error 'tls-handshake-error
                 :message (format nil "Unsupported signature type: ~A" sig-type)))))))
@@ -1234,6 +1245,8 @@
     (#.+sig-ecdsa-secp521r1-sha512+ (values :sha512 :ecdsa))
     (#.+sig-ed25519+ (values nil :ed25519))
     (#.+sig-ed448+ (values nil :ed448))
+    ;; ML-DSA post-quantum signatures (hash internally via SHAKE256)
+    (#.+sig-mldsa65+ (values nil :mldsa65))
     (otherwise (values nil nil))))
 
 (defun verify-rsa-pss-signature (public-key-der content signature hash-algo)
@@ -1320,6 +1333,17 @@
       (error 'tls-handshake-error
              :message ":BAD_SIGNATURE:"))))
 
+(defun verify-mldsa65-signature (public-key-der content signature)
+  "Verify an ML-DSA-65 post-quantum signature."
+  (handler-case
+      (unless (ml-dsa-65-verify public-key-der content signature)
+        (error 'tls-handshake-error
+               :message ":BAD_SIGNATURE:"))
+    (error (e)
+      (declare (ignore e))
+      (error 'tls-handshake-error
+             :message ":BAD_SIGNATURE:"))))
+
 (defun ecdsa-curve-from-algorithm (key-algorithm)
   "Determine the ECDSA curve from the key algorithm OID."
   (cond
@@ -1392,6 +1416,10 @@
         ;; Ed448 signatures
         ((eql sig-type :ed448)
          (ironclad:sign-message private-key content))
+        ;; ML-DSA-65 post-quantum signatures
+        ;; For ML-DSA, private-key should be the raw 4032-byte secret key
+        ((eql sig-type :mldsa65)
+         (ml-dsa-65-sign private-key content))
         (t
          (error 'tls-handshake-error
                 :message (format nil "Unsupported signature type: ~A" sig-type)))))))
