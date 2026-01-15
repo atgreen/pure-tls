@@ -472,17 +472,23 @@
            :state :wait-server-hello))
 
   (let ((extensions (server-hello-extensions server-hello)))
-    ;; RFC 9639 Section 7.2.1: If the client offered ECH but receives ECH in HRR
-    ;; without having offered it, reject with unsupported_extension.
-    ;; Also reject ECH in HRR if we didn't offer ECH at all.
-    (let ((ech-ext (find-extension extensions +extension-ech+)))
-      (when (and ech-ext (not (client-handshake-ech-enc hs)))
-        ;; Server sent ECH extension but we didn't offer ECH - reject
-        (record-layer-write-alert (client-handshake-record-layer hs)
-                                  +alert-level-fatal+ +alert-unsupported-extension+)
-        (error 'tls-handshake-error
-               :message ":UNSUPPORTED_EXTENSION: Server sent ECH extension in HRR but client did not offer ECH"
-               :state :wait-server-hello)))
+    ;; RFC 8446 Section 4.1.4: HRR can only contain supported_versions, cookie, and key_share
+    ;; RFC 9639 also allows encrypted_client_hello extension in HRR (only if client offered ECH)
+    ;; Reject any unknown/unsolicited extensions with unsupported_extension
+    (dolist (ext extensions)
+      (let ((ext-type (tls-extension-type ext)))
+        (unless (or (member ext-type (list +extension-supported-versions+
+                                           +extension-cookie+
+                                           +extension-key-share+))
+                    ;; ECH only allowed if client offered it
+                    (and (= ext-type +extension-ech+)
+                         (client-handshake-ech-enc hs)))
+          (record-layer-write-alert (client-handshake-record-layer hs)
+                                    +alert-level-fatal+ +alert-unsupported-extension+)
+          (error 'tls-handshake-error
+                 :message (format nil ":UNEXPECTED_EXTENSION: Unexpected extension ~D in HelloRetryRequest"
+                                 ext-type)
+                 :state :wait-server-hello))))
 
     ;; Get the selected cipher suite (needed for hash algorithm)
     (let ((cipher-suite (server-hello-cipher-suite server-hello)))
