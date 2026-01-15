@@ -473,18 +473,20 @@
 
   (let ((extensions (server-hello-extensions server-hello)))
     ;; RFC 8446 Section 4.1.4: HRR can only contain supported_versions, cookie, and key_share
-    ;; RFC 9639 also allows encrypted_client_hello extension in HRR
-    ;; Reject any unknown extensions with unsupported_extension
+    ;; RFC 9639 also allows encrypted_client_hello extension in HRR (only if client offered ECH)
+    ;; Reject any unknown/unsolicited extensions with unsupported_extension
     (dolist (ext extensions)
       (let ((ext-type (tls-extension-type ext)))
-        (unless (member ext-type (list +extension-supported-versions+
-                                       +extension-cookie+
-                                       +extension-key-share+
-                                       +extension-ech+))
+        (unless (or (member ext-type (list +extension-supported-versions+
+                                           +extension-cookie+
+                                           +extension-key-share+))
+                    ;; ECH only allowed if client offered it
+                    (and (= ext-type +extension-ech+)
+                         (client-handshake-ech-enc hs)))
           (record-layer-write-alert (client-handshake-record-layer hs)
                                     +alert-level-fatal+ +alert-unsupported-extension+)
           (error 'tls-handshake-error
-                 :message (format nil ":UNEXPECTED_EXTENSION: Unknown extension ~D in HelloRetryRequest"
+                 :message (format nil ":UNSUPPORTED_EXTENSION: Unexpected extension ~D in HelloRetryRequest"
                                  ext-type)
                  :state :wait-server-hello))))
 
@@ -544,15 +546,9 @@
     ;; Server sends either:
     ;; - 8-byte confirmation (when ECH was accepted)
     ;; - config_id + enc echo (when ECH was not decrypted)
+    ;; Note: Unsolicited ECH extensions are rejected in the extension allowlist above
     (let ((ech-ext (find-extension extensions +extension-ech+)))
       (when ech-ext
-        ;; If client didn't offer ECH, this is unsolicited
-        (unless (client-handshake-ech-enc hs)
-          (record-layer-write-alert (client-handshake-record-layer hs)
-                                    +alert-level-fatal+ +alert-unsupported-extension+)
-          (error 'tls-handshake-error
-                 :message ":UNSUPPORTED_EXTENSION: Unsolicited ECH extension in HelloRetryRequest"
-                 :state :wait-server-hello))
         (let ((ech-data (tls-extension-data ech-ext)))
           (when (ech-ext-p ech-data)
             (let ((hrr-enc (ech-ext-enc ech-data)))
