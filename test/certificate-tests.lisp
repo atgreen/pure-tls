@@ -226,15 +226,18 @@
 
 (test self-signed-rejected-by-chain-verification
   "Test that self-signed certificates are rejected during chain verification"
-  (let* ((cert-path (test-cert-path "self-signed-valid.pem"))
-         (cert (pure-tls:parse-certificate-from-file cert-path))
-         (empty-roots nil))
-    ;; Self-signed cert should be rejected when not in trusted roots
-    (signals pure-tls:tls-verification-error
-      (pure-tls::verify-certificate-chain (list cert) empty-roots))
-    ;; But should pass if we add it to trusted roots
-    (is (pure-tls::verify-certificate-chain (list cert) (list cert))
-        "Self-signed cert should pass if explicitly trusted")))
+  ;; Disable native verification to test pure-Lisp path explicitly
+  (let ((pure-tls:*use-windows-certificate-store* nil)
+        (pure-tls:*use-macos-keychain* nil))
+    (let* ((cert-path (test-cert-path "self-signed-valid.pem"))
+           (cert (pure-tls:parse-certificate-from-file cert-path))
+           (empty-roots nil))
+      ;; Self-signed cert should be rejected when not in trusted roots
+      (signals pure-tls:tls-verification-error
+        (pure-tls::verify-certificate-chain (list cert) empty-roots))
+      ;; But should pass if we add it to trusted roots
+      (is (pure-tls::verify-certificate-chain (list cert) (list cert))
+          "Self-signed cert should pass if explicitly trusted"))))
 
 (test parse-superfish-ca
   "Test parsing the Superfish malware CA certificate"
