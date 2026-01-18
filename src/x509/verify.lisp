@@ -225,10 +225,8 @@
     (error 'tls-certificate-error :message "Empty certificate chain"))
 
   ;; On Windows with CryptoAPI enabled, use Windows verification
-  ;; Only use native verification when no custom trusted roots are provided,
-  ;; to ensure consistent cross-platform behavior with test certificates
   #+windows
-  (when (and *use-windows-certificate-store* (null trusted-roots))
+  (when *use-windows-certificate-store*
     ;; Windows CryptoAPI verification
     ;; Hostname verification is optional (nil = no hostname check, useful for mTLS)
     (verify-certificate-chain-native chain hostname
@@ -238,10 +236,8 @@
     (return-from verify-certificate-chain t))
 
   ;; On macOS with Keychain enabled, use macOS verification
-  ;; Only use native verification when no custom trusted roots are provided,
-  ;; to ensure consistent cross-platform behavior with test certificates
   #+(or darwin macos)
-  (when (and *use-macos-keychain* (null trusted-roots))
+  (when *use-macos-keychain*
     ;; macOS Security.framework verification
     ;; Hostname verification is optional (nil = no hostname check, useful for mTLS)
     (verify-certificate-chain-native chain hostname
