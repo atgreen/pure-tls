@@ -161,7 +161,7 @@
 (cffi:defcfun ("CertFreeCertificateChain" %cert-free-chain) :void
   (chain-context :pointer))
 
-(cffi:defcfun ("CertCreateCertChainEngine" %cert-create-chain-engine) :boolean
+(cffi:defcfun ("CertCreateCertChainEngine" %cert-create-chain-engine) :int
   (config :pointer)
   (engine :pointer))
 
@@ -227,7 +227,7 @@ EXCLUSIVE-ROOT-STORE is an HCERTSTORE containing the exclusive trust anchors."
     ;; Set the exclusive root store - this makes the engine use ONLY these roots
     (setf (cffi:foreign-slot-value config '(:struct cert-chain-engine-config) 'hexclusive-root)
           exclusive-root-store)
-    (unless (%cert-create-chain-engine config engine-ptr)
+    (when (zerop (%cert-create-chain-engine config engine-ptr))
       (error "Failed to create custom certificate chain engine"))
     (cffi:mem-aref engine-ptr :pointer)))
 
@@ -235,7 +235,7 @@ EXCLUSIVE-ROOT-STORE is an HCERTSTORE containing the exclusive trust anchors."
 
 (defun verify-certificate-chain-windows (der-certificates hostname
                                          &key check-revocation trusted-roots
-                                              (trust-anchor-mode :replace))
+                                              (trust-anchor-mode :extend))
   "Verify a certificate chain using Windows CryptoAPI.
 
 DER-CERTIFICATES is a list of DER-encoded certificate byte vectors,
@@ -251,8 +251,8 @@ TRUSTED-ROOTS if provided, is a list of DER-encoded certificate byte vectors
 to use as trust anchors.
 
 TRUST-ANCHOR-MODE controls how trusted-roots interact with the system store:
-  :replace - Use ONLY trusted-roots, ignoring system store (default, requires Windows 7+)
-  :extend - Use trusted-roots IN ADDITION TO system store
+  :extend - Use trusted-roots IN ADDITION TO system store (default)
+  :replace - Use ONLY trusted-roots, ignoring system store (requires Windows 7+)
 
 Returns T if the chain is valid and trusted by Windows.
 Signals an error with details on verification failure."
