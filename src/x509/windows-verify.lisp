@@ -175,7 +175,8 @@
 
 ;;; Public API
 
-(defun verify-certificate-chain-windows (der-certificates hostname &key check-revocation)
+(defun verify-certificate-chain-windows (der-certificates hostname
+                                         &key check-revocation trusted-roots)
   "Verify a certificate chain using Windows CryptoAPI.
 
 DER-CERTIFICATES is a list of DER-encoded certificate byte vectors,
@@ -187,8 +188,13 @@ client certificate verification in mTLS).
 
 CHECK-REVOCATION if true, enables CRL/OCSP revocation checking (slower).
 
+TRUSTED-ROOTS if provided, is a list of DER-encoded certificate byte vectors
+to add as additional trust anchors. Note: on Windows, these extend the system
+trust store rather than replacing it (unlike macOS).
+
 Returns T if the chain is valid and trusted by Windows.
 Signals an error with details on verification failure."
+  (declare (ignorable trusted-roots))  ; Added to store below
   (unless der-certificates
     (error "No certificates provided"))
 
@@ -197,6 +203,15 @@ Signals an error with details on verification failure."
         (chain-context nil))
     (unwind-protect
          (progn
+           ;; Add custom trusted roots to the memory store if provided
+           (dolist (der trusted-roots)
+             (let ((ctx (%create-cert-context der)))
+               (unless (%cert-add-to-store hstore ctx +cert-store-add-replace-existing+
+                                            (cffi:null-pointer))
+                 (%cert-free-context ctx)
+                 (error "Failed to add trusted root to store"))
+               (%cert-free-context ctx)))
+
            ;; Add all certificates to the memory store
            (dolist (der der-certificates)
              (let ((ctx (%create-cert-context der)))

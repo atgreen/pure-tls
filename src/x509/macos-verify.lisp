@@ -216,7 +216,8 @@ Caller is responsible for releasing both the array AND each certificate
 
 ;;; Public API
 
-(defun verify-certificate-chain-macos (der-certificates hostname &key check-revocation)
+(defun verify-certificate-chain-macos (der-certificates hostname
+                                       &key check-revocation trusted-roots)
   "Verify a certificate chain using macOS Security.framework.
 
 DER-CERTIFICATES is a list of DER-encoded certificate byte vectors,
@@ -229,6 +230,10 @@ client certificate verification in mTLS).
 CHECK-REVOCATION if true, enables OCSP/CRL revocation checking via
 Security.framework. Network access is required for revocation checks.
 
+TRUSTED-ROOTS if provided, is a list of DER-encoded certificate byte vectors
+to use as trust anchors instead of the system Keychain. When NIL (default),
+uses the system trust store.
+
 Returns T if the chain is valid and trusted by macOS.
 Signals an error with details on verification failure."
   (unless der-certificates
@@ -236,6 +241,8 @@ Signals an error with details on verification failure."
 
   (let ((cert-array nil)
         (certs nil)
+        (anchor-array nil)
+        (anchor-certs nil)
         (ssl-policy nil)
         (revocation-policy nil)
         (policy-array nil)
@@ -291,10 +298,22 @@ Signals an error with details on verification failure."
                         :format-arguments (list (%get-security-error-message status))))
                (setf trust (cffi:mem-aref trust-ptr :pointer))))
 
-           ;; Use system anchors (default behavior, but be explicit)
-           ;; By not calling SecTrustSetAnchorCertificates, we use system roots
-           ;; Setting anchors-only to false allows both custom and system anchors
-           (%sec-trust-set-anchors-only trust nil)
+           ;; Configure trust anchors
+           (if trusted-roots
+               ;; Use custom anchors only (replace system trust store)
+               (progn
+                 (multiple-value-setq (anchor-array anchor-certs)
+                   (%create-certificate-array trusted-roots))
+                 (let ((status (%sec-trust-set-anchors trust anchor-array)))
+                   (unless (zerop status)
+                     (error 'tls-certificate-error
+                            :format-control "Failed to set anchor certificates: ~A"
+                            :format-arguments (list (%get-security-error-message status)))))
+                 ;; Use ONLY the custom anchors, not system roots
+                 (%sec-trust-set-anchors-only trust t))
+               ;; Use system anchors (default behavior)
+               ;; Setting anchors-only to false allows system anchors
+               (%sec-trust-set-anchors-only trust nil))
 
            ;; Evaluate trust
            (cffi:with-foreign-object (error-ptr :pointer)
@@ -324,6 +343,12 @@ Signals an error with details on verification failure."
         (%cf-release ssl-policy))
       (when hostname-cfstr
         (%cf-release hostname-cfstr))
+      (when anchor-array
+        (%cf-release anchor-array))
+      ;; Release anchor certs
+      (dolist (cert anchor-certs)
+        (when cert
+          (%cf-release cert)))
       (when cert-array
         (%cf-release cert-array))
       ;; Release individual certs (CFArray doesn't retain with NULL callbacks)
