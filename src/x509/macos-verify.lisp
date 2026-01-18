@@ -28,6 +28,15 @@
 (defconstant +ksec-trust-result-unspecified+ 4)
 (defconstant +err-sec-success+ 0)
 
+;;; Revocation checking flags for SecPolicyCreateRevocation
+(defconstant +ksec-revocation-ocsp-method+ (ash 1 0))        ; Use OCSP
+(defconstant +ksec-revocation-crl-method+ (ash 1 1))         ; Use CRL
+(defconstant +ksec-revocation-prefer-crl+ (ash 1 2))         ; Prefer CRL over OCSP
+(defconstant +ksec-revocation-require-positive-response+ (ash 1 3)) ; Require definitive response
+(defconstant +ksec-revocation-network-access-disabled+ (ash 1 4))   ; No network access
+(defconstant +ksec-revocation-use-any-method+                ; OCSP or CRL
+  (logior +ksec-revocation-ocsp-method+ +ksec-revocation-crl-method+))
+
 ;;; Core Foundation Functions
 
 (cffi:defcfun ("CFRelease" %cf-release) :void
@@ -60,6 +69,9 @@
 (cffi:defcfun ("SecPolicyCreateSSL" %sec-policy-create-ssl) :pointer
   (server :boolean)
   (hostname :pointer))
+
+(cffi:defcfun ("SecPolicyCreateRevocation" %sec-policy-create-revocation) :pointer
+  (revocation-flags :uint32))
 
 (cffi:defcfun ("SecTrustCreateWithCertificates" %sec-trust-create) :int32
   (certificates :pointer)
@@ -212,17 +224,19 @@ with the end-entity (server) certificate first.
 
 HOSTNAME is the expected server hostname for verification.
 
-CHECK-REVOCATION if true, would enable revocation checking (not yet implemented).
+CHECK-REVOCATION if true, enables OCSP/CRL revocation checking via
+Security.framework. Network access is required for revocation checks.
 
 Returns T if the chain is valid and trusted by macOS.
 Signals an error with details on verification failure."
-  (declare (ignore check-revocation))  ; TODO: implement revocation checking
   (unless der-certificates
     (error "No certificates provided"))
 
   (let ((cert-array nil)
         (certs nil)
-        (policy nil)
+        (ssl-policy nil)
+        (revocation-policy nil)
+        (policy-array nil)
         (trust nil)
         (hostname-cfstr nil))
     (unwind-protect
@@ -238,13 +252,33 @@ Signals an error with details on verification failure."
            (when (cffi:null-pointer-p hostname-cfstr)
              (error "Failed to create CFString for hostname"))
 
-           (setf policy (%sec-policy-create-ssl t hostname-cfstr))
-           (when (cffi:null-pointer-p policy)
+           (setf ssl-policy (%sec-policy-create-ssl t hostname-cfstr))
+           (when (cffi:null-pointer-p ssl-policy)
              (error "Failed to create SSL policy"))
+
+           ;; Create revocation policy if requested
+           (when check-revocation
+             (setf revocation-policy
+                   (%sec-policy-create-revocation +ksec-revocation-use-any-method+))
+             (when (cffi:null-pointer-p revocation-policy)
+               (error "Failed to create revocation policy")))
+
+           ;; Create policy array (SSL + optional revocation)
+           (let ((policy-count (if revocation-policy 2 1)))
+             (cffi:with-foreign-object (policy-ptrs :pointer policy-count)
+               (setf (cffi:mem-aref policy-ptrs :pointer 0) ssl-policy)
+               (when revocation-policy
+                 (setf (cffi:mem-aref policy-ptrs :pointer 1) revocation-policy))
+               (setf policy-array (%cf-array-create (cffi:null-pointer)
+                                                     policy-ptrs
+                                                     policy-count
+                                                     (cffi:null-pointer)))
+               (when (cffi:null-pointer-p policy-array)
+                 (error "Failed to create policy array"))))
 
            ;; Create trust object
            (cffi:with-foreign-object (trust-ptr :pointer)
-             (let ((status (%sec-trust-create cert-array policy trust-ptr)))
+             (let ((status (%sec-trust-create cert-array policy-array trust-ptr)))
                (unless (zerop status)
                  (error 'tls-certificate-error
                         :format-control "Failed to create SecTrust: ~A"
@@ -276,8 +310,12 @@ Signals an error with details on verification failure."
       ;; Cleanup
       (when trust
         (%cf-release trust))
-      (when policy
-        (%cf-release policy))
+      (when policy-array
+        (%cf-release policy-array))
+      (when revocation-policy
+        (%cf-release revocation-policy))
+      (when ssl-policy
+        (%cf-release ssl-policy))
       (when hostname-cfstr
         (%cf-release hostname-cfstr))
       (when cert-array
