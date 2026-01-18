@@ -289,7 +289,7 @@
            ;; Check CRL revocation if requested (with signature verification)
            (when check-revocation
              (let ((status (check-certificate-revocation cert :issuer-cert issuer)))
-               (when (eq status :revoked)
+               (when (eql status :revoked)
                  (error 'tls-certificate-error
                         :message (format nil "Certificate has been revoked (serial: ~X)"
                                         (x509-certificate-serial-number cert)))))))
@@ -364,7 +364,7 @@
    validated per RFC 8017 with minimum 8 bytes of 0xFF, and DigestInfo
    length must exactly match (no trailing garbage allowed)."
   ;; Reject SHA-1 - it's cryptographically broken for certificate signatures
-  (when (eq hash-algo :sha1)
+  (when (eql hash-algo :sha1)
     (return-from verify-rsa-pkcs1v15-signature nil))
   (let* ((n (ironclad:rsa-key-modulus public-key))
          (e (ironclad:rsa-key-exponent public-key))
@@ -449,7 +449,7 @@
                   (hash-algo (or (getf params :hash) :sha256))
                   (salt-length (or (getf params :salt-length) 32)))
              ;; Reject SHA-1 for RSA-PSS (cryptographically broken)
-             (when (eq hash-algo :sha1)
+             (when (eql hash-algo :sha1)
                (error 'tls-certificate-error
                       :message "SHA-1 is not supported for RSA-PSS signatures (cryptographically broken)"))
              (let ((public-key (parse-rsa-public-key public-key-bytes)))

@@ -292,12 +292,12 @@ Processes coefficients in groups of 4, using zetas[64..127]."
           do ;; First pair uses +zeta
              (multiple-value-bind (r0 r1)
                  (ntt-base-mul (aref a idx)
-                               (aref a (+ idx 1))
+                               (aref a (1+ idx))
                                (aref b idx)
-                               (aref b (+ idx 1))
+                               (aref b (1+ idx))
                                zeta)
                (setf (aref result idx) r0)
-               (setf (aref result (+ idx 1)) r1))
+               (setf (aref result (1+ idx)) r1))
              ;; Second pair uses -zeta
              (multiple-value-bind (r2 r3)
                  (ntt-base-mul (aref a (+ idx 2))
@@ -365,7 +365,7 @@ Computes round(q * x / 2^d)."
           for c0 = (aref poly i)
           for c1 = (aref poly (1+ i))
           do (setf (aref bytes j) (logand c0 #xff))
-             (setf (aref bytes (+ j 1)) (logior (ash c0 -8) (ash (logand c1 #xf) 4)))
+             (setf (aref bytes (1+ j)) (logior (ash c0 -8) (ash (logand c1 #xf) 4)))
              (setf (aref bytes (+ j 2)) (ash c1 -4)))
     bytes))
 
@@ -379,8 +379,8 @@ Reduces coefficients mod q for defense against malformed inputs."
     (loop for i from 0 below 256 by 2
           for j from offset by 3
           do (let ((c0 (logior (aref bytes j)
-                               (ash (logand (aref bytes (+ j 1)) #xf) 8)))
-                   (c1 (logior (ash (aref bytes (+ j 1)) -4)
+                               (ash (logand (aref bytes (1+ j)) #xf) 8)))
+                   (c1 (logior (ash (aref bytes (1+ j)) -4)
                                (ash (aref bytes (+ j 2)) 4))))
                ;; Reduce mod q for canonical representation
                (setf (aref poly i) (if (>= c0 +ml-kem-q+) (mod c0 +ml-kem-q+) c0))
@@ -522,7 +522,7 @@ P(failure) = P(Binomial(448, 0.813) < 256) ≈ 10^-96, negligible."
 
 (defun sample-poly-cbd (seed eta n)
   "Sample polynomial from CBD using PRF(seed, n)."
-  (let* ((prf-input (make-array (+ (length seed) 1) :element-type '(unsigned-byte 8)))
+  (let* ((prf-input (make-array (1+ (length seed)) :element-type '(unsigned-byte 8)))
          (prf-output (progn
                        (replace prf-input seed)
                        (setf (aref prf-input (length seed)) n)

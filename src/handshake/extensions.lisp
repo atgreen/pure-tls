@@ -564,30 +564,30 @@
     ((zerop (length data))
      (make-ech-ext :type :retry :retry-configs nil))
     ;; In ServerHello/HRR context: 1 byte = 0 means ECH confirmation (legacy draft)
-    ((and (eq context :server-hello)
+    ((and (eql context :server-hello)
           (= (length data) 1)
           (zerop (aref data 0)))
      (make-ech-ext :type :retry :retry-configs nil))
     ;; In ServerHello/HRR context: 8 bytes = ECH acceptance confirmation
     ;; RFC 9639 Section 7.1.1: Server sends 8-byte confirmation when ECH accepted
-    ((and (eq context :server-hello)
+    ((and (eql context :server-hello)
           (= (length data) 8))
      ;; Store the confirmation for later validation
      (make-ech-ext :type :hrr :enc data))  ; Use enc slot to store confirmation
     ;; In ServerHello context with config_id + enc: HRR echoing our values
     ;; RFC 9639 Section 7.1: Format: uint8 config_id; opaque enc<0..2^16-1>;
     ;; The length would be 1 + 2 + enc_length, so at least 35 bytes for X25519
-    ((and (eq context :server-hello)
+    ((and (eql context :server-hello)
           (>= (length data) 35))
      (let ((buf (make-tls-buffer data)))
        (let ((config-id (buffer-read-octet buf))
              (enc (buffer-read-vector16 buf)))
          (make-ech-ext :type :hrr :config-id config-id :enc enc))))
     ;; ServerHello context with unexpected size - wrap as raw data
-    ((eq context :server-hello)
+    ((eql context :server-hello)
      (make-ech-ext :type :hrr :enc data))
     ;; In EncryptedExtensions context, non-empty means retry_configs
-    ((eq context :encrypted-extensions)
+    ((eql context :encrypted-extensions)
      (make-ech-ext
       :type :retry
       :retry-configs (parse-ech-config-list data)))

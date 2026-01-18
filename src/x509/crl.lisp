@@ -153,8 +153,8 @@
         (rdns2 (x509-name-rdns name2)))
     (and (= (length rdns1) (length rdns2))
          (every (lambda (rdn1 rdn2)
-                  (and (eql (car rdn1) (car rdn2))
-                       (string-equal (cdr rdn1) (cdr rdn2))))
+                  (and (eql (first rdn1) (first rdn2))
+                       (string-equal (rest rdn1) (rest rdn2))))
                 rdns1 rdns2))))
 
 ;;;; CRL Signature Verification
@@ -308,8 +308,8 @@
   (bt:with-lock-held (*crl-cache-lock*)
     (let ((entry (gethash uri *crl-cache*)))
       (when entry
-        (let ((crl (car entry))
-              (fetch-time (cdr entry)))
+        (let ((crl (first entry))
+              (fetch-time (rest entry)))
           ;; Check if CRL is still valid
           (when (crl-valid-p crl)
             crl))))))
@@ -431,7 +431,7 @@
              ;; Check for CRLF terminator
              (when (and (>= (length line) 2)
                         (= (aref line (- (length line) 2)) 13)  ; CR
-                        (= (aref line (- (length line) 1)) 10)) ; LF
+                        (= (aref line (1- (length line))) 10)) ; LF
                (return-from read-line-crlf
                  (flexi-streams:octets-to-string
                   (subseq line 0 (- (length line) 2))

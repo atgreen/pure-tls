@@ -245,7 +245,7 @@
    Ensures zeroization even if BODY signals an error."
   `(let ((,var ,init-form))
      (unwind-protect
-          (progn ,@body)
+          (unquote-splicing body)
        (zeroize ,var))))
 
 ;;;; String Encoding

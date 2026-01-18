@@ -51,7 +51,7 @@
              (age-ms (/ (* 1000 (- now (session-ticket-received-at ticket)))
                         internal-time-units-per-second)))
         (cond ((< age-ms (* 1000 (session-ticket-lifetime ticket))) ticket)
-      (t 
+      (t
               (remhash hostname *session-ticket-cache*)
               nil))))))
 

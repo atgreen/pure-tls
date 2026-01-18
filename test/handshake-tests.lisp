@@ -304,7 +304,7 @@
                                                 :element-type '(unsigned-byte 8)))
                    ;; Signal ready
                    (bt:with-lock-held (ready-lock)
-                     (setf (car ready-flag) t)
+                     (setf (first ready-flag) t)
                      (bt:condition-notify ready-cv))
                    ;; Accept connection
                    (setf client-socket
@@ -317,15 +317,15 @@
                             :certificate cert-path
                             :key key-path)))
                      (close tls-stream)
-                     (setf (car server-result) :success)))
+                     (setf (first server-result) :success)))
                (error (e)
-                 (setf (car server-result) (format nil "~A" e))))
+                 (setf (first server-result) (format nil "~A" e))))
            (when client-socket (ignore-errors (usocket:socket-close client-socket)))
            (when server-socket (ignore-errors (usocket:socket-close server-socket))))))
      :name "ed25519-test-server")
     ;; Wait for server ready
     (bt:with-lock-held (ready-lock)
-      (loop until (car ready-flag)
+      (loop until (first ready-flag)
             do (bt:condition-wait ready-cv ready-lock :timeout 5)))
     (sleep 0.05)
     ;; Connect client
@@ -343,7 +343,7 @@
                          :verify pure-tls:+verify-none+)))
                   (close tls-stream)
                   (sleep 0.1)  ; Let server finish
-                  (is (eq (car server-result) :success)
+                  (is (eql (first server-result) :success)
                       "Server handshake should succeed with Ed25519 certificate")))
             (error (e)
               (fail "Client connection failed: ~A" e)))
@@ -419,7 +419,7 @@
                                                 :element-type '(unsigned-byte 8)))
                    ;; Signal ready
                    (bt:with-lock-held (ready-lock)
-                     (setf (car ready-flag) t)
+                     (setf (first ready-flag) t)
                      (bt:condition-notify ready-cv))
                    ;; Accept connection
                    (setf client-socket
@@ -432,15 +432,15 @@
                             :certificate cert-path
                             :key key-path)))
                      (close tls-stream)
-                     (setf (car server-result) :success)))
+                     (setf (first server-result) :success)))
                (error (e)
-                 (setf (car server-result) (format nil "~A" e))))
+                 (setf (first server-result) (format nil "~A" e))))
            (when client-socket (ignore-errors (usocket:socket-close client-socket)))
            (when server-socket (ignore-errors (usocket:socket-close server-socket))))))
      :name "ed448-test-server")
     ;; Wait for server ready
     (bt:with-lock-held (ready-lock)
-      (loop until (car ready-flag)
+      (loop until (first ready-flag)
             do (bt:condition-wait ready-cv ready-lock :timeout 5)))
     (sleep 0.05)
     ;; Connect client
@@ -458,7 +458,7 @@
                          :verify pure-tls:+verify-none+)))
                   (close tls-stream)
                   (sleep 0.1)  ; Let server finish
-                  (is (eq (car server-result) :success)
+                  (is (eql (first server-result) :success)
                       "Server handshake should succeed with Ed448 certificate")))
             (error (e)
               (fail "Client connection failed: ~A" e)))
@@ -602,13 +602,13 @@
                      :payload (pure-tls:random-bytes 100)))
          (serialized (pure-tls::serialize-ech-extension outer-ext))
          (parsed (pure-tls::parse-ech-extension serialized)))
-    (is (eq (pure-tls::ech-ext-type parsed) :outer) "Type should be :outer")
+    (is (eql (pure-tls::ech-ext-type parsed) :outer) "Type should be :outer")
     (is (= (pure-tls::ech-ext-config-id parsed) 99) "Config ID should match"))
   ;; Test inner extension
   (let* ((inner-ext (pure-tls::make-ech-ext :type :inner))
          (serialized (pure-tls::serialize-ech-extension inner-ext))
          (parsed (pure-tls::parse-ech-extension serialized)))
-    (is (eq (pure-tls::ech-ext-type parsed) :inner) "Type should be :inner")
+    (is (eql (pure-tls::ech-ext-type parsed) :inner) "Type should be :inner")
     (is (= (length serialized) 1) "Inner extension should be 1 byte")))
 
 (test ech-config-selection
@@ -660,7 +660,7 @@
                     (pure-tls::client-hello-extensions with-marker)
                     pure-tls::+extension-ech+)))
       (is (not (null ech-ext)) "Inner CH should have ECH extension")
-      (is (eq (pure-tls::ech-ext-type (pure-tls::tls-extension-data ech-ext)) :inner)
+      (is (eql (pure-tls::ech-ext-type (pure-tls::tls-extension-data ech-ext)) :inner)
           "ECH extension should be inner type"))
     ;; Test encoding with padding
     (let ((encoded (pure-tls::encode-client-hello-inner with-marker 128)))
@@ -714,14 +714,14 @@
           ;; Check ECH extension is present
           (let ((ech-ext (pure-tls::find-extension outer-exts pure-tls::+extension-ech+)))
             (is (not (null ech-ext)) "Outer should have ECH extension")
-            (is (eq (pure-tls::ech-ext-type (pure-tls::tls-extension-data ech-ext)) :outer)
+            (is (eql (pure-tls::ech-ext-type (pure-tls::tls-extension-data ech-ext)) :outer)
                 "Outer ECH should be :outer type")))))))
 
 (test ech-constants
   "Verify ECH and HPKE constants are defined"
   (is (= pure-tls::+extension-ech+ #xfe0d))
   (is (= pure-tls::+ech-version+ #xfe0d))
-  (is (= pure-tls::+hpke-mode-base+ #x00))
+  (is (zerop pure-tls::+hpke-mode-base+))
   (is (= pure-tls::+hpke-kem-x25519-sha256+ #x0020))
   (is (= pure-tls::+hpke-kdf-hkdf-sha256+ #x0001))
   (is (= pure-tls::+hpke-aead-aes-128-gcm+ #x0001)))

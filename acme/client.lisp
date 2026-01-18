@@ -59,7 +59,7 @@
   (let* ((padded (case (mod (length string) 4)
                    (2 (concatenate 'string string "=="))
                    (3 (concatenate 'string string "="))
-                   (t string)))
+                   (otherwise string)))
          (standard (substitute #\+ #\- (substitute #\/ #\_ padded))))
     (cl-base64:base64-string-to-usb8-array standard)))
 
@@ -81,10 +81,10 @@
 (defun get-jwk-thumbprint (jwk)
   "Calculate JWK thumbprint (SHA-256 of canonical JWK)."
   (let* ((canonical (cl-json:encode-json-to-string
-                     `(("crv" . ,(cdr (assoc "crv" jwk :test #'string=)))
-                       ("kty" . ,(cdr (assoc "kty" jwk :test #'string=)))
-                       ("x" . ,(cdr (assoc "x" jwk :test #'string=)))
-                       ("y" . ,(cdr (assoc "y" jwk :test #'string=))))))
+                     `(("crv" . ,(rest (assoc "crv" jwk :test #'string=)))
+                       ("kty" . ,(rest (assoc "kty" jwk :test #'string=)))
+                       ("x" . ,(rest (assoc "x" jwk :test #'string=)))
+                       ("y" . ,(rest (assoc "y" jwk :test #'string=))))))
          (hash (ironclad:digest-sequence :sha256
                 (flexi-streams:string-to-octets canonical :external-format :utf-8))))
     (base64url-encode hash)))

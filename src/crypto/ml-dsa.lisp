@@ -391,7 +391,7 @@
                  (setf (aref c j)
                        (if (zerop (logand signs 1))
                            1
-                           (- +ml-dsa-q+ 1)))  ; -1 mod q
+                           (1- +ml-dsa-q+)))  ; -1 mod q
                  (setf signs (ash signs -1)))))
     c))
 
@@ -417,7 +417,7 @@
                  (setf pos 0))
                ;; Read 3 bytes as little-endian, mask to 23 bits
                (let* ((b0 (aref stream pos))
-                      (b1 (aref stream (+ pos 1)))
+                      (b1 (aref stream (1+ pos)))
                       (b2 (aref stream (+ pos 2)))
                       (coeff (logand (logior b0 (ash b1 8) (ash b2 16))
                                      #x7FFFFF)))  ; 23-bit mask

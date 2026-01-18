@@ -156,7 +156,7 @@
       (let ((kdf-id (ech-hpke-cipher-suite-kdf-id suite))
             (aead-id (ech-hpke-cipher-suite-aead-id suite)))
         (setf (aref result i) (ldb (byte 8 8) kdf-id))
-        (setf (aref result (+ i 1)) (ldb (byte 8 0) kdf-id))
+        (setf (aref result (1+ i)) (ldb (byte 8 0) kdf-id))
         (setf (aref result (+ i 2)) (ldb (byte 8 8) aead-id))
         (setf (aref result (+ i 3)) (ldb (byte 8 0) aead-id))))
     result))

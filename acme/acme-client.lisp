@@ -77,7 +77,7 @@
               cl+ssl:*make-ssl-client-stream-verify-default*)))
     (multiple-value-bind (body status headers)
         (drakma:http-request url :method :get)
-      (let ((nonce (cdr (assoc :replay-nonce headers)))
+      (let ((nonce (rest (assoc :replay-nonce headers)))
             (body-str (if (stringp body)
                           body
                           (flexi-streams:octets-to-string body :external-format :utf-8))))
@@ -92,7 +92,7 @@
    USE-KID: Use account URL (kid) instead of JWK in header."
   ;; Get fresh nonce if needed
   (unless (acme-client-nonce client)
-    (client-get client (cdr (assoc :new-nonce (acme-client-directory client)))))
+    (client-get client (rest (assoc :new-nonce (acme-client-directory client)))))
 
   (let* ((account-key (acme-client-account-key client))
          (protected-header
@@ -128,8 +128,8 @@
                                :method :post
                                :content-type "application/jose+json"
                                :content (cl-json:encode-json-to-string jws))
-        (let* ((nonce (cdr (assoc :replay-nonce headers)))
-               (location (cdr (assoc :location headers)))
+        (let* ((nonce (rest (assoc :replay-nonce headers)))
+               (location (rest (assoc :location headers)))
                (body-str (if (stringp body)
                              body
                              (flexi-streams:octets-to-string body :external-format :utf-8))))
@@ -155,7 +155,7 @@
   (client-log client :info "Registering account for ~A" email)
   (multiple-value-bind (response status location)
       (client-post client
-                   (cdr (assoc :new-account (acme-client-directory client)))
+                   (rest (assoc :new-account (acme-client-directory client)))
                    `(("termsOfServiceAgreed" . t)
                      ("contact" . #(,(format nil "mailto:~A" email)))))
     (cond
@@ -164,8 +164,8 @@
        (client-log client :info "Account registered: ~A" location)
        location)
       (t
-       (let ((error-type (cdr (assoc :type response)))
-             (error-detail (cdr (assoc :detail response))))
+       (let ((error-type (rest (assoc :type response)))
+             (error-detail (rest (assoc :detail response))))
          (error 'acme-error
                 :message (format nil "Account registration failed: HTTP ~A - ~A: ~A"
                                  status error-type error-detail)))))))
@@ -182,13 +182,13 @@
     (client-log client :info "Creating order for ~{~A~^, ~}" domain-list)
     (multiple-value-bind (response status location)
         (client-post client
-                     (cdr (assoc :new-order (acme-client-directory client)))
+                     (rest (assoc :new-order (acme-client-directory client)))
                      `(("identifiers" . ,identifiers))
                      :use-kid t)
       (if (member status '(200 201))
           (values response location)
-          (let ((error-type (cdr (assoc :type response)))
-                (error-detail (cdr (assoc :detail response))))
+          (let ((error-type (rest (assoc :type response)))
+                (error-detail (rest (assoc :detail response))))
             (error 'acme-order-error
                    :message (format nil "Order creation failed: HTTP ~A - ~A: ~A"
                                     status error-type error-detail)))))))
@@ -210,7 +210,7 @@
         do (multiple-value-bind (response status)
                (client-post client url nil :use-kid t)
              (declare (ignore status))
-             (let ((state (cdr (assoc :status response))))
+             (let ((state (rest (assoc :status response))))
                (client-log client :debug "Poll ~A/~A: ~A" attempt max-attempts state)
                (cond
                  ((string= state "valid")
@@ -239,7 +239,7 @@
   "Download the issued certificate chain (returns PEM string)."
   ;; Get fresh nonce first
   (unless (acme-client-nonce client)
-    (client-get client (cdr (assoc :new-nonce (acme-client-directory client)))))
+    (client-get client (rest (assoc :new-nonce (acme-client-directory client)))))
 
   (let* ((account-key (acme-client-account-key client))
          (protected-header
@@ -268,7 +268,7 @@
                                :content-type "application/jose+json"
                                :accept "application/pem-certificate-chain"
                                :content (cl-json:encode-json-to-string jws))
-        (let ((nonce (cdr (assoc :replay-nonce headers)))
+        (let ((nonce (rest (assoc :replay-nonce headers)))
               (body-str (if (stringp body)
                             body
                             (flexi-streams:octets-to-string body :external-format :utf-8))))

@@ -228,14 +228,13 @@
         (case content-type
           (#.+content-type-application-data+
            ;; Check for empty records (DoS prevention)
-           (if (zerop (length data))
-               (progn
+           (cond ((zerop (length data)) 
                  (incf (tls-stream-empty-record-count stream))
                  (when (> (tls-stream-empty-record-count stream) +max-empty-records+)
                    (error 'tls-error :message ":TOO_MANY_EMPTY_FRAGMENTS:"))
                  ;; Recursively try for more data
                  (tls-stream-fill-buffer stream))
-               (progn
+      (t 
                  ;; Reset counters on non-empty application data
                  (setf (tls-stream-warning-alert-count stream) 0)
                  (setf (tls-stream-empty-record-count stream) 0)
@@ -680,7 +679,7 @@
        (read-response tls))"
   `(let ((,var (make-tls-client-stream ,socket ,@args)))
      (unwind-protect
-         (progn ,@body)
+         (unquote-splicing body)
        (close ,var))))
 
 (defmacro with-tls-server-stream ((var socket &rest args) &body body)
@@ -694,5 +693,5 @@
        (handle-request tls))"
   `(let ((,var (make-tls-server-stream ,socket ,@args)))
      (unwind-protect
-         (progn ,@body)
+         (unquote-splicing body)
        (close ,var))))

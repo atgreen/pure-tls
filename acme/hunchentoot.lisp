@@ -207,22 +207,19 @@
     (when pure-tls::*handshake-debug*
       (acceptor-log acceptor :info "Certificate provider called: hostname=~A alpn=~A" hostname alpn-list))
     ;; Check if this is an ACME TLS-ALPN-01 challenge
-    (if (member "acme-tls/1" alpn-list :test #'string=)
-        (progn
+    (cond ((member "acme-tls/1" alpn-list :test #'string=) 
           (acceptor-log acceptor :info "ALPN acme-tls/1 detected - returning validation cert")
           ;; Atomically get both cert and key
           (multiple-value-bind (cert key)
               (acceptor-get-validation acceptor)
-            (if (and cert key)
-                (progn
+            (cond ((and cert key) 
                   (acceptor-log acceptor :info "Validation cert available: cert-len=~A key-type=~A"
                                 (length cert) (type-of key))
                   (values (list cert) key "acme-tls/1"))
-                (progn
+      (t 
                   (acceptor-log acceptor :error "NO VALIDATION CERT AVAILABLE!")
                   nil))))
-        ;; Regular TLS connection - only log in debug mode
-        (progn
+      (t 
           (when pure-tls::*handshake-debug*
             (acceptor-log acceptor :info "Regular TLS connection (no acme-tls/1)"))
           nil))))
@@ -254,7 +251,7 @@
           (client-new-order client domains)
 
         ;; Process each authorization
-        (let ((auth-urls (cdr (assoc :authorizations order))))
+        (let ((auth-urls (rest (assoc :authorizations order))))
           (dolist (auth-url auth-urls)
             (acceptor-process-authorization acceptor client auth-url)))
 
@@ -262,7 +259,7 @@
         (multiple-value-bind (private-key public-key)
             (generate-domain-key)
           (let* ((csr (generate-csr private-key public-key domains))
-                 (finalize-url (cdr (assoc :finalize order))))
+                 (finalize-url (rest (assoc :finalize order))))
 
             ;; Save private key
             (save-private-key-pem private-key public-key
@@ -274,12 +271,12 @@
             ;; Poll until valid
             (multiple-value-bind (final-order status)
                 (client-poll-status client order-url :wait-for-valid t)
-              (unless (eq status :valid)
+              (unless (eql status :valid)
                 (error 'acme-order-error
                        :message (format nil "Order finalization failed: ~A" status)))
 
               ;; Download certificate
-              (let* ((cert-url (cdr (assoc :certificate final-order)))
+              (let* ((cert-url (rest (assoc :certificate final-order)))
                      (cert-pem (client-download-certificate client cert-url)))
                 (unless cert-pem
                   (error 'acme-certificate-error
@@ -296,19 +293,19 @@
   "Process a single authorization using TLS-ALPN-01.
    Sets validation cert atomically and waits for Let's Encrypt to validate."
   (let* ((auth (client-get-authorization client auth-url))
-         (challenges (cdr (assoc :challenges auth)))
+         (challenges (rest (assoc :challenges auth)))
          (tls-alpn (find "tls-alpn-01"
                          challenges
-                         :key (lambda (c) (cdr (assoc :type c)))
+                         :key (lambda (c) (rest (assoc :type c)))
                          :test #'string=)))
     (unless tls-alpn
       (error 'acme-challenge-error
              :message "TLS-ALPN-01 challenge not available"))
 
-    (let* ((token (cdr (assoc :token tls-alpn)))
-           (challenge-url (cdr (assoc :url tls-alpn)))
+    (let* ((token (rest (assoc :token tls-alpn)))
+           (challenge-url (rest (assoc :url tls-alpn)))
            (key-auth (client-compute-key-authorization client token))
-           (domain (cdr (assoc :value (cdr (assoc :identifier auth))))))
+           (domain (rest (assoc :value (rest (assoc :identifier auth))))))
 
       ;; Generate validation certificate
       (acceptor-log acceptor :info "Generating validation certificate for ~A" domain)
@@ -342,16 +339,16 @@
                  ;; Keep validation cert available throughout
                  (multiple-value-bind (result status)
                      (client-poll-status client auth-url :max-attempts 60 :delay 2)
-                   (unless (eq status :valid)
+                   (unless (eql status :valid)
                      ;; Extract error details from challenges in the response
-                     (let* ((challenges (cdr (assoc :challenges result)))
+                     (let* ((challenges (rest (assoc :challenges result)))
                             (error-details
                               (loop for ch in challenges
-                                    for err = (cdr (assoc :error ch))
+                                    for err = (rest (assoc :error ch))
                                     when err
                                       collect (format nil "~A: ~A"
-                                                      (cdr (assoc :type err))
-                                                      (cdr (assoc :detail err))))))
+                                                      (rest (assoc :type err))
+                                                      (rest (assoc :detail err))))))
                        (error 'acme-challenge-error
                               :message (format nil "Challenge validation failed: ~A~@[~%  ~{~A~^~%  ~}~]"
                                                status error-details))))

@@ -886,7 +886,7 @@
           ;; Server responded to ECH - check for retry_configs
           (let ((ech-data (tls-extension-data ech-ext)))
             (when (and (ech-ext-p ech-data)
-                       (eq (ech-ext-type ech-data) :retry)
+                       (eql (ech-ext-type ech-data) :retry)
                        (ech-ext-retry-configs ech-data))
               ;; ECH rejected with retry_configs
               (setf (client-handshake-ech-retry-configs hs)
@@ -1720,14 +1720,11 @@
     ;; Client handshake write keys were already installed after ServerHello processing
     ;; If server requested client auth, send Certificate (+ CertificateVerify if we have one)
     (when (client-handshake-certificate-requested hs)
-      (if (and (client-handshake-client-certificate hs)
-               (client-handshake-client-private-key hs))
-          ;; We have a certificate and key - send them
-          (progn
+      (cond ((and (client-handshake-client-certificate hs)
+               (client-handshake-client-private-key hs)) 
             (send-client-certificate hs)
             (send-client-certificate-verify hs))
-          ;; No certificate available - send empty Certificate
-          (send-empty-client-certificate hs)))
+      (t (send-empty-client-certificate hs))))
     ;; Compute verify_data using current transcript
     (let* ((transcript-hash (key-schedule-transcript-hash-value ks))
            (verify-data (compute-finished-verify-data
@@ -1949,7 +1946,7 @@
                 (client-handshake-update-transcript hs raw-bytes)
                 (process-certificate-request hs message)
                 ;; Stay in this state, waiting for server's Certificate
-                )
+)
                (#.+handshake-certificate+
                 ;; Update transcript now for Certificate
                 (client-handshake-update-transcript hs raw-bytes)
