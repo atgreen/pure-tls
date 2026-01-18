@@ -212,7 +212,8 @@
                                  &key check-revocation)
   "Verify a certificate chain against trusted roots.
    CHAIN is a list of certificates, leaf first.
-   TRUSTED-ROOTS is a list of trusted CA certificates (may be NIL on Windows/macOS with native verification).
+   TRUSTED-ROOTS is a list of trusted CA certificates. When NIL on Windows/macOS,
+   native OS verification using the system trust store is used instead.
    HOSTNAME is optional; if provided, enables hostname verification on native platforms.
    CHECK-REVOCATION if T, checks certificate revocation via CRL/OCSP (default NIL).
    Returns T if verification succeeds, signals an error otherwise."
@@ -220,18 +221,20 @@
   (when (null chain)
     (error 'tls-certificate-error :message "Empty certificate chain"))
 
-  ;; On Windows with CryptoAPI enabled, use Windows verification
+  ;; On Windows with CryptoAPI enabled and no explicit trusted-roots, use Windows verification
+  ;; When trusted-roots is provided, caller wants to use those specific roots, not the OS store
   #+windows
-  (when *use-windows-certificate-store*
-    ;; Windows CryptoAPI verification is authoritative when enabled
+  (when (and (null trusted-roots) *use-windows-certificate-store*)
+    ;; Windows CryptoAPI verification using system trust store
     ;; Hostname verification is optional (nil = no hostname check, useful for mTLS)
     (verify-certificate-chain-native chain hostname :check-revocation check-revocation)
     (return-from verify-certificate-chain t))
 
-  ;; On macOS with Keychain enabled, use macOS verification
+  ;; On macOS with Keychain enabled and no explicit trusted-roots, use macOS verification
+  ;; When trusted-roots is provided, caller wants to use those specific roots, not the OS store
   #+(or darwin macos)
-  (when *use-macos-keychain*
-    ;; macOS Security.framework verification is authoritative when enabled
+  (when (and (null trusted-roots) *use-macos-keychain*)
+    ;; macOS Security.framework verification using system Keychain
     ;; Hostname verification is optional (nil = no hostname check, useful for mTLS)
     (verify-certificate-chain-native chain hostname :check-revocation check-revocation)
     (return-from verify-certificate-chain t))
