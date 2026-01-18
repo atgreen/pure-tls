@@ -16,6 +16,7 @@
    #:*staging-url*
    #:*production-url*
    #:*acme-debug*
+   #:*default-profile*
 
    ;; Certificate store
    #:cert-store

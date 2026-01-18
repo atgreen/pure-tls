@@ -23,6 +23,10 @@
 (defparameter *acme-debug* nil
   "Enable verbose ACME debug logging when T.")
 
+(defparameter *default-profile* "tlsserver"
+  "Default ACME profile for certificate orders.
+   Valid profiles: \"classic\", \"tlsserver\", \"shortlived\".")
+
 (defun acme-log (format-string &rest args)
   "Log an ACME debug message if *acme-debug* is enabled."
   (when *acme-debug*

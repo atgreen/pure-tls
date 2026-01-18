@@ -239,6 +239,35 @@ The `pure-tls/acme` system provides automatic certificate management using the A
   :renewal-days 30)
 ```
 
+### Certificate Profiles
+
+pure-tls supports [Let's Encrypt certificate profiles](https://letsencrypt.org/docs/profiles/), defaulting to `tlsserver` for modern, lean certificates optimized for TLS 1.3:
+
+```lisp
+;; Default: tlsserver profile (recommended for pure-tls)
+(pure-tls/acme:make-acme-acceptor "example.com" "admin@example.com")
+
+;; Short-lived certificates (~6 days, no revocation info)
+(pure-tls/acme:make-acme-acceptor "example.com" "admin@example.com"
+  :profile "shortlived")
+
+;; Classic 90-day certificates with longer validation windows
+(pure-tls/acme:make-acme-acceptor "example.com" "admin@example.com"
+  :profile "classic")
+```
+
+| Profile | Validity | Auth Reuse | Max Domains | Notes |
+|---------|----------|------------|-------------|-------|
+| `tlsserver` | 90 days | 7 hours | 25 | Default. Smaller certs, removes legacy fields |
+| `shortlived` | ~6 days | 7 hours | 25 | No CRL/OCSP needed. Requires reliable automation |
+| `classic` | 90 days | 30 days | 100 | Let's Encrypt default. Larger certs |
+
+To change the global default:
+
+```lisp
+(setf pure-tls/acme:*default-profile* "shortlived")
+```
+
 ### ACME Systems
 
 The ACME functionality is split into two systems:
@@ -313,7 +342,8 @@ pure-tls/acme uses the TLS-ALPN-01 challenge type, which validates domain owners
 ```lisp
 (pure-tls/acme:make-acme-acceptor domains email
   :port 443              ; HTTPS port (default 443)
-  :production nil        ; Use Let's Encrypt staging for testing (default T = production)
+  :production t          ; Use Let's Encrypt production (default T)
+  :profile "tlsserver"   ; Certificate profile (default "tlsserver")
   :renewal-days 30       ; Renew when cert expires within N days
   :store store           ; Custom cert-store (optional)
   :logger #'my-logger)   ; Custom logging function (optional)

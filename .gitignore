@@ -27,6 +27,8 @@ RCS
 # Markdown files in top level (except README.md)
 /*.md
 !/README.md
+# Explicitly ignore local review artifacts
+C-REVIEW.md
 
 # Local planning docs
 ROADMAP.md

@@ -68,6 +68,11 @@
     :accessor acceptor-production-p
     :initform t
     :documentation "Use Let's Encrypt production (T) or staging (NIL).")
+   (profile
+    :initarg :profile
+    :accessor acceptor-profile
+    :initform *default-profile*
+    :documentation "ACME profile: \"classic\", \"tlsserver\", or \"shortlived\".")
    (logger
     :initarg :logger
     :accessor acceptor-logger
@@ -248,7 +253,7 @@
 
       ;; Create order
       (multiple-value-bind (order order-url)
-          (client-new-order client domains)
+          (client-new-order client domains :profile (acceptor-profile acceptor))
 
         ;; Process each authorization
         (let ((auth-urls (rest (assoc :authorizations order))))
@@ -399,6 +404,7 @@
 (defun make-acme-acceptor (domains email &key
                                          (port 443)
                                          (production t)
+                                         (profile *default-profile*)
                                          (renewal-days 30)
                                          (logger #'default-logger)
                                          store)
@@ -407,7 +413,9 @@
    DOMAINS - Single domain string or list of domains (first is primary).
    EMAIL - Contact email for Let's Encrypt account.
    PORT - HTTPS port (default 443).
-   PRODUCTION - Use Let's Encrypt production (default NIL = staging).
+   PRODUCTION - Use Let's Encrypt production (default T).
+   PROFILE - ACME profile: \"classic\", \"tlsserver\", or \"shortlived\"
+             (default: *default-profile*, which is \"tlsserver\").
    RENEWAL-DAYS - Renew when certificate expires within this many days.
    LOGGER - Logging function (default prints to stdout).
    STORE - Certificate store (creates default if not provided).
@@ -418,6 +426,7 @@
      (make-acme-acceptor '(\"example.com\" \"www.example.com\")
                          \"admin@example.com\"
                          :production t
+                         :profile \"shortlived\"
                          :logger (lambda (level fmt &rest args)
                                    (apply #'format *error-output* fmt args)))"
   (make-instance 'acme-acceptor
@@ -425,6 +434,7 @@
                  :email email
                  :port port
                  :production production
+                 :profile profile
                  :renewal-days renewal-days
                  :logger logger
                  :store store))

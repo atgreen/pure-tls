@@ -170,8 +170,10 @@
                 :message (format nil "Account registration failed: HTTP ~A - ~A: ~A"
                                  status error-type error-detail)))))))
 
-(defun client-new-order (client domains)
+(defun client-new-order (client domains &key (profile *default-profile*))
   "Create new certificate order for domains.
+   PROFILE: ACME profile (\"classic\", \"tlsserver\", \"shortlived\").
+            Defaults to *default-profile* (tlsserver).
    Returns (VALUES order-response order-url)."
   (let* ((domain-list (if (listp domains) domains (list domains)))
          (identifiers (coerce (mapcar (lambda (d)
@@ -179,11 +181,13 @@
                                            ("value" . ,d)))
                                        domain-list)
                               'vector)))
-    (client-log client :info "Creating order for ~{~A~^, ~}" domain-list)
+    (client-log client :info "Creating order for ~{~A~^, ~} (profile: ~A)"
+                domain-list profile)
     (multiple-value-bind (response status location)
         (client-post client
                      (rest (assoc :new-order (acme-client-directory client)))
-                     `(("identifiers" . ,identifiers))
+                     `(("identifiers" . ,identifiers)
+                       ("profile" . ,profile))
                      :use-kid t)
       (if (member status '(200 201))
           (values response location)
