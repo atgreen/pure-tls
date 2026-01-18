@@ -214,7 +214,7 @@
    CHAIN is a list of certificates, leaf first.
    TRUSTED-ROOTS is a list of trusted CA certificates (may be NIL on Windows/macOS with native verification).
    HOSTNAME is optional; if provided on Windows/macOS, enables native verification.
-   CHECK-REVOCATION if T, checks CRL Distribution Points for each certificate.
+   CHECK-REVOCATION if T, checks certificate revocation via CRL/OCSP (default NIL).
    Returns T if verification succeeds, signals an error otherwise."
   (declare (ignorable hostname check-revocation))  ; Only used conditionally
   (when (null chain)
@@ -224,14 +224,14 @@
   #+windows
   (when (and hostname *use-windows-certificate-store*)
     ;; Windows CryptoAPI verification is authoritative when enabled
-    (verify-certificate-chain-native chain hostname)
+    (verify-certificate-chain-native chain hostname :check-revocation check-revocation)
     (return-from verify-certificate-chain t))
 
   ;; On macOS with Keychain enabled and hostname provided, use macOS verification
   #+(or darwin macos)
   (when (and hostname *use-macos-keychain*)
     ;; macOS Security.framework verification is authoritative when enabled
-    (verify-certificate-chain-native chain hostname)
+    (verify-certificate-chain-native chain hostname :check-revocation check-revocation)
     (return-from verify-certificate-chain t))
 
   ;; Pure Lisp verification requires trusted-roots
@@ -595,22 +595,25 @@ policies. Set to NIL to use pure Lisp verification instead.")
 (defvar *use-macos-keychain* nil
   "Always NIL on non-macOS platforms.")
 
-(defun verify-certificate-chain-native (chain hostname)
+(defun verify-certificate-chain-native (chain hostname &key check-revocation)
   "Attempt native certificate chain verification.
 Returns T if verification succeeded, NIL if native verification not available,
-or signals an error on verification failure."
-  (declare (ignorable chain hostname))
+or signals an error on verification failure.
+CHECK-REVOCATION if T, enables OCSP/CRL revocation checking on supported platforms."
+  (declare (ignorable chain hostname check-revocation))
   #+windows
   (when *use-windows-certificate-store*
     (verify-certificate-chain-windows
      (mapcar #'x509-certificate-raw-der chain)
-     hostname)
+     hostname
+     :check-revocation check-revocation)
     (return-from verify-certificate-chain-native t))
   #+(or darwin macos)
   (when *use-macos-keychain*
     (verify-certificate-chain-macos
      (mapcar #'x509-certificate-raw-der chain)
-     hostname)
+     hostname
+     :check-revocation check-revocation)
     (return-from verify-certificate-chain-native t))
   ;; Not available on this platform or disabled
   nil)
