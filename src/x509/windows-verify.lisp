@@ -181,7 +181,9 @@
 DER-CERTIFICATES is a list of DER-encoded certificate byte vectors,
 with the end-entity (server) certificate first.
 
-HOSTNAME is the expected server hostname for verification.
+HOSTNAME if provided, enables hostname verification as part of the SSL policy.
+When NIL, validates the certificate chain without hostname checking (useful for
+client certificate verification in mTLS).
 
 CHECK-REVOCATION if true, enables CRL/OCSP revocation checking (slower).
 
@@ -228,43 +230,48 @@ Signals an error with details on verification failure."
                (error "Failed to build certificate chain"))
              (setf chain-context (cffi:mem-aref chain-ptr :pointer)))
 
-           ;; Verify against SSL policy with hostname check
+           ;; Verify against SSL policy (with optional hostname check)
            (cffi:with-foreign-objects ((ssl-extra '(:struct ssl-extra-cert-chain-policy-para))
                                        (policy-para '(:struct cert-chain-policy-para))
                                        (policy-status '(:struct cert-chain-policy-status)))
-             (cffi:with-foreign-string (whostname hostname :encoding :utf-16le)
-               (%memset ssl-extra (cffi:foreign-type-size '(:struct ssl-extra-cert-chain-policy-para)))
-               (setf (cffi:foreign-slot-value ssl-extra '(:struct ssl-extra-cert-chain-policy-para) 'size)
-                     (cffi:foreign-type-size '(:struct ssl-extra-cert-chain-policy-para))
-                     (cffi:foreign-slot-value ssl-extra '(:struct ssl-extra-cert-chain-policy-para) 'auth-type)
-                     +authtype-server+
-                     (cffi:foreign-slot-value ssl-extra '(:struct ssl-extra-cert-chain-policy-para) 'checks)
-                     0
-                     (cffi:foreign-slot-value ssl-extra '(:struct ssl-extra-cert-chain-policy-para) 'server-name)
-                     whostname)
+             (flet ((do-verify (server-name-ptr)
+                      (%memset ssl-extra (cffi:foreign-type-size '(:struct ssl-extra-cert-chain-policy-para)))
+                      (setf (cffi:foreign-slot-value ssl-extra '(:struct ssl-extra-cert-chain-policy-para) 'size)
+                            (cffi:foreign-type-size '(:struct ssl-extra-cert-chain-policy-para))
+                            (cffi:foreign-slot-value ssl-extra '(:struct ssl-extra-cert-chain-policy-para) 'auth-type)
+                            +authtype-server+
+                            (cffi:foreign-slot-value ssl-extra '(:struct ssl-extra-cert-chain-policy-para) 'checks)
+                            0
+                            (cffi:foreign-slot-value ssl-extra '(:struct ssl-extra-cert-chain-policy-para) 'server-name)
+                            server-name-ptr)
 
-               (%memset policy-para (cffi:foreign-type-size '(:struct cert-chain-policy-para)))
-               (setf (cffi:foreign-slot-value policy-para '(:struct cert-chain-policy-para) 'size)
-                     (cffi:foreign-type-size '(:struct cert-chain-policy-para))
-                     (cffi:foreign-slot-value policy-para '(:struct cert-chain-policy-para) 'extra-policy-para)
-                     ssl-extra)
+                      (%memset policy-para (cffi:foreign-type-size '(:struct cert-chain-policy-para)))
+                      (setf (cffi:foreign-slot-value policy-para '(:struct cert-chain-policy-para) 'size)
+                            (cffi:foreign-type-size '(:struct cert-chain-policy-para))
+                            (cffi:foreign-slot-value policy-para '(:struct cert-chain-policy-para) 'extra-policy-para)
+                            ssl-extra)
 
-               (%memset policy-status (cffi:foreign-type-size '(:struct cert-chain-policy-status)))
-               (setf (cffi:foreign-slot-value policy-status '(:struct cert-chain-policy-status) 'size)
-                     (cffi:foreign-type-size '(:struct cert-chain-policy-status)))
+                      (%memset policy-status (cffi:foreign-type-size '(:struct cert-chain-policy-status)))
+                      (setf (cffi:foreign-slot-value policy-status '(:struct cert-chain-policy-status) 'size)
+                            (cffi:foreign-type-size '(:struct cert-chain-policy-status)))
 
-               (unless (%cert-verify-policy (cffi:make-pointer +cert-chain-policy-ssl+)
-                                             chain-context
-                                             policy-para
-                                             policy-status)
-                 (error "CertVerifyCertificateChainPolicy call failed"))
+                      (unless (%cert-verify-policy (cffi:make-pointer +cert-chain-policy-ssl+)
+                                                    chain-context
+                                                    policy-para
+                                                    policy-status)
+                        (error "CertVerifyCertificateChainPolicy call failed"))
 
-               (let ((err (cffi:foreign-slot-value policy-status '(:struct cert-chain-policy-status) 'error)))
-                 (unless (zerop err)
-                   (error 'tls-certificate-error
-                          :format-control "Windows certificate verification failed: ~A"
-                          :format-arguments (list (%decode-cert-error err))))
-                 t))))
+                      (let ((err (cffi:foreign-slot-value policy-status '(:struct cert-chain-policy-status) 'error)))
+                        (unless (zerop err)
+                          (error 'tls-certificate-error
+                                 :format-control "Windows certificate verification failed: ~A"
+                                 :format-arguments (list (%decode-cert-error err))))
+                        t)))
+               ;; When hostname provided, create foreign string; otherwise use null pointer
+               (if hostname
+                   (cffi:with-foreign-string (whostname hostname :encoding :utf-16le)
+                     (do-verify whostname))
+                   (do-verify (cffi:null-pointer))))))
 
       ;; Cleanup
       (when chain-context

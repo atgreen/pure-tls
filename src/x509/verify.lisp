@@ -213,24 +213,26 @@
   "Verify a certificate chain against trusted roots.
    CHAIN is a list of certificates, leaf first.
    TRUSTED-ROOTS is a list of trusted CA certificates (may be NIL on Windows/macOS with native verification).
-   HOSTNAME is optional; if provided on Windows/macOS, enables native verification.
+   HOSTNAME is optional; if provided, enables hostname verification on native platforms.
    CHECK-REVOCATION if T, checks certificate revocation via CRL/OCSP (default NIL).
    Returns T if verification succeeds, signals an error otherwise."
   (declare (ignorable hostname check-revocation))  ; Only used conditionally
   (when (null chain)
     (error 'tls-certificate-error :message "Empty certificate chain"))
 
-  ;; On Windows with CryptoAPI enabled and hostname provided, use Windows verification
+  ;; On Windows with CryptoAPI enabled, use Windows verification
   #+windows
-  (when (and hostname *use-windows-certificate-store*)
+  (when *use-windows-certificate-store*
     ;; Windows CryptoAPI verification is authoritative when enabled
+    ;; Hostname verification is optional (nil = no hostname check, useful for mTLS)
     (verify-certificate-chain-native chain hostname :check-revocation check-revocation)
     (return-from verify-certificate-chain t))
 
-  ;; On macOS with Keychain enabled and hostname provided, use macOS verification
+  ;; On macOS with Keychain enabled, use macOS verification
   #+(or darwin macos)
-  (when (and hostname *use-macos-keychain*)
+  (when *use-macos-keychain*
     ;; macOS Security.framework verification is authoritative when enabled
+    ;; Hostname verification is optional (nil = no hostname check, useful for mTLS)
     (verify-certificate-chain-native chain hostname :check-revocation check-revocation)
     (return-from verify-certificate-chain t))
 

@@ -222,7 +222,9 @@ Caller is responsible for releasing both the array AND each certificate
 DER-CERTIFICATES is a list of DER-encoded certificate byte vectors,
 with the end-entity (server) certificate first.
 
-HOSTNAME is the expected server hostname for verification.
+HOSTNAME if provided, enables hostname verification as part of the SSL policy.
+When NIL, validates the certificate chain without hostname checking (useful for
+client certificate verification in mTLS).
 
 CHECK-REVOCATION if true, enables OCSP/CRL revocation checking via
 Security.framework. Network access is required for revocation checks.
@@ -245,14 +247,18 @@ Signals an error with details on verification failure."
            (multiple-value-setq (cert-array certs)
              (%create-certificate-array der-certificates))
 
-           ;; Create SSL policy with hostname
-           (setf hostname-cfstr (%cf-string-create (cffi:null-pointer)
-                                                    hostname
-                                                    +kcf-string-encoding-utf8+))
-           (when (cffi:null-pointer-p hostname-cfstr)
-             (error "Failed to create CFString for hostname"))
+           ;; Create SSL policy (with optional hostname verification)
+           ;; When hostname is nil, SecPolicyCreateSSL with NULL hostname
+           ;; validates chain without hostname checking
+           (when hostname
+             (setf hostname-cfstr (%cf-string-create (cffi:null-pointer)
+                                                      hostname
+                                                      +kcf-string-encoding-utf8+))
+             (when (cffi:null-pointer-p hostname-cfstr)
+               (error "Failed to create CFString for hostname")))
 
-           (setf ssl-policy (%sec-policy-create-ssl t hostname-cfstr))
+           (setf ssl-policy (%sec-policy-create-ssl t (or hostname-cfstr
+                                                          (cffi:null-pointer))))
            (when (cffi:null-pointer-p ssl-policy)
              (error "Failed to create SSL policy"))
 
