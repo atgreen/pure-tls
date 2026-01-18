@@ -209,47 +209,61 @@
 ;;; For now, we provide basic building blocks.
 
 (defun verify-certificate-chain (chain trusted-roots &optional (now (get-universal-time)) hostname
-                                 &key check-revocation)
+                                 &key check-revocation (trust-anchor-mode :replace))
   "Verify a certificate chain against trusted roots.
    CHAIN is a list of certificates, leaf first.
    TRUSTED-ROOTS is a list of trusted CA certificates. When NIL on Windows/macOS,
-   native OS verification uses the system trust store. When provided, native
-   verification uses those roots (replacing system store on macOS, extending it
-   on Windows).
+   native OS verification uses the system trust store.
    HOSTNAME is optional; if provided, enables hostname verification on native platforms.
    CHECK-REVOCATION if T, checks certificate revocation via CRL/OCSP (default NIL).
+   TRUST-ANCHOR-MODE controls how trusted-roots interact with system store:
+     :replace (default) - Use ONLY trusted-roots, ignore system store
+     :extend - Use trusted-roots IN ADDITION TO system store
    Returns T if verification succeeds, signals an error otherwise."
-  (declare (ignorable hostname check-revocation))  ; Only used conditionally
+  (declare (ignorable hostname check-revocation trust-anchor-mode))  ; Only used conditionally
   (when (null chain)
     (error 'tls-certificate-error :message "Empty certificate chain"))
 
   ;; On Windows with CryptoAPI enabled, use Windows verification
-  ;; Custom trusted-roots extend the system trust store
   #+windows
   (when *use-windows-certificate-store*
     ;; Windows CryptoAPI verification
     ;; Hostname verification is optional (nil = no hostname check, useful for mTLS)
     (verify-certificate-chain-native chain hostname
                                      :check-revocation check-revocation
-                                     :trusted-roots trusted-roots)
+                                     :trusted-roots trusted-roots
+                                     :trust-anchor-mode trust-anchor-mode)
     (return-from verify-certificate-chain t))
 
   ;; On macOS with Keychain enabled, use macOS verification
-  ;; Custom trusted-roots replace the system trust store
   #+(or darwin macos)
   (when *use-macos-keychain*
     ;; macOS Security.framework verification
     ;; Hostname verification is optional (nil = no hostname check, useful for mTLS)
     (verify-certificate-chain-native chain hostname
                                      :check-revocation check-revocation
-                                     :trusted-roots trusted-roots)
+                                     :trusted-roots trusted-roots
+                                     :trust-anchor-mode trust-anchor-mode)
     (return-from verify-certificate-chain t))
 
-  ;; Pure Lisp verification requires trusted-roots
-  (unless trusted-roots
-    (error 'tls-verification-error
-           :message "No trusted root certificates available for verification"
-           :reason :unknown-ca))
+  ;; Pure Lisp verification - combine roots based on trust-anchor-mode
+  (let ((effective-roots
+          (ecase trust-anchor-mode
+            (:replace
+             ;; Use only the provided trusted-roots
+             trusted-roots)
+            (:extend
+             ;; Combine provided roots with system store
+             (let ((system-store (load-system-trust-store)))
+               (if trusted-roots
+                   (append trusted-roots
+                           (when system-store (trust-store-certificates system-store)))
+                   (when system-store (trust-store-certificates system-store))))))))
+    (unless effective-roots
+      (error 'tls-verification-error
+             :message "No trusted root certificates available for verification"
+             :reason :unknown-ca))
+    (setf trusted-roots effective-roots))
 
   ;; Verify each certificate's dates and check for unknown critical extensions
   (dolist (cert chain)
@@ -606,14 +620,17 @@ policies. Set to NIL to use pure Lisp verification instead.")
 (defvar *use-macos-keychain* nil
   "Always NIL on non-macOS platforms.")
 
-(defun verify-certificate-chain-native (chain hostname &key check-revocation trusted-roots)
+(defun verify-certificate-chain-native (chain hostname &key check-revocation trusted-roots
+                                                           (trust-anchor-mode :replace))
   "Attempt native certificate chain verification.
 Returns T if verification succeeded, NIL if native verification not available,
 or signals an error on verification failure.
 CHECK-REVOCATION if T, enables OCSP/CRL revocation checking on supported platforms.
-TRUSTED-ROOTS if provided, is a list of x509-certificate objects to use as trust
-anchors. On macOS, these replace the system trust store. On Windows, they extend it."
-  (declare (ignorable chain hostname check-revocation trusted-roots))
+TRUSTED-ROOTS if provided, is a list of x509-certificate objects to use as trust anchors.
+TRUST-ANCHOR-MODE controls how trusted-roots interact with system store:
+  :replace - Use ONLY trusted-roots (not supported on Windows, will error)
+  :extend - Use trusted-roots IN ADDITION TO system store"
+  (declare (ignorable chain hostname check-revocation trusted-roots trust-anchor-mode))
   (let ((trusted-roots-der (when trusted-roots
                              (mapcar #'x509-certificate-raw-der trusted-roots))))
     #+windows
@@ -622,7 +639,8 @@ anchors. On macOS, these replace the system trust store. On Windows, they extend
        (mapcar #'x509-certificate-raw-der chain)
        hostname
        :check-revocation check-revocation
-       :trusted-roots trusted-roots-der)
+       :trusted-roots trusted-roots-der
+       :trust-anchor-mode trust-anchor-mode)
       (return-from verify-certificate-chain-native t))
     #+(or darwin macos)
     (when *use-macos-keychain*
@@ -630,7 +648,8 @@ anchors. On macOS, these replace the system trust store. On Windows, they extend
        (mapcar #'x509-certificate-raw-der chain)
        hostname
        :check-revocation check-revocation
-       :trusted-roots trusted-roots-der)
+       :trusted-roots trusted-roots-der
+       :trust-anchor-mode trust-anchor-mode)
       (return-from verify-certificate-chain-native t)))
   ;; Not available on this platform or disabled
   nil)

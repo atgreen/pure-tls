@@ -217,7 +217,8 @@ Caller is responsible for releasing both the array AND each certificate
 ;;; Public API
 
 (defun verify-certificate-chain-macos (der-certificates hostname
-                                       &key check-revocation trusted-roots)
+                                       &key check-revocation trusted-roots
+                                            (trust-anchor-mode :replace))
   "Verify a certificate chain using macOS Security.framework.
 
 DER-CERTIFICATES is a list of DER-encoded certificate byte vectors,
@@ -231,8 +232,11 @@ CHECK-REVOCATION if true, enables OCSP/CRL revocation checking via
 Security.framework. Network access is required for revocation checks.
 
 TRUSTED-ROOTS if provided, is a list of DER-encoded certificate byte vectors
-to use as trust anchors instead of the system Keychain. When NIL (default),
-uses the system trust store.
+to use as trust anchors.
+
+TRUST-ANCHOR-MODE controls how trusted-roots interact with system Keychain:
+  :replace - Use ONLY trusted-roots, ignore system Keychain (default)
+  :extend - Use trusted-roots IN ADDITION TO system Keychain
 
 Returns T if the chain is valid and trusted by macOS.
 Signals an error with details on verification failure."
@@ -298,9 +302,8 @@ Signals an error with details on verification failure."
                         :format-arguments (list (%get-security-error-message status))))
                (setf trust (cffi:mem-aref trust-ptr :pointer))))
 
-           ;; Configure trust anchors
+           ;; Configure trust anchors based on trust-anchor-mode
            (if trusted-roots
-               ;; Use custom anchors only (replace system trust store)
                (progn
                  (multiple-value-setq (anchor-array anchor-certs)
                    (%create-certificate-array trusted-roots))
@@ -309,10 +312,11 @@ Signals an error with details on verification failure."
                      (error 'tls-certificate-error
                             :format-control "Failed to set anchor certificates: ~A"
                             :format-arguments (list (%get-security-error-message status)))))
-                 ;; Use ONLY the custom anchors, not system roots
-                 (%sec-trust-set-anchors-only trust t))
-               ;; Use system anchors (default behavior)
-               ;; Setting anchors-only to false allows system anchors
+                 ;; Control whether to use ONLY custom anchors or extend system roots
+                 (ecase trust-anchor-mode
+                   (:replace (%sec-trust-set-anchors-only trust t))   ; Custom only
+                   (:extend (%sec-trust-set-anchors-only trust nil)))) ; Custom + system
+               ;; No custom roots - use system anchors
                (%sec-trust-set-anchors-only trust nil))
 
            ;; Evaluate trust

@@ -98,6 +98,23 @@
   (element-index :int32)
   (extra-policy-status :pointer))
 
+;; CERT_CHAIN_ENGINE_CONFIG for creating custom chain engines
+;; This structure allows specifying exclusive trust anchors (Windows 7+)
+(cffi:defcstruct cert-chain-engine-config
+  (size :uint32)
+  (hrestricted-root :pointer)           ; HCERTSTORE - restricted root store
+  (hrestricted-trust :pointer)          ; HCERTSTORE - restricted trust store
+  (hrestricted-other :pointer)          ; HCERTSTORE - restricted other store
+  (cadditional-store :uint32)           ; count of additional stores
+  (rghadditional-store :pointer)        ; array of HCERTSTORE
+  (flags :uint32)                       ; CERT_CHAIN_ENGINE_CONFIG flags
+  (url-retrieval-timeout :uint32)       ; milliseconds
+  (max-cached-certs :uint32)            ; MaximumCachedCertificates
+  (cycle-detection-modulus :uint32)     ; CycleDetectionModulus
+  (hexclusive-root :pointer)            ; HCERTSTORE - Windows 7+: exclusive root store
+  (hexclusive-trusted-people :pointer)  ; HCERTSTORE - Windows 8+
+  (exclusive-flags :uint32))            ; Windows 8.1+
+
 ;;; Foreign Functions
 
 (cffi:defcfun ("CertOpenStore" %cert-open-store) :pointer
@@ -144,6 +161,13 @@
 (cffi:defcfun ("CertFreeCertificateChain" %cert-free-chain) :void
   (chain-context :pointer))
 
+(cffi:defcfun ("CertCreateCertChainEngine" %cert-create-chain-engine) :boolean
+  (config :pointer)
+  (engine :pointer))
+
+(cffi:defcfun ("CertFreeCertificateChainEngine" %cert-free-chain-engine) :void
+  (engine :pointer))
+
 ;;; Helper Functions
 
 (defun %memset (ptr count &optional (val 0))
@@ -173,10 +197,45 @@
           (error "Failed to create certificate context"))
         hcert))))
 
+(defun %create-exclusive-root-store (trusted-roots-der)
+  "Create an in-memory certificate store containing only the specified roots.
+Returns the HCERTSTORE handle. Caller must close with %cert-close-store."
+  (let ((hstore (%open-memory-store)))
+    (handler-case
+        (progn
+          (dolist (der trusted-roots-der)
+            (let ((ctx (%create-cert-context der)))
+              (unless (%cert-add-to-store hstore ctx +cert-store-add-replace-existing+
+                                           (cffi:null-pointer))
+                (%cert-free-context ctx)
+                (error "Failed to add trusted root to exclusive store"))
+              (%cert-free-context ctx)))
+          hstore)
+      (error (c)
+        (%cert-close-store hstore 0)
+        (error c)))))
+
+(defun %create-custom-chain-engine (exclusive-root-store)
+  "Create a custom certificate chain engine that uses ONLY the specified root store.
+Returns the HCERTCHAINENGINE handle. Caller must free with %cert-free-chain-engine.
+EXCLUSIVE-ROOT-STORE is an HCERTSTORE containing the exclusive trust anchors."
+  (cffi:with-foreign-objects ((config '(:struct cert-chain-engine-config))
+                              (engine-ptr :pointer))
+    (%memset config (cffi:foreign-type-size '(:struct cert-chain-engine-config)))
+    (setf (cffi:foreign-slot-value config '(:struct cert-chain-engine-config) 'size)
+          (cffi:foreign-type-size '(:struct cert-chain-engine-config)))
+    ;; Set the exclusive root store - this makes the engine use ONLY these roots
+    (setf (cffi:foreign-slot-value config '(:struct cert-chain-engine-config) 'hexclusive-root)
+          exclusive-root-store)
+    (unless (%cert-create-chain-engine config engine-ptr)
+      (error "Failed to create custom certificate chain engine"))
+    (cffi:mem-aref engine-ptr :pointer)))
+
 ;;; Public API
 
 (defun verify-certificate-chain-windows (der-certificates hostname
-                                         &key check-revocation trusted-roots)
+                                         &key check-revocation trusted-roots
+                                              (trust-anchor-mode :replace))
   "Verify a certificate chain using Windows CryptoAPI.
 
 DER-CERTIFICATES is a list of DER-encoded certificate byte vectors,
@@ -189,8 +248,11 @@ client certificate verification in mTLS).
 CHECK-REVOCATION if true, enables CRL/OCSP revocation checking (slower).
 
 TRUSTED-ROOTS if provided, is a list of DER-encoded certificate byte vectors
-to add as additional trust anchors. Note: on Windows, these extend the system
-trust store rather than replacing it (unlike macOS).
+to use as trust anchors.
+
+TRUST-ANCHOR-MODE controls how trusted-roots interact with the system store:
+  :replace - Use ONLY trusted-roots, ignoring system store (default, requires Windows 7+)
+  :extend - Use trusted-roots IN ADDITION TO system store
 
 Returns T if the chain is valid and trusted by Windows.
 Signals an error with details on verification failure."
@@ -200,17 +262,27 @@ Signals an error with details on verification failure."
 
   (let ((hstore (%open-memory-store))
         (hcert nil)
-        (chain-context nil))
+        (chain-context nil)
+        (custom-engine nil)
+        (exclusive-root-store nil))
     (unwind-protect
          (progn
-           ;; Add custom trusted roots to the memory store if provided
-           (dolist (der trusted-roots)
-             (let ((ctx (%create-cert-context der)))
-               (unless (%cert-add-to-store hstore ctx +cert-store-add-replace-existing+
-                                            (cffi:null-pointer))
-                 (%cert-free-context ctx)
-                 (error "Failed to add trusted root to store"))
-               (%cert-free-context ctx)))
+           ;; Handle trust anchors based on trust-anchor-mode
+           (ecase trust-anchor-mode
+             (:extend
+              ;; Add custom trusted roots to the memory store (extends system trust)
+              (dolist (der trusted-roots)
+                (let ((ctx (%create-cert-context der)))
+                  (unless (%cert-add-to-store hstore ctx +cert-store-add-replace-existing+
+                                               (cffi:null-pointer))
+                    (%cert-free-context ctx)
+                    (error "Failed to add trusted root to store"))
+                  (%cert-free-context ctx))))
+             (:replace
+              ;; Create custom chain engine with exclusive roots (replaces system trust)
+              (when trusted-roots
+                (setf exclusive-root-store (%create-exclusive-root-store trusted-roots))
+                (setf custom-engine (%create-custom-chain-engine exclusive-root-store)))))
 
            ;; Add all certificates to the memory store
            (dolist (der der-certificates)
@@ -226,13 +298,14 @@ Signals an error with details on verification failure."
                  (%cert-free-context ctx))))
 
            ;; Build the certificate chain
+           ;; Use custom-engine if :replace mode, otherwise use default (null)
            (cffi:with-foreign-objects ((chain-para '(:struct cert-chain-para))
                                        (chain-ptr :pointer))
              (%memset chain-para (cffi:foreign-type-size '(:struct cert-chain-para)))
              (setf (cffi:foreign-slot-value chain-para '(:struct cert-chain-para) 'size)
                    (cffi:foreign-type-size '(:struct cert-chain-para)))
 
-             (unless (%cert-get-chain (cffi:null-pointer)
+             (unless (%cert-get-chain (or custom-engine (cffi:null-pointer))
                                        hcert
                                        (cffi:null-pointer)
                                        hstore
@@ -288,9 +361,13 @@ Signals an error with details on verification failure."
                      (do-verify whostname))
                    (do-verify (cffi:null-pointer))))))
 
-      ;; Cleanup
+      ;; Cleanup (order matters: engine before its root store)
       (when chain-context
         (%cert-free-chain chain-context))
+      (when custom-engine
+        (%cert-free-chain-engine custom-engine))
+      (when exclusive-root-store
+        (%cert-close-store exclusive-root-store 0))
       (when hcert
         (%cert-free-context hcert))
       (%cert-close-store hstore 0))))
