@@ -161,7 +161,7 @@
 (cffi:defcfun ("CertFreeCertificateChain" %cert-free-chain) :void
   (chain-context :pointer))
 
-(cffi:defcfun ("CertCreateCertChainEngine" %cert-create-chain-engine) :int
+(cffi:defcfun ("CertCreateCertificateChainEngine" %cert-create-chain-engine) :int
   (config :pointer)
   (engine :pointer))
 
