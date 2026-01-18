@@ -196,9 +196,9 @@
         (make-openssl-test
          :name test-name
          :category (categorize-test server-section client-section result-section ssl-conf
-                                    server-extra client-extra)
+                                    server-extra client-extra test-name)
          :skip-reason (get-skip-reason server-section client-section result-section ssl-conf
-                                       server-extra client-extra)
+                                       server-extra client-extra test-name)
          ;; Server config
          :server-certificate (resolve-cert-path
                               (get-value server-section "Certificate"))
@@ -254,8 +254,13 @@
                                 (cl-ppcre:split ":" client-curves))))))))
 
 (defun categorize-test (server-section client-section result-section ssl-conf
-                        &optional server-extra client-extra)
+                        &optional server-extra client-extra test-name)
   "Categorize a test as :pass, :skip, :xfail, or :interop."
+  ;; Skip name-constraints-no-san-in-ee on macOS - Security.framework enforces
+  ;; RFC 6125 strictly which deprecates CN-based hostname matching without SAN
+  #+(or darwin macos)
+  (when (and test-name (search "name-constraints-no-san" test-name))
+    (return-from categorize-test :skip))
   (let ((server-min (get-value server-section "MinProtocol"))
         (server-max (get-value server-section "MaxProtocol"))
         (client-min (get-value client-section "MinProtocol"))
@@ -322,8 +327,14 @@
       (t :pass))))
 
 (defun get-skip-reason (server-section client-section result-section ssl-conf
-                        &optional server-extra client-extra)
+                        &optional server-extra client-extra test-name)
   "Get the reason for skipping a test, if applicable."
+  ;; Skip name-constraints-no-san-in-ee on macOS - Security.framework enforces
+  ;; RFC 6125 strictly which deprecates CN-based hostname matching without SAN
+  #+(or darwin macos)
+  (when (and test-name (search "name-constraints-no-san" test-name))
+    (return-from get-skip-reason
+      "macOS Security.framework requires SAN for hostname verification (RFC 6125)"))
   (let ((server-min (get-value server-section "MinProtocol"))
         (server-max (get-value server-section "MaxProtocol"))
         (client-min (get-value client-section "MinProtocol"))
