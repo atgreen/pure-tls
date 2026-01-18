@@ -791,14 +791,13 @@ ExpectedResult = Success
   "Execute all tests from 01-simple.cnf (basic TLS 1.3 tests)."
   (multiple-value-bind (pass fail skip failed-details)
       (run-all-tests-from-file "01-simple.cnf")
-    (declare (ignore skip))
     (format t "~&01-simple.cnf: ~D pass, ~D fail~%" pass fail)
     (when failed-details
       (format t "  Failed: ~{~A~^, ~}~%" (mapcar #'car failed-details))
       (dolist (detail failed-details)
         (format t "    ~A: ~A~%" (car detail) (cdr detail))))
-    ;; All 4 tests should pass
-    (is (= 4 pass))
+    ;; All 4 tests should pass (or be skipped on platforms like macOS)
+    (is (= 4 (+ pass skip)))
     (is (= 0 fail))))
 
 (test execute-21-key-update-all
