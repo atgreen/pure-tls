@@ -144,7 +144,7 @@ Control operation timeouts and cancel in-flight operations using [`cl-context`](
 
 ```lisp
 ;; Timeout entire TLS operation (handshake + I/O) after 30 seconds
-(cl-context:with-timeout-context (ctx 30)
+(cl-context:with-timeout-context (_ 30)
   (let ((socket (usocket:socket-connect "slow-server.com" 443
                                          :element-type '(unsigned-byte 8))))
     (pure-tls:with-tls-client-stream (tls (usocket:socket-stream socket)
@@ -173,7 +173,7 @@ Control operation timeouts and cancel in-flight operations using [`cl-context`](
 
 ```lisp
 ;; Parent deadline automatically propagates to all operations
-(cl-context:with-timeout-context (http-ctx 60)
+(cl-context:with-timeout-context (_ 60)
   (pure-tls:with-tls-client-stream (tls socket :hostname "example.com")
     (write-http-request tls)
     (read-http-response tls)))  ; All I/O shares same 60s budget
@@ -183,7 +183,7 @@ Control operation timeouts and cancel in-flight operations using [`cl-context`](
 
 ```lisp
 ;; Works seamlessly with cl+ssl API
-(cl-context:with-timeout-context (ctx 30)
+(cl-context:with-timeout-context (_ 30)
   (cl+ssl:with-global-context ((cl+ssl:make-context))
     (cl+ssl:make-ssl-client-stream socket :hostname "example.com")))
 ```
