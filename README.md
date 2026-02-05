@@ -35,6 +35,7 @@ Use with drakma via cl+ssl compatibility layer (drop-in OpenSSL replacement):
 - **TLS 1.3 only** - Modern, secure protocol with simplified handshake
 - **Post-quantum ready** - X25519MLKEM768 hybrid key exchange (FIPS 203)
 - **Encrypted Client Hello (ECH)** - Encrypts SNI to protect privacy (RFC 9639)
+- **Timeouts & cancellation** - Integrated with [`cl-context`](https://github.com/atgreen/cl-context) for cooperative cancellation
 - **Automatic certificates** - Built-in ACME client for Let's Encrypt
 - **Gray streams** - Seamless integration with existing I/O code
 - **cl+ssl compatible** - Drop-in replacement API available
@@ -137,9 +138,9 @@ Or add to your ASDF system:
 
 ### Timeouts and Cancellation
 
-Control operation timeouts and cancel in-flight operations using `cl-context`.
+Control operation timeouts and cancel in-flight operations using [`cl-context`](https://github.com/atgreen/cl-context). Contexts propagate automatically via `*current-context*` — no explicit parameter passing required.
 
-**With pure-tls API (explicit :request-context):**
+**Basic timeout:**
 
 ```lisp
 ;; Timeout entire TLS operation (handshake + I/O) after 30 seconds
@@ -147,43 +148,44 @@ Control operation timeouts and cancel in-flight operations using `cl-context`.
   (let ((socket (usocket:socket-connect "slow-server.com" 443
                                          :element-type '(unsigned-byte 8))))
     (pure-tls:with-tls-client-stream (tls (usocket:socket-stream socket)
-                                          :hostname "slow-server.com"
-                                          :request-context ctx)
-      ;; Both handshake and reads respect the deadline
+                                          :hostname "slow-server.com")
+      ;; Both handshake and reads respect the 30s deadline
       (read-line tls))))
 ;; Raises pure-tls:tls-deadline-exceeded if timeout is exceeded
+```
 
-;; User cancellation (cooperative - checked at next I/O boundary)
-(let ((ctx (cl-context:background)))
-  (multiple-value-bind (cancel-ctx cancel-fn)
-      (cl-context:with-cancel ctx)
-    (bt:make-thread
-      (lambda ()
-        (pure-tls:make-tls-client-stream socket
-                                         :hostname "example.com"
-                                         :request-context cancel-ctx)))
-    ;; Later, when user clicks "Cancel":
-    (funcall cancel-fn)))  ; Checked before next blocking operation
+**User cancellation:**
+
+```lisp
+;; Cooperative cancellation - checked at I/O boundaries
+(multiple-value-bind (cancel-ctx cancel-fn)
+    (cl-context:with-cancel (cl-context:background))
+  (bt2:make-thread
+    (lambda ()
+      (let ((cl-context:*current-context* cancel-ctx))
+        (pure-tls:make-tls-client-stream socket :hostname "example.com"))))
+  ;; Later, when user clicks "Cancel":
+  (funcall cancel-fn))  ; Interrupts at next blocking operation
 ;; Raises pure-tls:tls-context-cancelled at next check point
+```
 
-;; Composable deadlines (parent deadline propagates to child operations)
+**Composable deadlines:**
+
+```lisp
+;; Parent deadline automatically propagates to all operations
 (cl-context:with-timeout-context (http-ctx 60)
-  ;; TLS inherits the 60-second deadline
-  (pure-tls:with-tls-client-stream (tls socket
-                                        :hostname "example.com"
-                                        :request-context http-ctx)
+  (pure-tls:with-tls-client-stream (tls socket :hostname "example.com")
     (write-http-request tls)
     (read-http-response tls)))  ; All I/O shares same 60s budget
 ```
 
-**With cl+ssl compatibility API (implicit via \*current-context\*):**
+**cl+ssl compatibility layer:**
 
 ```lisp
-;; Timeout with cl+ssl compat layer - no API changes needed!
+;; Works seamlessly with cl+ssl API
 (cl-context:with-timeout-context (ctx 30)
   (cl+ssl:with-global-context ((cl+ssl:make-context))
     (cl+ssl:make-ssl-client-stream socket :hostname "example.com")))
-;; Uses cl-context:*current-context* automatically
 ```
 
 **Benefits:**
