@@ -31,6 +31,12 @@
   value = #'[^\\n]*'
 ")
 
+(defun metaobject-value (obj)
+  "Extract the value from an iparse metaobject or return the object if it's not a metaobject."
+  (if (typep obj 'iparse/util:metaobject)
+      (iparse/util:metaobject-value obj)
+      obj))
+
 (defun parse-ini-file (pathname)
   "Parse an INI-style configuration file, returning an alist of sections.
    Each section is (section-name . ((key . value) ...))."
@@ -39,26 +45,37 @@
         (ini-parser content)
       (unless success-p
         (error "Failed to parse INI file: ~A" pathname))
-      (ini-tree-to-alist tree))))
+      ;; Unwrap the top-level metaobject if present
+      (ini-tree-to-alist (metaobject-value tree)))))
 
 (defun ini-tree-to-alist (tree)
-  "Convert iparse tree to alist of sections."
+  "Convert iparse tree to alist of sections.
+   Tree can be either a plain list or wrapped in metaobjects."
   (let ((sections (make-hash-table :test 'equal))
         (current-section ""))  ; empty string for header section
     ;; Initialize the header section
     (setf (gethash "" sections) nil)
     ;; Process each entry in the file
-    (dolist (entry (cdr tree))  ; skip :FILE tag
-      ;; Each entry is (:ENTRY (:SECTION ...) or (:ENTRY (:ASSIGNMENT ...))
-      (let ((inner (second entry)))  ; unwrap :ENTRY
+    (dolist (entry-obj (cdr tree))  ; skip :FILE tag
+      ;; Unwrap metaobjects to get the actual entry data
+      (let* ((entry (metaobject-value entry-obj))
+             (inner-obj (second entry))
+             (inner (metaobject-value inner-obj)))
+        ;; Each entry is (:ENTRY (:SECTION ...) or (:ENTRY (:ASSIGNMENT ...))
         (case (first inner)
           (:SECTION
-           (setf current-section (second (second inner)))  ; get section name
-           (unless (gethash current-section sections)
-             (setf (gethash current-section sections) nil)))
+           (let* ((section-name-obj (second inner))
+                  (section-name-inner (metaobject-value section-name-obj)))
+             (setf current-section (second section-name-inner))  ; get section name
+             (unless (gethash current-section sections)
+               (setf (gethash current-section sections) nil))))
           (:ASSIGNMENT
-           (let ((key (second (second inner)))      ; :KEY -> string
-                 (value (second (third inner))))    ; :VALUE -> string
+           (let* ((key-obj (second inner))
+                  (key-inner (metaobject-value key-obj))
+                  (key (second key-inner))
+                  (value-obj (third inner))
+                  (value-inner (metaobject-value value-obj))
+                  (value (second value-inner)))
              ;; Trim spaces and CR (for Windows CRLF line endings)
              (push (cons key (string-trim '(#\Space #\Tab #\Return) value))
                    (gethash current-section sections)))))))
@@ -663,7 +680,7 @@
 
 (test ini-parser-basic
   "Test that the INI parser works on basic input."
-  (let ((result (ini-parser "
+  (let* ((result (ini-parser "
 # Comment
 [section1]
 key1 = value1
@@ -671,9 +688,10 @@ key2 = value2
 
 [section2]
 foo = bar
-")))
+"))
+         (value (metaobject-value result)))
     (is (not (null result)))
-    (is (eq (first result) :file))))
+    (is (eq (first value) :file))))
 
 (test ini-parser-openssl-format
   "Test parsing OpenSSL-style config format."

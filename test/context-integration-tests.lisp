@@ -70,7 +70,7 @@
                    (bt:make-thread
                     (lambda ()
                       (ignore-errors
-                        (let ((client (usocket:socket-accept server-socket :timeout 5)))
+                        (let ((client (usocket:socket-accept server-socket)))
                           (setf accepted t)
                           ;; Read the HTTP request but never send response
                           (let ((buffer (make-array 1024 :element-type '(unsigned-byte 8))))
@@ -103,8 +103,7 @@
                                                 :timeout 10))
                (stream (pure-tls:make-tls-client-stream
                         (usocket:socket-stream socket)
-                        :hostname "www.google.com"
-                        :request-context ctx)))
+                        :hostname "www.google.com")))
           (unwind-protect
                (progn
                  ;; Verify stream is usable
