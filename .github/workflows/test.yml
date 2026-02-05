@@ -92,8 +92,16 @@ jobs:
             --eval '(asdf:load-system :pure-tls/test)' \
             --eval '(unless (pure-tls/test:run-tests) (uiop:quit 1))'
 
-      - name: Run offline tests (macOS/Windows)
-        if: runner.os != 'Linux'
+      - name: Run offline tests (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          sbcl --non-interactive \
+            --eval '(asdf:load-system :pure-tls/test)' \
+            --eval '(unless (pure-tls/test:run-tests) (uiop:quit 1))'
+
+      - name: Run offline tests (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 10
         run: |
           sbcl --non-interactive \
             --eval '(asdf:load-system :pure-tls/test)' \
