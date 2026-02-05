@@ -302,6 +302,10 @@
      (tls-stream-input-position stream)))
 
 (defmethod stream-read-byte ((stream tls-stream))
+  ;; Check request context for deadline/cancellation
+  (let ((record-layer (tls-stream-record-layer stream)))
+    (when record-layer
+      (check-tls-context)))
   (when (tls-stream-closed-p stream)
     (return-from stream-read-byte :eof))
   ;; Refill buffer if empty
@@ -318,6 +322,10 @@
       :eof))
 
 (defmethod stream-read-sequence ((stream tls-stream) sequence start end &key)
+  ;; Check request context for deadline/cancellation
+  (let ((record-layer (tls-stream-record-layer stream)))
+    (when record-layer
+      (check-tls-context)))
   (when (tls-stream-closed-p stream)
     (return-from stream-read-sequence start))
   (let ((pos start)
@@ -477,7 +485,8 @@
                                         close-callback
                                         external-format
                                         (buffer-size *default-buffer-size*)
-                                        max-send-fragment)
+                                        max-send-fragment
+                                        request-context)
   "Create a TLS client stream over SOCKET.
 
    SOCKET - The underlying TCP stream or socket.
@@ -495,6 +504,7 @@
    EXTERNAL-FORMAT - If non-NIL, wrap in a flexi-stream.
    BUFFER-SIZE - Size of I/O buffers.
    MAX-SEND-FRAGMENT - Maximum plaintext size for outgoing records.
+   REQUEST-CONTEXT - Optional cl-context for timeout/cancellation support.
 
    Returns the TLS stream, or a flexi-stream if EXTERNAL-FORMAT specified."
   (let* ((stream (make-instance 'tls-client-stream
@@ -503,7 +513,11 @@
                                 :buffer-size buffer-size))
          (record-layer (make-record-layer socket
                                           :max-send-fragment (or max-send-fragment
-                                                                 +max-record-size+)))
+                                                                 +max-record-size+)
+                                          :request-context request-context))
+         ;; Spawn watcher thread for immediate cancellation
+         (watcher (when request-context
+                    (spawn-close-on-cancel-watcher request-context socket)))
          (trust-store (tls-context-trust-store context))
          ;; SNI uses sni-hostname if provided, otherwise hostname
          (sni-name (or sni-hostname hostname))
@@ -590,7 +604,8 @@
                                         close-callback
                                         external-format
                                         (buffer-size *default-buffer-size*)
-                                        max-send-fragment)
+                                        max-send-fragment
+                                        request-context)
   "Create a TLS server stream over SOCKET.
 
    SOCKET - The underlying TCP stream or socket.
@@ -610,6 +625,7 @@
    EXTERNAL-FORMAT - If non-NIL, wrap in a flexi-stream.
    BUFFER-SIZE - Size of I/O buffers.
    MAX-SEND-FRAGMENT - Maximum plaintext size for outgoing records.
+   REQUEST-CONTEXT - Optional cl-context for timeout/cancellation support.
 
    Returns the TLS stream, or a flexi-stream if EXTERNAL-FORMAT specified."
   (let* ((stream (make-instance 'tls-server-stream
@@ -618,7 +634,11 @@
                                 :buffer-size buffer-size))
          (record-layer (make-record-layer socket
                                           :max-send-fragment (or max-send-fragment
-                                                                 +max-record-size+)))
+                                                                 +max-record-size+)
+                                          :request-context request-context))
+         ;; Spawn watcher thread for immediate cancellation
+         (watcher (when request-context
+                    (spawn-close-on-cancel-watcher request-context socket)))
          ;; Get certificate chain (from parameter, context, or file)
          (cert-chain (cond
                        ((listp certificate) certificate)

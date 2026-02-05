@@ -95,7 +95,7 @@
   "Test parsing a CRL file"
   ;; Fetch and parse a real CRL from Google
   (let ((google-cdp-uri "http://c.pki.goog/wr2/oBFYYahzgVI.crl"))
-    (let ((crl (pure-tls::fetch-crl google-cdp-uri :timeout 10)))
+    (let ((crl (pure-tls::fetch-crl google-cdp-uri)))
       (when crl  ; May fail if network unavailable
         (is (> (pure-tls::crl-version crl) 0) "CRL should have a version")
         (is (pure-tls::crl-issuer crl) "CRL should have an issuer")
@@ -115,9 +115,9 @@
     ;; Test caching with real CRL fetch
     (let ((google-uri "http://c.pki.goog/wr2/oBFYYahzgVI.crl"))
       (pure-tls::clear-crl-cache)
-      (let ((crl1 (pure-tls::fetch-crl google-uri :timeout 10)))
+      (let ((crl1 (pure-tls::fetch-crl google-uri)))
         (when crl1
-          (let ((crl2 (pure-tls::fetch-crl google-uri :timeout 10)))
+          (let ((crl2 (pure-tls::fetch-crl google-uri)))
             (is (eq crl1 crl2) "Second fetch should return cached CRL")))))))
 
 (test crl-revocation-check
@@ -138,12 +138,12 @@
             ;; Test with signature verification (requires issuer cert)
             (when issuer
               (let ((status (pure-tls::check-certificate-revocation
-                             cert :issuer-cert issuer :timeout 10)))
+                             cert :issuer-cert issuer)))
                 (is (member status '(:valid :unknown))
                     "Google certificate should not be revoked (with signature verification)")))
             ;; Test without signature verification (backward compatibility)
             (let ((status (pure-tls::check-certificate-revocation
-                           cert :verify-signature nil :timeout 10)))
+                           cert :verify-signature nil)))
               (is (member status '(:valid :unknown))
                   "Google certificate should not be revoked (without signature verification)"))))
       (when tls (close tls))
@@ -166,7 +166,7 @@
                  (issuer (second chain)))
             (when (and issuer (pure-tls::certificate-crl-distribution-points cert))
               (let* ((cdp-uri (first (pure-tls::certificate-crl-distribution-points cert)))
-                     (crl (pure-tls::fetch-crl cdp-uri :timeout 10)))
+                     (crl (pure-tls::fetch-crl cdp-uri)))
                 (when crl
                   ;; Verify the CRL signature
                   (is (pure-tls::verify-crl-signature crl issuer)

@@ -778,7 +778,9 @@
       (handler-case
           (verify-certificate-chain
            (server-handshake-peer-certificate-chain hs)
-           (trust-store-certificates trust-store))
+           (trust-store-certificates trust-store)
+           (get-universal-time) nil
+           :request-context (record-layer-request-context (server-handshake-record-layer hs)))
         (tls-verification-error (e)
           ;; Map verification reason to appropriate alert
           (let ((alert-code (case (tls-verification-error-reason e)
@@ -983,6 +985,10 @@
              :certificate-provider certificate-provider)))
     ;; State machine loop
     (loop
+      ;; Check request context for deadline/cancellation
+      (let ((record-layer (server-handshake-record-layer hs)))
+        (when record-layer
+          (check-tls-context)))
       (hs-log "~&[HS] State: ~A~%" (server-handshake-state hs))
       (case (server-handshake-state hs)
         (:start

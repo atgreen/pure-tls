@@ -65,6 +65,8 @@
    #:tls-alert-error
    #:tls-decode-error
    #:tls-record-overflow
+   #:tls-context-cancelled
+   #:tls-deadline-exceeded
 
    ;; Verification modes
    #:+verify-none+

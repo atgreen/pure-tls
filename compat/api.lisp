@@ -196,7 +196,8 @@ wrap it in a stream. Otherwise return it as-is."
      :alpn-protocols alpn-protocols
      :close-callback wrapped-callback
      :external-format external-format
-     :buffer-size buffer-size)))
+     :buffer-size buffer-size
+     :request-context cl-context:*current-context*)))
 
 (defun make-ssl-server-stream (socket &key
                                         (unwrap-stream-p *default-unwrap-stream-p*)
@@ -238,7 +239,8 @@ wrap it in a stream. Otherwise return it as-is."
      :alpn-protocols alpn-protocols
      :close-callback wrapped-callback
      :external-format external-format
-     :buffer-size buffer-size)))
+     :buffer-size buffer-size
+     :request-context cl-context:*current-context*)))
 
 ;;;; Stream Accessors
 

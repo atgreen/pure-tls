@@ -34,13 +34,15 @@
 
 ;;;; Record Layer I/O
 
-(defun read-exact-bytes (stream buffer count)
+(defun read-exact-bytes (stream buffer count &optional request-context)
   "Read exactly COUNT bytes from STREAM into BUFFER.
    Loops until all bytes are read or EOF is reached.
-   Returns the number of bytes actually read (may be less than COUNT at EOF)."
+   Returns the number of bytes actually read (may be less than COUNT at EOF).
+   If REQUEST-CONTEXT is provided, checks for deadline/cancellation before each read."
   (let ((total-read 0))
     (loop while (< total-read count)
-          do (let ((bytes-read (read-sequence buffer stream
+          do (check-tls-context)
+             (let ((bytes-read (read-sequence buffer stream
                                               :start total-read
                                               :end count)))
                (when (= bytes-read total-read)
@@ -49,14 +51,15 @@
                (setf total-read bytes-read)))
     total-read))
 
-(defun read-tls-record (stream)
+(defun read-tls-record (stream &optional request-context)
   "Read a TLS record from STREAM.
    Returns a TLS-RECORD structure or signals an error.
    Properly handles short reads from the underlying stream.
-   Validates legacy_record_version per RFC 8446 Section 5.1."
+   Validates legacy_record_version per RFC 8446 Section 5.1.
+   If REQUEST-CONTEXT is provided, checks for deadline/cancellation during reads."
   (let ((header (make-octet-vector 5)))
     ;; Read 5-byte header (loop until complete or EOF)
-    (let ((bytes-read (read-exact-bytes stream header 5)))
+    (let ((bytes-read (read-exact-bytes stream header 5 request-context)))
       (when (zerop bytes-read)
         (error 'tls-connection-closed :clean nil))
       (when (< bytes-read 5)
@@ -84,7 +87,7 @@
         (error 'tls-record-overflow :size length))
       ;; Read fragment (loop until complete or EOF)
       (let ((fragment (make-octet-vector length)))
-        (let ((bytes-read (read-exact-bytes stream fragment length)))
+        (let ((bytes-read (read-exact-bytes stream fragment length request-context)))
           (when (< bytes-read length)
             (error 'tls-decode-error
                    :message (format nil "Incomplete record fragment: expected ~D bytes, got ~D"
@@ -130,13 +133,17 @@
   (cipher-suite 0 :type fixnum)
   (stream nil)
   (max-send-fragment +max-record-size+ :type fixnum)
-  (ccs-count 0 :type fixnum))
+  (ccs-count 0 :type fixnum)
+  (request-context nil :type t))
 
-(defun make-record-layer (stream &key (max-send-fragment +max-record-size+))
+(defun make-record-layer (stream &key (max-send-fragment +max-record-size+)
+                                      request-context)
   "Create a new record layer for the given stream.
-   MAX-SEND-FRAGMENT sets the maximum plaintext size for outgoing records."
+   MAX-SEND-FRAGMENT sets the maximum plaintext size for outgoing records.
+   REQUEST-CONTEXT is an optional cl-context context for timeout/cancellation support."
   (%make-record-layer :stream stream
-                      :max-send-fragment max-send-fragment))
+                      :max-send-fragment max-send-fragment
+                      :request-context request-context))
 
 (defun record-layer-install-keys (layer direction key iv cipher-suite)
   "Install encryption keys for the specified direction (:read or :write)."
@@ -148,8 +155,11 @@
 
 (defun record-layer-read (layer)
   "Read and potentially decrypt a record from the record layer.
-   Returns (VALUES content-type plaintext)."
-  (let* ((record (read-tls-record (record-layer-stream layer)))
+   Returns (VALUES content-type plaintext).
+   Checks request-context for deadline/cancellation if present."
+  (check-tls-context)
+  (let* ((record (read-tls-record (record-layer-stream layer)
+                                   (record-layer-request-context layer)))
          (content-type (tls-record-content-type record))
          (fragment (tls-record-fragment record))
          (cipher (record-layer-read-cipher layer)))

@@ -332,7 +332,8 @@
 
 (defvar *crl-fetch-function* nil
   "Custom function for fetching CRL bytes from a URI.
-   Should be (lambda (uri timeout) ...) returning octet vector or NIL.
+   Should be (lambda (uri) ...) returning octet vector or NIL.
+   Timeout computed from cl-context:*current-context*.
    If NIL, uses built-in HTTP client.")
 
 (defvar *crl-max-redirects* 5
@@ -383,9 +384,9 @@
         (when host
           (values host port))))))
 
-(defun http-get-request (host port path &key proxy-host proxy-port (timeout 10))
+(defun http-get-request (host port path &key proxy-host proxy-port)
   "Perform an HTTP GET request. Returns (values body status-code headers redirect-url).
-   Uses proxy if proxy-host is specified."
+   Uses proxy if proxy-host is specified. Timeout computed from current context."
   (let* ((connect-host (or proxy-host host))
          (connect-port (or proxy-port port))
          (request-path (if proxy-host
@@ -396,9 +397,11 @@
     (unwind-protect
         (handler-case
             (progn
-              ;; Connect
+              ;; Check context before blocking connect
+              (check-tls-context)
+              ;; Connect with timeout from context
               (setf socket (usocket:socket-connect connect-host connect-port
-                                                   :timeout timeout
+                                                   :timeout (effective-timeout)
                                                    :element-type '(unsigned-byte 8)))
               (setf stream (usocket:socket-stream socket))
               ;; Send request (use explicit CRLF to avoid Windows line ending issues)
@@ -425,7 +428,10 @@
   "Read a line terminated by CRLF from a binary stream.
    Returns the line without the trailing CRLF, or NIL at end of stream."
   (let ((line (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0)))
-    (loop for byte = (read-byte stream nil nil)
+    (loop for byte = (progn
+                       ;; Check context before each blocking read
+                       (check-tls-context)
+                       (read-byte stream nil nil))
           while byte
           do (vector-push-extend byte line)
              ;; Check for CRLF terminator
@@ -477,6 +483,8 @@
         (let ((body (if content-length
                         (let ((buf (make-array (min content-length *crl-max-response-size*)
                                                :element-type '(unsigned-byte 8))))
+                          ;; Check context before blocking read
+                          (check-tls-context)
                           (let ((bytes-read (read-sequence buf stream)))
                             (if (= bytes-read (length buf))
                                 buf
@@ -485,7 +493,10 @@
                         (let ((chunks nil)
                               (total 0))
                           (loop for chunk = (make-array 8192 :element-type '(unsigned-byte 8))
-                                for bytes-read = (read-sequence chunk stream)
+                                for bytes-read = (progn
+                                                   ;; Check context before each chunk read
+                                                   (check-tls-context)
+                                                   (read-sequence chunk stream))
                                 while (plusp bytes-read)
                                 do (push (subseq chunk 0 bytes-read) chunks)
                                    (incf total bytes-read)
@@ -502,17 +513,17 @@
         ;; Non-200 response
         (values nil status-code headers nil))))
 
-(defun fetch-crl (uri &key (timeout 10))
+(defun fetch-crl (uri)
   "Fetch a CRL from the given URI.
    Returns the parsed CRL or NIL on failure.
-   Uses cache if available."
+   Uses cache if available. Timeout computed from current context."
   ;; Check cache first
   (let ((cached (get-cached-crl uri)))
     (when cached
       (return-from fetch-crl cached)))
   ;; Fetch from network
   (handler-case
-      (let ((der-bytes (fetch-crl-bytes uri :timeout timeout)))
+      (let ((der-bytes (fetch-crl-bytes uri)))
         (when der-bytes
           (let ((crl (parse-crl der-bytes)))
             ;; Cache the CRL
@@ -522,18 +533,18 @@
       (warn "Failed to fetch CRL from ~A: ~A" uri e)
       nil)))
 
-(defun fetch-crl-bytes (uri &key (timeout 10))
+(defun fetch-crl-bytes (uri)
   "Fetch raw CRL bytes from a URI. Returns octet vector or NIL.
    Uses *crl-fetch-function* if set, otherwise uses built-in HTTP client."
   (cond
     ;; Use custom fetch function if provided
     (*crl-fetch-function*
-     (funcall *crl-fetch-function* uri timeout))
+     (funcall *crl-fetch-function* uri))
     ;; Use built-in HTTP client
     (t
-     (fetch-crl-bytes-http uri :timeout timeout :redirects-remaining *crl-max-redirects*))))
+     (fetch-crl-bytes-http uri :redirects-remaining *crl-max-redirects*))))
 
-(defun fetch-crl-bytes-http (uri &key (timeout 10) (redirects-remaining 5))
+(defun fetch-crl-bytes-http (uri &key (redirects-remaining 5))
   "Fetch CRL bytes using built-in HTTP client with redirect support."
   (multiple-value-bind (scheme host port path)
       (parse-http-url uri)
@@ -551,8 +562,7 @@
       (multiple-value-bind (body status-code headers redirect-url)
           (http-get-request host port path
                             :proxy-host proxy-host
-                            :proxy-port proxy-port
-                            :timeout timeout)
+                            :proxy-port proxy-port)
         (declare (ignore headers))
         (cond
           ;; Success
@@ -564,9 +574,7 @@
                                    (alexandria:starts-with-subseq "https://" redirect-url))
                                redirect-url
                                (format nil "http://~A:~A~A" host port redirect-url))))
-             (fetch-crl-bytes-http full-url
-                                   :timeout timeout
-                                   :redirects-remaining (1- redirects-remaining))))
+             (fetch-crl-bytes-http full-url :redirects-remaining (1- redirects-remaining))))
           ;; Failure
           (t
            (when status-code
@@ -575,7 +583,7 @@
 
 ;;;; High-Level Revocation Checking
 
-(defun check-certificate-revocation (certificate &key issuer-cert (timeout 10) (verify-signature t))
+(defun check-certificate-revocation (certificate &key issuer-cert (verify-signature t))
   "Check if a certificate has been revoked.
    Returns :valid, :revoked, :unknown, or :error.
 
@@ -590,7 +598,9 @@
    over plain HTTP.
 
    If ISSUER-CERT is not provided, CRL signatures cannot be verified,
-   and the function will return :unknown (unless VERIFY-SIGNATURE is NIL)."
+   and the function will return :unknown (unless VERIFY-SIGNATURE is NIL).
+
+   Timeout is computed from the current context (cl-context:*current-context*)."
   (let ((cdp-uris (certificate-crl-distribution-points certificate)))
     (unless cdp-uris
       ;; No CRL Distribution Points - can't check
@@ -603,7 +613,7 @@
     (dolist (uri cdp-uris)
       ;; Only support HTTP URIs for now
       (when (alexandria:starts-with-subseq "http://" uri)
-        (let ((crl (fetch-crl uri :timeout timeout)))
+        (let ((crl (fetch-crl uri)))
           (when crl
             ;; Check if CRL issuer matches certificate issuer
             (when (crl-issuer-matches-p crl certificate)

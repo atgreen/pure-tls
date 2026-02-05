@@ -1859,6 +1859,10 @@
     (send-client-hello hs)
     ;; Process server messages
     (loop
+      ;; Check request context for deadline/cancellation
+      (let ((record-layer (client-handshake-record-layer hs)))
+        (when record-layer
+          (check-tls-context)))
       (case (client-handshake-state hs)
         (:wait-server-hello
          (handler-bind

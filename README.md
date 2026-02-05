@@ -135,6 +135,75 @@ Or add to your ASDF system:
   (format t "Selected protocol: ~A~%" (pure-tls:tls-selected-alpn tls)))
 ```
 
+### Timeouts and Cancellation
+
+Control operation timeouts and cancel in-flight operations using `cl-context`.
+
+**With pure-tls API (explicit :request-context):**
+
+```lisp
+;; Timeout entire TLS operation (handshake + I/O) after 30 seconds
+(cl-context:with-timeout-context (ctx 30)
+  (let ((socket (usocket:socket-connect "slow-server.com" 443
+                                         :element-type '(unsigned-byte 8))))
+    (pure-tls:with-tls-client-stream (tls (usocket:socket-stream socket)
+                                          :hostname "slow-server.com"
+                                          :request-context ctx)
+      ;; Both handshake and reads respect the deadline
+      (read-line tls))))
+;; Raises pure-tls:tls-deadline-exceeded if timeout is exceeded
+
+;; User cancellation (cooperative - checked at next I/O boundary)
+(let ((ctx (cl-context:background)))
+  (multiple-value-bind (cancel-ctx cancel-fn)
+      (cl-context:with-cancel ctx)
+    (bt:make-thread
+      (lambda ()
+        (pure-tls:make-tls-client-stream socket
+                                         :hostname "example.com"
+                                         :request-context cancel-ctx)))
+    ;; Later, when user clicks "Cancel":
+    (funcall cancel-fn)))  ; Checked before next blocking operation
+;; Raises pure-tls:tls-context-cancelled at next check point
+
+;; Composable deadlines (parent deadline propagates to child operations)
+(cl-context:with-timeout-context (http-ctx 60)
+  ;; TLS inherits the 60-second deadline
+  (pure-tls:with-tls-client-stream (tls socket
+                                        :hostname "example.com"
+                                        :request-context http-ctx)
+    (write-http-request tls)
+    (read-http-response tls)))  ; All I/O shares same 60s budget
+```
+
+**With cl+ssl compatibility API (implicit via \*current-context\*):**
+
+```lisp
+;; Timeout with cl+ssl compat layer - no API changes needed!
+(cl-context:with-timeout-context (ctx 30)
+  (cl+ssl:with-global-context ((cl+ssl:make-context))
+    (cl+ssl:make-ssl-client-stream socket :hostname "example.com")))
+;; Uses cl-context:*current-context* automatically
+```
+
+**Benefits:**
+- **Bounded operations** - Timeouts checked at I/O boundaries
+- **Responsive UIs** - Cancel between operations
+- **DoS protection** - Enforce per-connection time limits
+- **Better testing** - Deterministic timeout behavior
+
+**Timeout behavior (cooperative checking):**
+- Checks occur *before* each blocking read, not during
+- Existing blocking reads complete before timeout is detected
+- Effective for slow servers (long waits between messages)
+- Not effective for slow reads (partial data trickling in)
+
+**When timeout checks occur:**
+- Before each TLS record read
+- Between handshake state transitions
+- Before stream read operations
+- Currently NOT implemented for CRL fetching
+
 ### TLS Server
 
 ```lisp

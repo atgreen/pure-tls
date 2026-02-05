@@ -19,6 +19,7 @@
                "idna"
                "bordeaux-threads"
                "usocket"
+               "cl-context"
                ;; CFFI needed on Windows and macOS for native cert validation
                (:feature :windows "cffi")
                (:feature (:or :darwin :macos) "cffi"))
@@ -26,6 +27,7 @@
   :components ((:file "src/package")
                (:file "src/constants")
                (:file "src/conditions")
+               (:file "src/context-support")
                (:file "src/utils")
                (:module "src/crypto"
                 :serial t
@@ -127,6 +129,8 @@
                              (:file "record-tests")
                              (:file "handshake-tests")
                              (:file "certificate-tests")
+                             (:file "context-tests")
+                             (:file "context-integration-tests")
                              (:file "network-tests")
                              (:file "openssl-tests")
                              (:file "boringssl-tests")
