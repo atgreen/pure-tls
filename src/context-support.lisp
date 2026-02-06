@@ -4,7 +4,7 @@
 ;;;
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 ;;;
-;;; Request context support for timeouts and cancellation using cl-context.
+;;; Request context support for timeouts and cancellation using cl-cancel.
 
 (in-package :pure-tls)
 
@@ -27,18 +27,18 @@
 
 ;;; Helper functions
 
-(defun check-tls-context (&optional (ctx cl-context:*current-context*))
+(defun check-tls-context (&optional (ctx cl-cancel:*current-cancel-context*))
   "Check if context CTX is cancelled or past its deadline.
    Signals appropriate TLS error if so. Returns NIL if context is still valid or is NIL.
-   Uses *current-context* by default for automatic propagation."
+   Uses *current-cancel-context* by default for automatic propagation."
   (when ctx
     (handler-case
-        (cl-context:check-context ctx)
-      (cl-context:context-deadline-exceeded ()
+        (cl-cancel:check-cancellation ctx)
+      (cl-cancel:deadline-exceeded ()
         (error 'tls-deadline-exceeded
                :context ctx
-               :deadline (cl-context:deadline ctx)))
-      (cl-context:context-cancelled ()
+               :deadline (cl-cancel:deadline ctx)))
+      (cl-cancel:cancelled ()
         (error 'tls-context-cancelled
                :context ctx))))
   nil)
@@ -47,15 +47,15 @@
   "Return the remaining time in seconds for context CTX, or NIL if no deadline.
    Returns 0 if deadline is already exceeded."
   (when ctx
-    (let ((deadline (cl-context:deadline ctx)))
+    (let ((deadline (cl-cancel:deadline ctx)))
       (when deadline
-        (max 0 (- deadline (cl-context:get-current-time)))))))
+        (max 0 (- deadline (cl-cancel:get-current-time)))))))
 
 (defun effective-timeout (&optional (default 10))
   "Return effective timeout in seconds based on current context.
    Uses context remaining time if available, otherwise DEFAULT.
    Caps at 30 seconds to avoid excessive waits."
-  (let* ((ctx cl-context:*current-context*)
+  (let* ((ctx cl-cancel:*current-cancel-context*)
          (remaining (when ctx (context-remaining-time ctx))))
     (cond
       ((and remaining (plusp remaining)) (min remaining 30))
@@ -69,27 +69,17 @@
   (let ((timeout-sym (gensym "TIMEOUT-")))
     `(let ((,timeout-sym ,timeout-seconds))
        (if ,timeout-sym
-           (cl-context:with-timeout-context (,var ,timeout-sym)
+           (cl-cancel:with-timeout-context (,var ,timeout-sym)
              ,@body)
            (let ((,var nil))
              ,@body)))))
 
-;;; Close-on-cancel watcher for immediate cancellation
+;;; Close-on-cancel monitoring for immediate cancellation
 
-(defun spawn-close-on-cancel-watcher (context socket)
-  "Spawn a watcher thread that closes SOCKET when CONTEXT is cancelled or deadline exceeded.
-   Returns the watcher thread. The thread automatically exits when context is done.
+(defun setup-close-on-cancel (context socket)
+  "Set up automatic closure of SOCKET when CONTEXT is cancelled or deadline exceeded.
+   Returns a cleanup function that must be called when the socket operation completes.
    This enables immediate interruption of blocking I/O operations."
-  (when context
-    (bt2:make-thread
-     (lambda ()
-       ;; Poll the context state - when done, close the socket
-       (loop
-         (when (cl-context:done-p context)
-           ;; Context cancelled or deadline exceeded - close socket to interrupt I/O
-           (ignore-errors
-             (close socket))
-           (return))
-         ;; Check every 100ms to balance responsiveness vs. CPU usage
-         (sleep 0.1)))
-     :name "tls-context-watcher")))
+  (if context
+      (cl-cancel:close-stream-on-cancel socket context)
+      (lambda () nil)))

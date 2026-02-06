@@ -34,7 +34,7 @@
                   ;; Try to perform TLS handshake with 1 second timeout
                   ;; Should fail because server never responds
                   (signals error  ; Will be one of our timeout/cancellation conditions or TLS error
-                    (cl-context:with-timeout-context (_ 1)
+                    (cl-cancel:with-timeout-context (_ 1)
                       (pure-tls:make-tls-client-stream
                        (usocket:socket-stream client-socket)
                        :hostname "localhost"
@@ -47,7 +47,7 @@
   (let ((cancel-ctx nil)
         (cancel-fn nil))
     (multiple-value-setq (cancel-ctx cancel-fn)
-      (cl-context:with-cancel (cl-context:background)))
+      (cl-cancel:with-cancel (cl-cancel:background)))
 
     ;; Cancel the context immediately
     (funcall cancel-fn)
@@ -87,7 +87,7 @@
              ;; Should timeout while waiting for HTTP response
              (sleep 0.2)  ; Give server thread time to start accepting
              (handler-case
-                 (cl-context:with-timeout-context (_ 2)
+                 (cl-cancel:with-timeout-context (_ 2)
                    (pure-tls::fetch-crl url)
                    ;; If we got here without error, fail the test
                    (fail "Expected timeout error but fetch succeeded"))
@@ -101,7 +101,7 @@
   :depends-on (and)
   ;; Test that providing a context doesn't break normal operations
   (handler-case
-      (cl-context:with-timeout-context (_ 30)
+      (cl-cancel:with-timeout-context (_ 30)
         (let* ((socket (usocket:socket-connect "www.google.com" 443
                                                 :element-type '(unsigned-byte 8)
                                                 :timeout 10))

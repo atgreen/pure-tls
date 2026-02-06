@@ -17,7 +17,6 @@ chipz, ghcr.io/ocicl/chipz@sha256:fae0fae0c93199ba57c92d9102245a55c8a2c12af4442e
 chunga, ghcr.io/ocicl/chunga@sha256:a2558d54ac5d4ccdbf49d7b51fcb074762d77e263ec67245f6d2928477b6d19a, chunga-20250814-1310e96/chunga.asd
 cl-base64, ghcr.io/ocicl/cl-base64@sha256:702412dbc1ed825e275fb23e22c29527eb786bf644e47c7621bf0dbb34e17c7e, cl-base64-20240503-80496b7/cl-base64.asd
 cl-base64-tests, ghcr.io/ocicl/cl-base64@sha256:702412dbc1ed825e275fb23e22c29527eb786bf644e47c7621bf0dbb34e17c7e, cl-base64-20240503-80496b7/cl-base64-tests.asd
-cl-context, ghcr.io/ocicl/cl-context@sha256:2c66d22fd2b10bbbaec6309940c8c01a22fe6710175b7f4143c3bdb86d96e733, cl-context-20260205-b61eaa0/cl-context.asd
 cl-fad, ghcr.io/ocicl/cl-fad@sha256:c0aaffc859e419e0a94cedb08f48c2484da404363fb0fe4ffd6e09a80aadafe1, cl-fad-0.7.6/cl-fad.asd
 cl-json, ghcr.io/ocicl/cl-json@sha256:54c4d00901c2c5b0ea9da11eed8f0104fc5819e1ed9a29d1f3364503a720a868, cl-json-20240907-994dd38/cl-json.asd
 cl-ppcre, ghcr.io/ocicl/cl-ppcre@sha256:bf073924cf4fd5957a4fd961a95d446ed0e53fa32a5002cbd2d52182874f45e5, cl-ppcre-20250606-a2ea581/cl-ppcre.asd

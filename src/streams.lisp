@@ -504,7 +504,7 @@
    EXTERNAL-FORMAT - If non-NIL, wrap in a flexi-stream.
    BUFFER-SIZE - Size of I/O buffers.
    MAX-SEND-FRAGMENT - Maximum plaintext size for outgoing records.
-   REQUEST-CONTEXT - Optional cl-context for timeout/cancellation support.
+   REQUEST-CONTEXT - Optional cl-cancel context for timeout/cancellation support.
 
    Returns the TLS stream, or a flexi-stream if EXTERNAL-FORMAT specified."
   (let* ((stream (make-instance 'tls-client-stream
@@ -515,9 +515,8 @@
                                           :max-send-fragment (or max-send-fragment
                                                                  +max-record-size+)
                                           :request-context request-context))
-         ;; Spawn watcher thread for immediate cancellation
-         (watcher (when request-context
-                    (spawn-close-on-cancel-watcher request-context socket)))
+         ;; Set up automatic socket closure on context cancellation
+         (cancel-monitor (setup-close-on-cancel request-context socket))
          (trust-store (tls-context-trust-store context))
          ;; SNI uses sni-hostname if provided, otherwise hostname
          (sni-name (or sni-hostname hostname))
@@ -625,7 +624,7 @@
    EXTERNAL-FORMAT - If non-NIL, wrap in a flexi-stream.
    BUFFER-SIZE - Size of I/O buffers.
    MAX-SEND-FRAGMENT - Maximum plaintext size for outgoing records.
-   REQUEST-CONTEXT - Optional cl-context for timeout/cancellation support.
+   REQUEST-CONTEXT - Optional cl-cancel context for timeout/cancellation support.
 
    Returns the TLS stream, or a flexi-stream if EXTERNAL-FORMAT specified."
   (let* ((stream (make-instance 'tls-server-stream
@@ -636,9 +635,8 @@
                                           :max-send-fragment (or max-send-fragment
                                                                  +max-record-size+)
                                           :request-context request-context))
-         ;; Spawn watcher thread for immediate cancellation
-         (watcher (when request-context
-                    (spawn-close-on-cancel-watcher request-context socket)))
+         ;; Set up automatic socket closure on context cancellation
+         (cancel-monitor (setup-close-on-cancel request-context socket))
          ;; Get certificate chain (from parameter, context, or file)
          (cert-chain (cond
                        ((listp certificate) certificate)

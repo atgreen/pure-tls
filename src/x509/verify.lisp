@@ -220,7 +220,7 @@
      :replace (default) - Use ONLY trusted-roots, ignore system store
      :extend - Use trusted-roots IN ADDITION TO system store
    Returns T if verification succeeds, signals an error otherwise.
-   CRL fetch timeout is computed from cl-context:*current-context* if set."
+   CRL fetch timeout is computed from cl-cancel:*current-context* if set."
   (declare (ignorable hostname check-revocation trust-anchor-mode))  ; Only used conditionally
   (when (null chain)
     (error 'tls-certificate-error :message "Empty certificate chain"))

@@ -140,7 +140,7 @@
                                       request-context)
   "Create a new record layer for the given stream.
    MAX-SEND-FRAGMENT sets the maximum plaintext size for outgoing records.
-   REQUEST-CONTEXT is an optional cl-context context for timeout/cancellation support."
+   REQUEST-CONTEXT is an optional cl-cancel context for timeout/cancellation support."
   (%make-record-layer :stream stream
                       :max-send-fragment max-send-fragment
                       :request-context request-context))

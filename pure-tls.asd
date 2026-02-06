@@ -19,7 +19,7 @@
                "idna"
                "bordeaux-threads"
                "usocket"
-               "cl-context"
+               "cl-cancel"
                ;; CFFI needed on Windows and macOS for native cert validation
                (:feature :windows "cffi")
                (:feature (:or :darwin :macos) "cffi"))

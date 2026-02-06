@@ -17,38 +17,38 @@
     (pure-tls::check-tls-context nil)))
 
 (test timeout-basic
-  "Test basic timeout functionality with cl-context"
-  (signals cl-context:context-deadline-exceeded
-    (cl-context:with-timeout-context (ctx 0.1)
+  "Test basic timeout functionality with cl-cancel"
+  (signals cl-cancel:deadline-exceeded
+    (cl-cancel:with-timeout-context (ctx 0.1)
       (sleep 0.2)
-      (cl-context:check-context ctx))))
+      (cl-cancel:check-cancellation ctx))))
 
 (test cancellation-basic
   "Test basic cancellation functionality"
   (multiple-value-bind (ctx cancel-fn)
-      (cl-context:with-cancel (cl-context:background))
+      (cl-cancel:with-cancel (cl-cancel:background))
     (funcall cancel-fn)
-    (signals cl-context:context-cancelled
-      (cl-context:check-context ctx))))
+    (signals cl-cancel:cancelled
+      (cl-cancel:check-cancellation ctx))))
 
 (test check-context-tls-error
   "Test that our check-context raises TLS-specific errors"
   (signals pure-tls:tls-deadline-exceeded
-    (cl-context:with-timeout-context (ctx 0.1)
+    (cl-cancel:with-timeout-context (ctx 0.1)
       (sleep 0.2)
       (pure-tls::check-tls-context ctx))))
 
 (test check-context-cancellation
   "Test that cancellation raises tls-context-cancelled"
   (multiple-value-bind (ctx cancel-fn)
-      (cl-context:with-cancel (cl-context:background))
+      (cl-cancel:with-cancel (cl-cancel:background))
     (funcall cancel-fn)
     (signals pure-tls:tls-context-cancelled
       (pure-tls::check-tls-context ctx))))
 
 (test context-remaining-time
   "Test context-remaining-time helper"
-  (cl-context:with-timeout-context (ctx 10)
+  (cl-cancel:with-timeout-context (ctx 10)
     (let ((remaining (pure-tls::context-remaining-time ctx)))
       (is (and remaining (>= remaining 9) (<= remaining 10))))))
 
