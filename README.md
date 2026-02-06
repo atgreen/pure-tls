@@ -35,7 +35,7 @@ Use with drakma via cl+ssl compatibility layer (drop-in OpenSSL replacement):
 - **TLS 1.3 only** - Modern, secure protocol with simplified handshake
 - **Post-quantum ready** - X25519MLKEM768 hybrid key exchange (FIPS 203)
 - **Encrypted Client Hello (ECH)** - Encrypts SNI to protect privacy (RFC 9639)
-- **Timeouts & cancellation** - Integrated with [`cl-context`](https://github.com/atgreen/cl-context) for cooperative cancellation
+- **Timeouts & cancellation** - Integrated with [`cl-cancel`](https://github.com/atgreen/cl-cancel) for cooperative cancellation
 - **Automatic certificates** - Built-in ACME client for Let's Encrypt
 - **Gray streams** - Seamless integration with existing I/O code
 - **cl+ssl compatible** - Drop-in replacement API available
@@ -138,13 +138,13 @@ Or add to your ASDF system:
 
 ### Timeouts and Cancellation
 
-Control operation timeouts and cancel in-flight operations using [`cl-context`](https://github.com/atgreen/cl-context). Contexts propagate automatically via `*current-context*` — no explicit parameter passing required.
+Control operation timeouts and cancel in-flight operations using [`cl-cancel`](https://github.com/atgreen/cl-cancel). Cancellation contexts propagate automatically via `*current-cancel-context*` — no explicit parameter passing required.
 
 **Basic timeout:**
 
 ```lisp
 ;; Timeout entire TLS operation (handshake + I/O) after 30 seconds
-(cl-context:with-timeout-context (_ 30)
+(cl-cancel:with-timeout-context (_ 30)
   (let ((socket (usocket:socket-connect "slow-server.com" 443
                                          :element-type '(unsigned-byte 8))))
     (pure-tls:with-tls-client-stream (tls (usocket:socket-stream socket)
@@ -159,10 +159,10 @@ Control operation timeouts and cancel in-flight operations using [`cl-context`](
 ```lisp
 ;; Cooperative cancellation - checked at I/O boundaries
 (multiple-value-bind (cancel-ctx cancel-fn)
-    (cl-context:with-cancel (cl-context:background))
+    (cl-cancel:with-cancel (cl-cancel:background))
   (bt2:make-thread
     (lambda ()
-      (let ((cl-context:*current-context* cancel-ctx))
+      (let ((cl-cancel:*current-cancel-context* cancel-ctx))
         (pure-tls:make-tls-client-stream socket :hostname "example.com"))))
   ;; Later, when user clicks "Cancel":
   (funcall cancel-fn))  ; Interrupts at next blocking operation
@@ -173,7 +173,7 @@ Control operation timeouts and cancel in-flight operations using [`cl-context`](
 
 ```lisp
 ;; Parent deadline automatically propagates to all operations
-(cl-context:with-timeout-context (_ 60)
+(cl-cancel:with-timeout-context (_ 60)
   (pure-tls:with-tls-client-stream (tls socket :hostname "example.com")
     (write-http-request tls)
     (read-http-response tls)))  ; All I/O shares same 60s budget
@@ -183,7 +183,7 @@ Control operation timeouts and cancel in-flight operations using [`cl-context`](
 
 ```lisp
 ;; Works seamlessly with cl+ssl API
-(cl-context:with-timeout-context (_ 30)
+(cl-cancel:with-timeout-context (_ 30)
   (cl+ssl:with-global-context ((cl+ssl:make-context))
     (cl+ssl:make-ssl-client-stream socket :hostname "example.com")))
 ```
