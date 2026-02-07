@@ -20,10 +20,10 @@
         (let ((handshake-ok (run! 'handshake-tests)))
           (format t "~%--- Certificate Tests ---~%")
           (let ((cert-ok (run! 'certificate-tests)))
-            (format t "~%--- Context Tests ---~%")
-            (let ((context-ok (run! 'context-tests)))
-              (format t "~%--- Context Integration Tests ---~%")
-              (let ((context-integration-ok (run! 'context-integration-tests)))
+            (format t "~%--- Cancellation Tests ---~%")
+            (let ((cancel-ok (run! 'cancel-tests)))
+              (format t "~%--- Cancellation Integration Tests ---~%")
+              (let ((cancel-integration-ok (run! 'cancel-integration-tests)))
                 (format t "~%--- OpenSSL Tests ---~%")
               (let ((openssl-ok (run! 'openssl-tests)))
                 (format t "~%--- BoringSSL Pattern Tests ---~%")
@@ -32,7 +32,7 @@
                   (let ((x509test-ok (run! 'x509test-tests)))
                     (format t "~%=== Summary ===~%")
                     (format t "Note: Run (run-network-tests) separately for network tests.~%")
-                    (and crypto-ok mldsa-ok record-ok handshake-ok cert-ok context-ok context-integration-ok openssl-ok boringssl-ok x509test-ok))))))))))))
+                    (and crypto-ok mldsa-ok record-ok handshake-ok cert-ok cancel-ok cancel-integration-ok openssl-ok boringssl-ok x509test-ok))))))))))))
 
 (defun run-openssl-tests ()
   "Run OpenSSL test suite adaptation tests.

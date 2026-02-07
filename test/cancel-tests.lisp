@@ -1,4 +1,4 @@
-;;; context-tests.lisp --- Tests for request context (timeout/cancellation)
+;;; cancel-tests.lisp --- Tests for cancellation (timeout/cancellation via cl-cancel)
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
@@ -6,13 +6,13 @@
 
 (in-package :pure-tls/test)
 
-(def-suite context-tests
-    :description "Request context timeout and cancellation tests")
+(def-suite cancel-tests
+    :description "cl-cancel timeout and cancellation tests")
 
-(in-suite context-tests)
+(in-suite cancel-tests)
 
-(test nil-context-handling
-  "Test that NIL context works (backwards compatibility)"
+(test nil-cancel-context-handling
+  "Test that NIL cancel context works (backwards compatibility)"
   (finishes
     (pure-tls::check-tls-context nil)))
 
@@ -31,14 +31,14 @@
     (signals cl-cancel:cancelled
       (cl-cancel:check-cancellation ctx))))
 
-(test check-context-tls-error
-  "Test that our check-context raises TLS-specific errors"
+(test check-cancel-context-tls-error
+  "Test that our check-tls-context raises TLS-specific errors"
   (signals pure-tls:tls-deadline-exceeded
     (cl-cancel:with-timeout-context (ctx 0.1)
       (sleep 0.2)
       (pure-tls::check-tls-context ctx))))
 
-(test check-context-cancellation
+(test check-cancel-context-cancellation
   "Test that cancellation raises tls-context-cancelled"
   (multiple-value-bind (ctx cancel-fn)
       (cl-cancel:with-cancel (cl-cancel:background))
@@ -46,8 +46,8 @@
     (signals pure-tls:tls-context-cancelled
       (pure-tls::check-tls-context ctx))))
 
-(test context-remaining-time
-  "Test context-remaining-time helper"
+(test cancel-context-remaining-time
+  "Test context-remaining-time helper for cl-cancel contexts"
   (cl-cancel:with-timeout-context (ctx 10)
     (let ((remaining (pure-tls::context-remaining-time ctx)))
       (is (and remaining (>= remaining 9) (<= remaining 10))))))
