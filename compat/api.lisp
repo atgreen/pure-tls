@@ -197,7 +197,7 @@ wrap it in a stream. Otherwise return it as-is."
      :close-callback wrapped-callback
      :external-format external-format
      :buffer-size buffer-size
-     :request-context cl-cancel:*current-context*)))
+     :request-context cl-cancel:*current-cancel-context*)))
 
 (defun make-ssl-server-stream (socket &key
                                         (unwrap-stream-p *default-unwrap-stream-p*)
@@ -240,7 +240,7 @@ wrap it in a stream. Otherwise return it as-is."
      :close-callback wrapped-callback
      :external-format external-format
      :buffer-size buffer-size
-     :request-context cl-cancel:*current-context*)))
+     :request-context cl-cancel:*current-cancel-context*)))
 
 ;;;; Stream Accessors
 

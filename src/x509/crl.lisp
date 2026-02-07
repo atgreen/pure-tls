@@ -333,7 +333,7 @@
 (defvar *crl-fetch-function* nil
   "Custom function for fetching CRL bytes from a URI.
    Should be (lambda (uri) ...) returning octet vector or NIL.
-   Timeout computed from cl-cancel:*current-context*.
+   Timeout computed from cl-cancel:*current-cancel-context*.
    If NIL, uses built-in HTTP client.")
 
 (defvar *crl-max-redirects* 5
@@ -600,7 +600,7 @@
    If ISSUER-CERT is not provided, CRL signatures cannot be verified,
    and the function will return :unknown (unless VERIFY-SIGNATURE is NIL).
 
-   Timeout is computed from the current context (cl-cancel:*current-context*)."
+   Timeout is computed from the current context (cl-cancel:*current-cancel-context*)."
   (let ((cdp-uris (certificate-crl-distribution-points certificate)))
     (unless cdp-uris
       ;; No CRL Distribution Points - can't check
