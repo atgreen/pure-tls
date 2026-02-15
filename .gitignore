@@ -11,6 +11,7 @@
 
 # ocicl dependencies (fetched at build time)
 ocicl/
+ocicl.csv
 systems.csv
 
 # Editor files
