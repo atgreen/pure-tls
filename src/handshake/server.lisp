@@ -779,8 +779,7 @@
           (verify-certificate-chain
            (server-handshake-peer-certificate-chain hs)
            (trust-store-certificates trust-store)
-           (get-universal-time) nil
-           :request-context (record-layer-request-context (server-handshake-record-layer hs)))
+           (get-universal-time) nil)
         (tls-verification-error (e)
           ;; Map verification reason to appropriate alert
           (let ((alert-code (case (tls-verification-error-reason e)
