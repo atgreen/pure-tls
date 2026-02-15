@@ -58,13 +58,13 @@ jobs:
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           ocicl setup > ~/.sbclrc
-          ocicl install
+          ocicl install ironclad trivial-gray-streams flexi-streams alexandria cl-base64 trivial-features idna bordeaux-threads usocket cl-cancel cffi fiveam iparse cl-ppcre drakma
 
       - name: Setup ocicl and fetch dependencies (macOS/Windows)
         if: runner.os != 'Linux'
         run: |
           ocicl setup > ~/.sbclrc
-          ocicl install
+          ocicl install ironclad trivial-gray-streams flexi-streams alexandria cl-base64 trivial-features idna bordeaux-threads usocket cl-cancel cffi fiveam iparse cl-ppcre drakma
 
       - name: Setup ASDF
         run: |
@@ -157,7 +157,7 @@ jobs:
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           ocicl setup > ~/.sbclrc
-          ocicl install
+          ocicl install ironclad trivial-gray-streams flexi-streams alexandria cl-base64 trivial-features idna bordeaux-threads usocket cl-cancel cffi fiveam iparse cl-ppcre drakma
 
       - name: Setup ASDF
         run: |
