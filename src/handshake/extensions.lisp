@@ -455,8 +455,8 @@
   "Serialize pre_shared_key extension."
   (let ((buf (make-tls-write-buffer)))
     (cond
-      ;; ServerHello: just the selected identity
-      ((pre-shared-key-ext-selected-identity ext)
+      ;; ServerHello: just the selected identity (0 is valid, so test for non-NIL)
+      ((not (null (pre-shared-key-ext-selected-identity ext)))
        (write-buffer-append-uint16 buf (pre-shared-key-ext-selected-identity ext)))
       ;; ClientHello: identities and binders
       (t
