@@ -736,10 +736,8 @@
         ;; Check for PSK acceptance
         (let ((psk-ext (find-extension extensions +extension-pre-shared-key+)))
           (when (and psk-ext (client-handshake-offered-psk hs))
-            ;; Server accepted our PSK - parse the extension
-            (let* ((psk-data (parse-pre-shared-key-extension
-                              (tls-extension-data psk-ext)
-                              :server-hello-p t))
+            ;; Server accepted our PSK — extension data already parsed
+            (let* ((psk-data (tls-extension-data psk-ext))
                    (selected-id (pre-shared-key-ext-selected-identity psk-data)))
               ;; We only offered one PSK, so selected must be 0
               (unless (zerop selected-id)
