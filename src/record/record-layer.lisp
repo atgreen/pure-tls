@@ -54,9 +54,10 @@
 (defun read-tls-record (stream &optional request-context)
   "Read a TLS record from STREAM.
    Returns a TLS-RECORD structure or signals an error.
-   Uses a stack-allocated 5-byte header and pool-allocated fragment buffer.
-   If a buffer context is active, the fragment is registered for automatic
-   release on scope exit."
+   Uses a stack-allocated 5-byte header and a pool-allocated read buffer
+   to avoid per-record heap allocation.  The read buffer is recycled via
+   the enclosing WITH-BUFFER-CONTEXT; the returned fragment is an
+   exact-sized copy safe for use beyond the context scope."
   (let ((header (make-array 5 :element-type '(unsigned-byte 8) :initial-element 0)))
     (declare (type (simple-array (unsigned-byte 8) (5)) header)
              (dynamic-extent header))
@@ -88,19 +89,25 @@
       ;; Validate length
       (when (> length +max-record-size-with-padding+)
         (error 'tls-record-overflow :size length))
-      ;; Allocate fragment from pool if context active, else fresh
-      (let ((fragment (if *buffer-context*
-                          (buffer-pool-allocate *buffer-pool* length)
-                          (make-octet-vector length))))
-        (let ((bytes-read (read-exact-bytes stream fragment length request-context)))
+      ;; Read into a pool-allocated buffer (tier-sized, recycled by context
+      ;; exit), then copy exact LENGTH bytes into the returned fragment.
+      ;; The pool buffer avoids per-record GC pressure on the read path.
+      (let ((read-buffer (if *buffer-context*
+                             (buffer-pool-allocate *buffer-pool* length)
+                             (make-octet-vector length))))
+        (let ((bytes-read (read-exact-bytes stream read-buffer length request-context)))
           (declare (type fixnum bytes-read))
           (when (< bytes-read length)
             (error 'tls-decode-error
                    :message (format nil "Incomplete record fragment: expected ~D bytes, got ~D"
                                     length bytes-read))))
-        (make-tls-record :content-type content-type
-                         :version version
-                         :fragment fragment)))))
+        ;; Copy exact-size fragment from pool buffer.  The pool buffer
+        ;; stays on the context list and is recycled on scope exit.
+        (let ((fragment (make-octet-vector length)))
+          (replace fragment read-buffer :end2 length)
+          (make-tls-record :content-type content-type
+                           :version version
+                           :fragment fragment))))))
 
 (defun write-tls-record (stream record)
   "Write a TLS record to STREAM.  Uses a stack-allocated 5-byte header
@@ -166,9 +173,10 @@
 (defun record-layer-read (layer)
   "Read and potentially decrypt a record from the record layer.
    Returns (VALUES content-type plaintext).
-   Uses WITH-BUFFER-CONTEXT to automatically release pool-allocated
-   buffers (encrypted fragments) on scope exit.  Plaintext fragments
-   are copied out before context exit so callers receive independent buffers."
+   Uses WITH-BUFFER-CONTEXT so pool-allocated read buffers inside
+   read-tls-record are automatically recycled on scope exit.
+   The returned fragment is always a fresh exact-sized buffer safe
+   for use beyond the context scope."
   (check-tls-context)
   (with-buffer-context (*buffer-pool*)
     (let* ((record (read-tls-record (record-layer-stream layer)
@@ -185,11 +193,8 @@
           (record-layer-write-alert layer +alert-level-fatal+ +alert-unexpected-message+)
           (error 'tls-handshake-error
                  :message ":TOO_MANY_EMPTY_FRAGMENTS: Too many change_cipher_spec messages"))
-        ;; Copy fragment out before context exit releases the pooled buffer
-        (let ((copy (make-octet-vector (length fragment))))
-          (replace copy fragment)
-          (return-from record-layer-read
-            (values content-type copy))))
+        (return-from record-layer-read
+          (values content-type fragment)))
       ;; If encryption is established, all records MUST be encrypted (content-type 23)
       ;; RFC 8446 Section 5.1: After the handshake keys are installed, all records
       ;; except CCS must use the encrypted record format (application_data wrapper)
@@ -215,16 +220,14 @@
                              (record-layer-write-alert layer
                                                        +alert-level-fatal+
                                                        +alert-record-overflow+))))
-            ;; tls13-decrypt-record allocates fresh plaintext — not on context list.
-            ;; The encrypted fragment stays on the context list and is auto-released.
+            ;; tls13-decrypt-record allocates fresh plaintext.
+            ;; Pool read buffers are recycled by context exit.
             (multiple-value-bind (plaintext inner-content-type)
                 (tls13-decrypt-record cipher fragment header)
               (return-from record-layer-read
                 (values inner-content-type plaintext))))))
-      ;; No encryption — copy fragment out before context exit releases it
-      (let ((copy (make-octet-vector (length fragment))))
-        (replace copy fragment)
-        (values content-type copy)))))
+      ;; No encryption — fragment is already an exact-sized fresh buffer
+      (values content-type fragment))))
 
 (defun record-layer-write (layer content-type data)
   "Write and potentially encrypt a record to the record layer."

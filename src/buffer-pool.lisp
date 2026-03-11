@@ -96,7 +96,9 @@
 
 (defun buffer-pool-allocate (pool size)
   "Acquire a buffer of at least SIZE bytes from POOL and register it
-with the current allocation context if one is active."
+with the current allocation context if one is active.
+Note: The returned buffer may be larger than SIZE (tier-sized).
+Callers must track the actual data length separately if needed."
   (let ((buf (pool-acquire pool size)))
     (when *buffer-context*
       (push buf (buffer-context-allocated *buffer-context*)))
