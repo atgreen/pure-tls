@@ -278,12 +278,28 @@
 ;;;; XOR Operations
 
 (defun xor-octets (a b)
-  "XOR two octet vectors of the same length."
-  (assert (= (length a) (length b)))
-  (let ((result (make-octet-vector (length a))))
-    (dotimes (i (length a) result)
+  "XOR two octet vectors of the same length.  Returns a fresh result vector."
+  (declare (type (simple-array (unsigned-byte 8) (*)) a b)
+           (optimize (speed 3) (safety 0)))
+  (let* ((len (length a))
+         (result (make-array len :element-type '(unsigned-byte 8))))
+    (declare (type fixnum len))
+    (dotimes (i len result)
       (setf (aref result i)
-            (logxor (aref a i) (aref b i))))))
+            (the (unsigned-byte 8)
+                 (logxor (the (unsigned-byte 8) (aref a i))
+                         (the (unsigned-byte 8) (aref b i))))))))
+
+(defun xor-octets! (dst a b)
+  "XOR A and B into DST in-place.  DST may be EQ to A or B.
+Returns DST.  Avoids allocation when a destination buffer is available."
+  (declare (type (simple-array (unsigned-byte 8) (*)) dst a b)
+           (optimize (speed 3) (safety 0)))
+  (dotimes (i (length a) dst)
+    (setf (aref dst i)
+          (the (unsigned-byte 8)
+               (logxor (the (unsigned-byte 8) (aref a i))
+                       (the (unsigned-byte 8) (aref b i)))))))
 
 ;;;; Integer/Octet Conversions
 

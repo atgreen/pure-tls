@@ -57,7 +57,9 @@
    Properly handles short reads from the underlying stream.
    Validates legacy_record_version per RFC 8446 Section 5.1.
    If REQUEST-CONTEXT is provided, checks for deadline/cancellation during reads."
-  (let ((header (make-octet-vector 5)))
+  (let ((header (make-array 5 :element-type '(unsigned-byte 8) :initial-element 0)))
+    (declare (type (simple-array (unsigned-byte 8) (5)) header)
+             (dynamic-extent header))
     ;; Read 5-byte header (loop until complete or EOF)
     (let ((bytes-read (read-exact-bytes stream header 5 request-context)))
       (when (zerop bytes-read)
@@ -97,10 +99,14 @@
                          :fragment fragment)))))
 
 (defun write-tls-record (stream record)
-  "Write a TLS record to STREAM."
+  "Write a TLS record to STREAM.  Uses stack-allocated 5-byte header
+   instead of heap-allocating via make-octet-vector."
   (let* ((fragment (tls-record-fragment record))
          (length (length fragment))
-         (header (make-octet-vector 5)))
+         (header (make-array 5 :element-type '(unsigned-byte 8) :initial-element 0)))
+    (declare (type (simple-array (unsigned-byte 8) (5)) header)
+             (type fixnum length)
+             (dynamic-extent header))
     ;; Validate length
     (when (> length +max-record-size-with-padding+)
       (error 'tls-record-overflow :size length))
@@ -183,12 +189,15 @@
         (error 'tls-handshake-error
                :message (format nil ":INVALID_OUTER_RECORD_TYPE: Expected encrypted record (23), got ~D"
                                content-type)))
-      ;; Decrypt the record
-      (let ((header (octet-vector content-type
-                                  (ldb (byte 8 8) (tls-record-version record))
-                                  (ldb (byte 8 0) (tls-record-version record))
-                                  (ldb (byte 8 8) (length fragment))
-                                  (ldb (byte 8 0) (length fragment)))))
+      ;; Decrypt the record — stack-allocate the 5-byte AAD header
+      (let ((header (make-array 5 :element-type '(unsigned-byte 8) :initial-element 0)))
+        (declare (type (simple-array (unsigned-byte 8) (5)) header)
+                 (dynamic-extent header))
+        (setf (aref header 0) content-type
+              (aref header 1) (ldb (byte 8 8) (tls-record-version record))
+              (aref header 2) (ldb (byte 8 0) (tls-record-version record))
+              (aref header 3) (ldb (byte 8 8) (length fragment))
+              (aref header 4) (ldb (byte 8 0) (length fragment)))
         ;; tls13-decrypt-record returns (plaintext, content-type)
         ;; We need to return (content-type, plaintext)
         ;; Catch record overflow to send alert before re-raising
