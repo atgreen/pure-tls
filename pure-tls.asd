@@ -29,6 +29,7 @@
                (:file "src/conditions")
                (:file "src/context-support")
                (:file "src/utils")
+               (:file "src/buffer-pool")
                (:module "src/crypto"
                 :serial t
                 :components ((:file "hkdf")
