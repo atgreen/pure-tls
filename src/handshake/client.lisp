@@ -384,12 +384,16 @@
     (setf (client-hello-extensions hello)
           (append (client-hello-extensions hello) (list psk-ext)))
     ;; Serialize to compute partial transcript
+    ;; RFC 8446 §4.2.11.2: The binder is computed over a transcript hash of
+    ;; the full ClientHello message (including handshake header) truncated
+    ;; to exclude only the binder values.  The handshake header must retain
+    ;; the original length field covering the complete message.
     (let* ((hello-bytes (serialize-client-hello hello))
+           (full-message (wrap-handshake-message +handshake-client-hello+ hello-bytes))
            (binders-len (pre-shared-key-ext-binders-length
                          (tls-extension-data psk-ext)))
-           ;; Transcript for binder = CH without binders
-           (partial-hello (subseq hello-bytes 0 (- (length hello-bytes) binders-len)))
-           (partial-message (wrap-handshake-message +handshake-client-hello+ partial-hello))
+           ;; Truncate from full message — preserves original header length
+           (partial-message (subseq full-message 0 (- (length full-message) binders-len)))
            (transcript-hash (ironclad:digest-sequence
                              (cipher-suite-digest cipher-suite)
                              partial-message))
@@ -732,10 +736,8 @@
         ;; Check for PSK acceptance
         (let ((psk-ext (find-extension extensions +extension-pre-shared-key+)))
           (when (and psk-ext (client-handshake-offered-psk hs))
-            ;; Server accepted our PSK - parse the extension
-            (let* ((psk-data (parse-pre-shared-key-extension
-                              (tls-extension-data psk-ext)
-                              :server-hello-p t))
+            ;; Server accepted our PSK — extension data already parsed
+            (let* ((psk-data (tls-extension-data psk-ext))
                    (selected-id (pre-shared-key-ext-selected-identity psk-data)))
               ;; We only offered one PSK, so selected must be 0
               (unless (zerop selected-id)

@@ -94,6 +94,8 @@
   (declare (ignore hs))  ; HS reserved for future use (e.g., custom ticket decryption)
   (let* ((identities (pre-shared-key-ext-identities psk-ext))
          (binders (pre-shared-key-ext-binders psk-ext)))
+    (hs-log "~&[HS] try-accept-psk: ~D identities, cipher-suite=~D~%"
+            (length identities) cipher-suite)
     ;; Iterate through offered identities
     (loop for identity in identities
           for binder in binders
@@ -110,6 +112,13 @@
                    (multiple-value-bind (resumption-master-secret ticket-cipher-suite
                                          nonce creation-time)
                        (decrypt-session-ticket encrypted-data)
+                     (hs-log "~&[HS] try-accept-psk: decrypt=~A cipher-match=~A age-valid=~A~%"
+                             (and resumption-master-secret t)
+                             (and resumption-master-secret
+                                  (= ticket-cipher-suite cipher-suite))
+                             (and resumption-master-secret
+                                  (validate-ticket-age creation-time stored-lifetime
+                                                       obfuscated-age stored-age-add)))
                      (when (and resumption-master-secret
                                 ;; Must match the cipher suite we selected
                                 (= ticket-cipher-suite cipher-suite)
@@ -120,20 +129,17 @@
                        (let ((psk (derive-resumption-psk resumption-master-secret
                                                           nonce cipher-suite)))
                          ;; Compute transcript hash up to but not including binders
-                         ;; The binders list length is encoded as 2 bytes before the binders
-                         ;; We need to find where the binders start in the ClientHello
-                         (let* (;; Use helper that includes 2-byte length prefix + all binder data
-                                (binders-len (pre-shared-key-ext-binders-length psk-ext))
-                                ;; Truncated hello is everything except the binders portion
-                                (truncated-len (- (length raw-client-hello)
-                                                  binders-len))
+                         (let* ((binders-len (pre-shared-key-ext-binders-length psk-ext))
+                                (truncated-len (- (length raw-client-hello) binders-len))
                                 (truncated-hello (subseq raw-client-hello 0 truncated-len))
                                 (digest (cipher-suite-digest cipher-suite))
                                 (transcript-hash (ironclad:digest-sequence digest truncated-hello)))
                            ;; Verify the binder
-                           (when (verify-binder psk transcript-hash binder cipher-suite)
-                             (return-from try-accept-psk
-                               (values psk index)))))))))))
+                           (let ((binder-ok (verify-binder psk transcript-hash binder cipher-suite)))
+                             (hs-log "~&[HS] try-accept-psk: binder=~A~%" binder-ok)
+                             (when binder-ok
+                               (return-from try-accept-psk
+                                 (values psk index))))))))))))
     nil))
 
 ;;;; ClientHello Processing
@@ -277,15 +283,21 @@
           (psk-ext (find-extension extensions +extension-pre-shared-key+))
           (accepted-psk nil)
           (selected-psk-index nil))
+      (hs-log "~&[HS] process-client-hello: PSK check: modes-ext=~A psk-ext=~A~%"
+              (and psk-modes-ext t) (and psk-ext t))
       ;; Try to accept PSK if client offers one with psk_dhe_ke mode
       (when (and psk-modes-ext psk-ext)
         (let* ((modes-data (tls-extension-data psk-modes-ext))
                (modes (psk-key-exchange-modes-ext-modes modes-data)))
+          (hs-log "~&[HS] process-client-hello: PSK modes=~A, have psk_dhe_ke=~A~%"
+                  modes (and (member +psk-ke-mode-dhe+ modes) t))
           ;; We only support psk_dhe_ke (PSK with (EC)DHE key exchange)
           (when (member +psk-ke-mode-dhe+ modes)
             (multiple-value-setq (accepted-psk selected-psk-index)
               (try-accept-psk hs (tls-extension-data psk-ext) raw-bytes
                               (server-handshake-selected-cipher-suite hs)))
+            (hs-log "~&[HS] process-client-hello: try-accept-psk result: ~:[REJECTED~;ACCEPTED index=~D~]~%"
+                    accepted-psk selected-psk-index)
             (when accepted-psk
               (setf (server-handshake-psk-accepted hs) t)
               (setf (server-handshake-accepted-psk hs) accepted-psk)
@@ -572,10 +584,17 @@
     (hs-log "~&[HS] send-encrypted-extensions: sending~%")
     (record-layer-write-handshake (server-handshake-record-layer hs) message)
     (hs-log "~&[HS] send-encrypted-extensions: done~%")
-    ;; Decide next state based on verify mode
-    (if (plusp (server-handshake-verify-mode hs))
-        (setf (server-handshake-state hs) :send-certificate-request)
-        (setf (server-handshake-state hs) :send-certificate))))
+    ;; Decide next state:
+    ;; - PSK accepted → skip Certificate/CertificateVerify per RFC 8446 §2.3
+    ;; - mTLS (verify-mode > 0) → send CertificateRequest first
+    ;; - Otherwise → send Certificate
+    (cond ((server-handshake-psk-accepted hs)
+           (hs-log "~&[HS] send-encrypted-extensions: PSK accepted, skipping certificate~%")
+           (setf (server-handshake-state hs) :send-finished))
+          ((plusp (server-handshake-verify-mode hs))
+           (setf (server-handshake-state hs) :send-certificate-request))
+          (t
+           (setf (server-handshake-state hs) :send-certificate)))))
 
 (defun generate-certificate-request (hs)
   "Generate a CertificateRequest message."
