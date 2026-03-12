@@ -741,7 +741,9 @@ Returns (values shared-secret ciphertext)."
 
 (defun ml-kem-768-decaps (dk c)
   "Decapsulate shared secret from ciphertext C using decapsulation key DK.
-Returns 32-byte shared secret."
+Returns 32-byte shared secret.  Per FIPS 203 S7.3, uses constant-time
+selection between the real shared secret and implicit rejection value
+to prevent side-channel distinguishability."
   (let* ((k +ml-kem-768-k+)
          ;; Parse dk = dk_pke || ek || H(ek) || z
          (dk-pke-len (* 384 k))
@@ -761,22 +763,12 @@ Returns 32-byte shared secret."
          (k-prime (subseq g-output 0 32))
          (r-prime (subseq g-output 32 64))
          ;; c' = Encrypt(ek, m', r')
-         (c-prime (k-pke-encrypt ek m-prime r-prime)))
-    ;; Constant-time comparison and selection
-    (if (constant-time-equal c c-prime)
-        k-prime
-        ;; Implicit rejection: return J(z || c)
-        (shake256-xof (concatenate '(vector (unsigned-byte 8)) z c) 32))))
-
-(defun constant-time-equal (a b)
-  "Constant-time comparison of byte vectors A and B."
-  (declare (type (simple-array (unsigned-byte 8) (*)) a b)
-           (optimize speed))
-  (and (= (length a) (length b))
-       (zerop (loop with diff of-type (unsigned-byte 8) = 0
-                    for i from 0 below (length a)
-                    do (setf diff (logior diff (logxor (aref a i) (aref b i))))
-                    finally (return diff)))))
+         (c-prime (k-pke-encrypt ek m-prime r-prime))
+         ;; Always compute the rejection value (implicit rejection per FIPS 203)
+         (k-reject (shake256-xof (concatenate '(vector (unsigned-byte 8)) z c) 32))
+         ;; Constant-time: derive mask from comparison, select without branching
+         (mask (ct-equal-mask c c-prime)))
+    (ct-select mask k-prime k-reject)))
 
 ;;;; =========================================================================
 ;;;; TLS Hybrid Key Exchange: X25519MLKEM768 (FIPS 203)

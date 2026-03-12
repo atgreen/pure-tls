@@ -215,6 +215,57 @@
     (is (not (pure-tls:constant-time-equal a b))
         "Vectors of different length should not compare equal")))
 
+;;;; Constant-Time Primitive Tests
+
+(test ct-equal-mask-equal
+  "ct-equal-mask returns #xFF for equal vectors"
+  (let ((a (hex-to-bytes "deadbeef"))
+        (b (hex-to-bytes "deadbeef")))
+    (is (= #xff (pure-tls::ct-equal-mask a b)))))
+
+(test ct-equal-mask-different
+  "ct-equal-mask returns #x00 for different vectors"
+  (let ((a (hex-to-bytes "deadbeef"))
+        (b (hex-to-bytes "deadbee0")))
+    (is (= #x00 (pure-tls::ct-equal-mask a b)))))
+
+(test ct-equal-mask-different-length
+  "ct-equal-mask returns #x00 for length-mismatched vectors"
+  (let ((a (hex-to-bytes "deadbeef"))
+        (b (hex-to-bytes "deadbeefcafe")))
+    (is (= #x00 (pure-tls::ct-equal-mask a b)))))
+
+(test ct-select-mask-ff
+  "ct-select with #xFF mask returns first vector"
+  (let ((a (hex-to-bytes "0102030405060708"))
+        (b (hex-to-bytes "f1f2f3f4f5f6f7f8")))
+    (is (bytes-equal (pure-tls::ct-select #xff a b) a))))
+
+(test ct-select-mask-00
+  "ct-select with #x00 mask returns second vector"
+  (let ((a (hex-to-bytes "0102030405060708"))
+        (b (hex-to-bytes "f1f2f3f4f5f6f7f8")))
+    (is (bytes-equal (pure-tls::ct-select #x00 a b) b))))
+
+(test ml-kem-768-decaps-branchless
+  "ML-KEM-768 decapsulation uses branchless selection (implicit rejection returns value, not error)"
+  (multiple-value-bind (ek dk)
+      (pure-tls::ml-kem-768-keygen)
+    (multiple-value-bind (ss ct)
+        (pure-tls::ml-kem-768-encaps ek)
+      ;; Valid decapsulation
+      (let ((ss-dec (pure-tls::ml-kem-768-decaps dk ct)))
+        (is (bytes-equal ss ss-dec)
+            "Valid ciphertext should produce matching shared secret"))
+      ;; Corrupted ciphertext should return implicit rejection, not error
+      (let ((bad-ct (copy-seq ct)))
+        (setf (aref bad-ct 0) (logxor (aref bad-ct 0) #xff))
+        (let ((bad-ss (pure-tls::ml-kem-768-decaps dk bad-ct)))
+          (is (= (length bad-ss) 32)
+              "Implicit rejection should return 32 bytes")
+          (is (not (bytes-equal ss bad-ss))
+              "Corrupted ciphertext should not produce the real shared secret"))))))
+
 ;;;; Random Bytes Tests
 
 (test random-bytes-length
