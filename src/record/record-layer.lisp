@@ -54,12 +54,19 @@
 (defun read-tls-record (stream &optional request-context)
   "Read a TLS record from STREAM.
    Returns a TLS-RECORD structure or signals an error.
+   Uses a stack-allocated 5-byte header and a pool-allocated read buffer
+   to avoid per-record heap allocation.  The read buffer is recycled via
+   the enclosing WITH-BUFFER-CONTEXT; the returned fragment is an
+   exact-sized copy safe for use beyond the context scope.
    Properly handles short reads from the underlying stream.
    Validates legacy_record_version per RFC 8446 Section 5.1.
    If REQUEST-CONTEXT is provided, checks for deadline/cancellation during reads."
-  (let ((header (make-octet-vector 5)))
+  (let ((header (make-array 5 :element-type '(unsigned-byte 8) :initial-element 0)))
+    (declare (type (simple-array (unsigned-byte 8) (5)) header)
+             (dynamic-extent header))
     ;; Read 5-byte header (loop until complete or EOF)
     (let ((bytes-read (read-exact-bytes stream header 5 request-context)))
+      (declare (type fixnum bytes-read))
       (when (zerop bytes-read)
         (error 'tls-connection-closed :clean nil))
       (when (< bytes-read 5)
@@ -70,6 +77,7 @@
     (let* ((content-type (aref header 0))
            (version (decode-uint16 header 1))
            (length (decode-uint16 header 3)))
+      (declare (type fixnum content-type version length))
       ;; Validate content type - must be a valid TLS content type (20-24)
       ;; This quickly rejects SSLv2 records which have high-bit-set bytes
       ;; in position 0, preventing us from waiting forever for invalid lengths.
@@ -80,27 +88,39 @@
                                 content-type)))
       ;; RFC 8446 Section 5.1: legacy_record_version SHOULD be 0x0303 for
       ;; all TLS 1.3 records, but implementations MUST NOT check this field.
-      ;; The version is legacy and version negotiation happens at handshake level.
       ;; Accept any record version for maximum compatibility.
       ;; Validate length
       (when (> length +max-record-size-with-padding+)
         (error 'tls-record-overflow :size length))
-      ;; Read fragment (loop until complete or EOF)
-      (let ((fragment (make-octet-vector length)))
-        (let ((bytes-read (read-exact-bytes stream fragment length request-context)))
+      ;; Read into a pool-allocated buffer (tier-sized, recycled by context
+      ;; exit), then copy exact LENGTH bytes into the returned fragment.
+      ;; The pool buffer avoids per-record GC pressure on the read path.
+      (let ((read-buffer (if *buffer-context*
+                             (buffer-pool-allocate *buffer-pool* length)
+                             (make-octet-vector length))))
+        (let ((bytes-read (read-exact-bytes stream read-buffer length request-context)))
+          (declare (type fixnum bytes-read))
           (when (< bytes-read length)
             (error 'tls-decode-error
                    :message (format nil "Incomplete record fragment: expected ~D bytes, got ~D"
                                     length bytes-read))))
-        (make-tls-record :content-type content-type
-                         :version version
-                         :fragment fragment)))))
+        ;; Copy exact-size fragment from pool buffer.  The pool buffer
+        ;; stays on the context list and is recycled on scope exit.
+        (let ((fragment (make-octet-vector length)))
+          (replace fragment read-buffer :end2 length)
+          (make-tls-record :content-type content-type
+                           :version version
+                           :fragment fragment))))))
 
 (defun write-tls-record (stream record)
-  "Write a TLS record to STREAM."
+  "Write a TLS record to STREAM.  Uses stack-allocated 5-byte header
+   instead of heap-allocating via make-octet-vector."
   (let* ((fragment (tls-record-fragment record))
          (length (length fragment))
-         (header (make-octet-vector 5)))
+         (header (make-array 5 :element-type '(unsigned-byte 8) :initial-element 0)))
+    (declare (type (simple-array (unsigned-byte 8) (5)) header)
+             (type fixnum length)
+             (dynamic-extent header))
     ;; Validate length
     (when (> length +max-record-size-with-padding+)
       (error 'tls-record-overflow :size length))
@@ -156,7 +176,10 @@
 (defun record-layer-read (layer)
   "Read and potentially decrypt a record from the record layer.
    Returns (VALUES content-type plaintext).
-   Checks request-context for deadline/cancellation if present."
+   Uses WITH-BUFFER-CONTEXT so pool-allocated read buffers inside
+   read-tls-record are automatically recycled on scope exit.
+   The returned fragment is always a fresh exact-sized buffer safe
+   for use beyond the context scope."
   (check-tls-context)
   (let* ((record (read-tls-record (record-layer-stream layer)
                                    (record-layer-request-context layer)))
@@ -183,12 +206,15 @@
         (error 'tls-handshake-error
                :message (format nil ":INVALID_OUTER_RECORD_TYPE: Expected encrypted record (23), got ~D"
                                content-type)))
-      ;; Decrypt the record
-      (let ((header (octet-vector content-type
-                                  (ldb (byte 8 8) (tls-record-version record))
-                                  (ldb (byte 8 0) (tls-record-version record))
-                                  (ldb (byte 8 8) (length fragment))
-                                  (ldb (byte 8 0) (length fragment)))))
+      ;; Decrypt the record — stack-allocate the 5-byte AAD header
+      (let ((header (make-array 5 :element-type '(unsigned-byte 8) :initial-element 0)))
+        (declare (type (simple-array (unsigned-byte 8) (5)) header)
+                 (dynamic-extent header))
+        (setf (aref header 0) content-type
+              (aref header 1) (ldb (byte 8 8) (tls-record-version record))
+              (aref header 2) (ldb (byte 8 0) (tls-record-version record))
+              (aref header 3) (ldb (byte 8 8) (length fragment))
+              (aref header 4) (ldb (byte 8 0) (length fragment)))
         ;; tls13-decrypt-record returns (plaintext, content-type)
         ;; We need to return (content-type, plaintext)
         ;; Catch record overflow to send alert before re-raising

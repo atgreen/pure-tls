@@ -222,6 +222,41 @@
    Delegates to Ironclad's implementation for proper side-channel resistance."
   (ironclad:constant-time-equal a b))
 
+(defun ct-equal-mask (a b)
+  "Return #xFF if byte vectors A and B are equal, #x00 otherwise.
+Constant-time: always iterates over all bytes, folds length mismatch
+into the accumulator rather than short-circuiting."
+  (declare (type (simple-array (unsigned-byte 8) (*)) a b)
+           (optimize speed))
+  (let ((len-a (length a))
+        (len-b (length b)))
+    (declare (type fixnum len-a len-b))
+    (let ((diff (logand #xff (logxor len-a len-b))))
+      (declare (type (unsigned-byte 8) diff))
+      (loop for i fixnum from 0 below (min len-a len-b)
+            do (setf diff (logior diff (logxor (aref a i) (aref b i)))))
+      ;; diff=0 → #xFF, diff≠0 → #x00
+      ;; Note: intermediate (- diff) may produce a negative fixnum, but the
+      ;; final logand #xff masks to the correct byte result.
+      (logand #xff (lognot (ash (logior diff (- diff)) -7))))))
+
+(defun ct-select (mask a b)
+  "Constant-time select: return A if MASK is #xFF, B if MASK is #x00.
+MASK must be either #x00 or #xFF.  A and B must be byte vectors of
+the same length.  Selection is performed byte-by-byte without branching."
+  (declare (type (unsigned-byte 8) mask)
+           (type (simple-array (unsigned-byte 8) (*)) a b)
+           (optimize speed))
+  (assert (= (length a) (length b)))
+  (let* ((len (length a))
+         (result (make-array len :element-type '(unsigned-byte 8))))
+    (declare (type fixnum len))
+    (loop for i fixnum from 0 below len
+          do (setf (aref result i)
+                   (logxor (aref b i)
+                           (logand mask (logxor (aref a i) (aref b i))))))
+    result))
+
 ;;;; Secret Zeroization
 ;;;
 ;;; Wipe sensitive data from memory to reduce exposure window.
@@ -278,12 +313,28 @@
 ;;;; XOR Operations
 
 (defun xor-octets (a b)
-  "XOR two octet vectors of the same length."
-  (assert (= (length a) (length b)))
-  (let ((result (make-octet-vector (length a))))
-    (dotimes (i (length a) result)
+  "XOR two octet vectors of the same length.  Returns a fresh result vector."
+  (declare (type (simple-array (unsigned-byte 8) (*)) a b)
+           (optimize (speed 3) (safety 0)))
+  (let* ((len (length a))
+         (result (make-array len :element-type '(unsigned-byte 8))))
+    (declare (type fixnum len))
+    (dotimes (i len result)
       (setf (aref result i)
-            (logxor (aref a i) (aref b i))))))
+            (the (unsigned-byte 8)
+                 (logxor (the (unsigned-byte 8) (aref a i))
+                         (the (unsigned-byte 8) (aref b i))))))))
+
+(defun xor-octets! (dst a b)
+  "XOR A and B into DST in-place.  DST may be EQ to A or B.
+Returns DST.  Avoids allocation when a destination buffer is available."
+  (declare (type (simple-array (unsigned-byte 8) (*)) dst a b)
+           (optimize (speed 3) (safety 0)))
+  (dotimes (i (length a) dst)
+    (setf (aref dst i)
+          (the (unsigned-byte 8)
+               (logxor (the (unsigned-byte 8) (aref a i))
+                       (the (unsigned-byte 8) (aref b i)))))))
 
 ;;;; Integer/Octet Conversions
 
