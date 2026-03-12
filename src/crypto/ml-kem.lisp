@@ -739,9 +739,45 @@ Returns (values shared-secret ciphertext)."
          (c (k-pke-encrypt ek m r)))
     (values k c)))
 
+(defun ct-select (mask a b)
+  "Constant-time select: return A if MASK is #xFF, B if MASK is #x00.
+MASK must be either #x00 or #xFF.  A and B must be byte vectors of
+the same length.  Selection is performed byte-by-byte without branching."
+  (declare (type (unsigned-byte 8) mask)
+           (type (simple-array (unsigned-byte 8) (*)) a b)
+           (optimize speed))
+  (let* ((len (length a))
+         (result (make-array len :element-type '(unsigned-byte 8))))
+    (declare (type fixnum len))
+    (loop for i fixnum from 0 below len
+          do (setf (aref result i)
+                   (logxor (aref b i)
+                           (logand mask (logxor (aref a i) (aref b i))))))
+    result))
+
+(defun ct-equal-mask (a b)
+  "Return #xFF if byte vectors A and B are equal, #x00 otherwise.
+Constant-time: always iterates over all bytes, folds length mismatch
+into the accumulator.  The mask derivation uses branchless arithmetic:
+  (logior diff (- diff)) has sign bit set iff diff is non-zero;
+  arithmetic right-shift propagates sign; lognot inverts the sense."
+  (declare (type (simple-array (unsigned-byte 8) (*)) a b)
+           (optimize speed))
+  (let ((len-a (length a))
+        (len-b (length b)))
+    (declare (type fixnum len-a len-b))
+    (let ((diff (logand #xff (logxor len-a len-b))))
+      (declare (type (unsigned-byte 8) diff))
+      (loop for i fixnum from 0 below (min len-a len-b)
+            do (setf diff (logior diff (logxor (aref a i) (aref b i)))))
+      ;; Branchless: diff=0 → #xFF, diff≠0 → #x00
+      (logand #xff (lognot (ash (logior diff (- diff)) -7))))))
+
 (defun ml-kem-768-decaps (dk c)
   "Decapsulate shared secret from ciphertext C using decapsulation key DK.
-Returns 32-byte shared secret."
+Returns 32-byte shared secret.  Per FIPS 203 §7.3, uses constant-time
+selection between the real shared secret and implicit rejection value
+to prevent side-channel distinguishability."
   (let* ((k +ml-kem-768-k+)
          ;; Parse dk = dk_pke || ek || H(ek) || z
          (dk-pke-len (* 384 k))
@@ -761,22 +797,29 @@ Returns 32-byte shared secret."
          (k-prime (subseq g-output 0 32))
          (r-prime (subseq g-output 32 64))
          ;; c' = Encrypt(ek, m', r')
-         (c-prime (k-pke-encrypt ek m-prime r-prime)))
-    ;; Constant-time comparison and selection
-    (if (constant-time-equal c c-prime)
-        k-prime
-        ;; Implicit rejection: return J(z || c)
-        (shake256-xof (concatenate '(vector (unsigned-byte 8)) z c) 32))))
+         (c-prime (k-pke-encrypt ek m-prime r-prime))
+         ;; Always compute the rejection value (implicit rejection per FIPS 203)
+         (k-reject (shake256-xof (concatenate '(vector (unsigned-byte 8)) z c) 32))
+         ;; Constant-time: derive mask from comparison, select without branching
+         (mask (ct-equal-mask c c-prime)))
+    (ct-select mask k-prime k-reject)))
 
 (defun constant-time-equal (a b)
-  "Constant-time comparison of byte vectors A and B."
+  "Constant-time comparison of byte vectors A and B.
+Returns T if equal, NIL otherwise.  Never short-circuits on length
+mismatch: the length difference is folded into the accumulator and the
+loop always runs over MIN(length-a, length-b) bytes."
   (declare (type (simple-array (unsigned-byte 8) (*)) a b)
            (optimize speed))
-  (and (= (length a) (length b))
-       (zerop (loop with diff of-type (unsigned-byte 8) = 0
-                    for i from 0 below (length a)
-                    do (setf diff (logior diff (logxor (aref a i) (aref b i))))
-                    finally (return diff)))))
+  (let ((len-a (length a))
+        (len-b (length b)))
+    (declare (type fixnum len-a len-b))
+    ;; Fold length mismatch into diff — any non-zero value suffices
+    (let ((diff (logand #xff (logxor len-a len-b))))
+      (declare (type (unsigned-byte 8) diff))
+      (loop for i fixnum from 0 below (min len-a len-b)
+            do (setf diff (logior diff (logxor (aref a i) (aref b i)))))
+      (zerop diff))))
 
 ;;;; =========================================================================
 ;;;; TLS Hybrid Key Exchange: X25519MLKEM768 (FIPS 203)
