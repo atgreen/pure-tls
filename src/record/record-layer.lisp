@@ -181,55 +181,56 @@
    The returned fragment is always a fresh exact-sized buffer safe
    for use beyond the context scope."
   (check-tls-context)
-  (let* ((record (read-tls-record (record-layer-stream layer)
-                                   (record-layer-request-context layer)))
-         (content-type (tls-record-content-type record))
-         (fragment (tls-record-fragment record))
-         (cipher (record-layer-read-cipher layer)))
-    ;; Handle change_cipher_spec (ignored in TLS 1.3 but may be sent)
-    (when (= content-type +content-type-change-cipher-spec+)
-      ;; Count CCS messages to prevent DoS
-      (incf (record-layer-ccs-count layer))
-      (when (> (record-layer-ccs-count layer) +max-ccs-messages+)
-        (record-layer-write-alert layer +alert-level-fatal+ +alert-unexpected-message+)
-        (error 'tls-handshake-error
-               :message ":TOO_MANY_EMPTY_FRAGMENTS: Too many change_cipher_spec messages"))
-      ;; Just return and let caller handle/ignore
-      (return-from record-layer-read
-        (values content-type fragment)))
-    ;; If encryption is established, all records MUST be encrypted (content-type 23)
-    ;; RFC 8446 Section 5.1: After the handshake keys are installed, all records
-    ;; except CCS must use the encrypted record format (application_data wrapper)
-    (when cipher
-      (unless (= content-type +content-type-application-data+)
-        (record-layer-write-alert layer +alert-level-fatal+ +alert-unexpected-message+)
-        (error 'tls-handshake-error
-               :message (format nil ":INVALID_OUTER_RECORD_TYPE: Expected encrypted record (23), got ~D"
-                               content-type)))
-      ;; Decrypt the record — stack-allocate the 5-byte AAD header
-      (let ((header (make-array 5 :element-type '(unsigned-byte 8) :initial-element 0)))
-        (declare (type (simple-array (unsigned-byte 8) (5)) header)
-                 (dynamic-extent header))
-        (setf (aref header 0) content-type
-              (aref header 1) (ldb (byte 8 8) (tls-record-version record))
-              (aref header 2) (ldb (byte 8 0) (tls-record-version record))
-              (aref header 3) (ldb (byte 8 8) (length fragment))
-              (aref header 4) (ldb (byte 8 0) (length fragment)))
-        ;; tls13-decrypt-record returns (plaintext, content-type)
-        ;; We need to return (content-type, plaintext)
-        ;; Catch record overflow to send alert before re-raising
-        (handler-bind ((tls-record-overflow
-                         (lambda (c)
-                           (declare (ignore c))
-                           (record-layer-write-alert layer
-                                                     +alert-level-fatal+
-                                                     +alert-record-overflow+))))
-          (multiple-value-bind (plaintext inner-content-type)
-              (tls13-decrypt-record cipher fragment header)
-            (return-from record-layer-read
-              (values inner-content-type plaintext))))))
-    ;; No encryption - return plaintext record
-    (values content-type fragment)))
+  (with-buffer-context (*buffer-pool*)
+    (let* ((record (read-tls-record (record-layer-stream layer)
+                                     (record-layer-request-context layer)))
+           (content-type (tls-record-content-type record))
+           (fragment (tls-record-fragment record))
+           (cipher (record-layer-read-cipher layer)))
+      ;; Handle change_cipher_spec (ignored in TLS 1.3 but may be sent)
+      (when (= content-type +content-type-change-cipher-spec+)
+        ;; Count CCS messages to prevent DoS
+        (incf (record-layer-ccs-count layer))
+        (when (> (record-layer-ccs-count layer) +max-ccs-messages+)
+          (record-layer-write-alert layer +alert-level-fatal+ +alert-unexpected-message+)
+          (error 'tls-handshake-error
+                 :message ":TOO_MANY_EMPTY_FRAGMENTS: Too many change_cipher_spec messages"))
+        ;; Just return and let caller handle/ignore
+        (return-from record-layer-read
+          (values content-type fragment)))
+      ;; If encryption is established, all records MUST be encrypted (content-type 23)
+      ;; RFC 8446 Section 5.1: After the handshake keys are installed, all records
+      ;; except CCS must use the encrypted record format (application_data wrapper)
+      (when cipher
+        (unless (= content-type +content-type-application-data+)
+          (record-layer-write-alert layer +alert-level-fatal+ +alert-unexpected-message+)
+          (error 'tls-handshake-error
+                 :message (format nil ":INVALID_OUTER_RECORD_TYPE: Expected encrypted record (23), got ~D"
+                                 content-type)))
+        ;; Decrypt the record — stack-allocate the 5-byte AAD header
+        (let ((header (make-array 5 :element-type '(unsigned-byte 8) :initial-element 0)))
+          (declare (type (simple-array (unsigned-byte 8) (5)) header)
+                   (dynamic-extent header))
+          (setf (aref header 0) content-type
+                (aref header 1) (ldb (byte 8 8) (tls-record-version record))
+                (aref header 2) (ldb (byte 8 0) (tls-record-version record))
+                (aref header 3) (ldb (byte 8 8) (length fragment))
+                (aref header 4) (ldb (byte 8 0) (length fragment)))
+          ;; tls13-decrypt-record returns (plaintext, content-type)
+          ;; We need to return (content-type, plaintext)
+          ;; Catch record overflow to send alert before re-raising
+          (handler-bind ((tls-record-overflow
+                           (lambda (c)
+                             (declare (ignore c))
+                             (record-layer-write-alert layer
+                                                       +alert-level-fatal+
+                                                       +alert-record-overflow+))))
+            (multiple-value-bind (plaintext inner-content-type)
+                (tls13-decrypt-record cipher fragment header)
+              (return-from record-layer-read
+                (values inner-content-type plaintext))))))
+      ;; No encryption - return plaintext record
+      (values content-type fragment))))
 
 (defun record-layer-write (layer content-type data)
   "Write and potentially encrypt a record to the record layer."
