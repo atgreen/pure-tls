@@ -1,0 +1,37 @@
+diff --git a/src/x509/verify.lisp b/src/x509/verify.lisp
+index 7425c1a..485ca6f 100644
+--- a/src/x509/verify.lisp
++++ b/src/x509/verify.lisp
+@@ -388,7 +388,9 @@
+ 
+    Security: SHA-1 is rejected as cryptographically broken. Padding is
+    validated per RFC 8017 with minimum 8 bytes of 0xFF, and DigestInfo
+-   length must exactly match (no trailing garbage allowed)."
++   length must exactly match (no trailing garbage allowed).  The DigestInfo
++   prefix and hash are compared using IRONCLAD:CONSTANT-TIME-EQUAL to
++   prevent timing side channels."
+   ;; Reject SHA-1 - it's cryptographically broken for certificate signatures
+   (when (eql hash-algo :sha1)
+     (return-from verify-rsa-pkcs1v15-signature nil))
+@@ -432,13 +434,14 @@
+         ;; Check DigestInfo has EXACT correct length (not >=, to prevent trailing garbage)
+         (unless (= (length digest-info) (+ (length prefix) hash-len))
+           (return-from verify-rsa-pkcs1v15-signature nil))
+-        ;; Check DigestInfo has correct prefix
+-        (unless (equalp (subseq digest-info 0 (length prefix)) prefix)
+-          (return-from verify-rsa-pkcs1v15-signature nil))
+-        ;; Extract the hash from DigestInfo and compare with our computed hash
+-        (let ((embedded-hash (subseq digest-info (length prefix)))
+-              (computed-hash (ironclad:digest-sequence hash-algo tbs)))
+-          (equalp embedded-hash computed-hash))))))
++        ;; Constant-time: compare DigestInfo prefix and hash in one pass
++        ;; Construct the expected DigestInfo and compare against actual
++        (let* ((computed-hash (ironclad:digest-sequence hash-algo tbs))
++               (expected (make-array (+ (length prefix) hash-len)
++                                     :element-type '(unsigned-byte 8))))
++          (replace expected prefix)
++          (replace expected computed-hash :start1 (length prefix))
++          (ironclad:constant-time-equal digest-info expected))))))
+ 
+ (defun verify-certificate-signature (cert issuer-cert)
+   "Verify that CERT's signature was made by ISSUER-CERT's key.
