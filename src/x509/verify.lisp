@@ -564,8 +564,9 @@
                          :rsa-pkcs1-sha512
                          :ecdsa-with-sha512
                          :ecdsa-with-SHA512)) :sha512)
-    ;; Unknown algorithm - default to SHA-256 for best compatibility
-    (t :sha256)))
+    ;; CLSEC-2026-0010: Reject unknown algorithms instead of defaulting to SHA-256
+    (t (error 'tls-certificate-error
+              :message (format nil "Unknown certificate signature algorithm: ~A" algorithm)))))
 
 (defun parse-rsa-public-key (public-key-der)
   "Parse an RSA public key from DER-encoded bytes."

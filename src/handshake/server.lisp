@@ -871,7 +871,12 @@
   (let* ((cipher-suite (server-handshake-selected-cipher-suite hs))
          (resumption-master-secret (server-handshake-resumption-master-secret hs))
          (ticket-lifetime +default-ticket-lifetime+)
-         (age-add (random (expt 2 32)))  ; Random 32-bit value for obfuscation
+         ;; CLSEC-2026-0114: Use CSPRNG for ticket_age_add, not CL:RANDOM
+         (age-add (let ((bytes (random-bytes 4)))
+                    (+ (ash (aref bytes 0) 24)
+                       (ash (aref bytes 1) 16)
+                       (ash (aref bytes 2) 8)
+                       (aref bytes 3))))
          ;; Generate unique nonce for this ticket
          (nonce-counter (server-handshake-ticket-nonce-counter hs))
          (nonce (octet-vector (ldb (byte 8 0) nonce-counter)))

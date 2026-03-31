@@ -675,6 +675,29 @@
       (error 'tls-handshake-error
              :message ":DECODE_ERROR: ServerHello legacy_compression_method must be 0"
              :state :wait-server-hello))
+    ;; CLSEC-2026-0113: RFC 8446 Section 4.1.3: legacy_session_id_echo MUST match
+    (let ((sent-id (client-handshake-legacy-session-id hs))
+          (echoed-id (server-hello-legacy-session-id-echo server-hello)))
+      (unless (equalp (or sent-id #()) (or echoed-id #()))
+        (record-layer-write-alert (client-handshake-record-layer hs)
+                                  +alert-level-fatal+ +alert-illegal-parameter+)
+        (error 'tls-handshake-error
+               :message ":ILLEGAL_PARAMETER: ServerHello legacy_session_id_echo mismatch"
+               :state :wait-server-hello)))
+    ;; CLSEC-2026-0112: RFC 8446 Section 4.1.3: TLS 1.3 downgrade sentinel check
+    ;; Even though we only support TLS 1.3, check for sentinel values as defense-in-depth
+    (let* ((server-random (server-hello-random server-hello))
+           (last-8 (when (and server-random (>= (length server-random) 32))
+                     (subseq server-random 24 32)))
+           (downgrade-tls12 (hex-to-octets "444F574E47524401"))
+           (downgrade-tls11 (hex-to-octets "444F574E47524400")))
+      (when (or (equalp last-8 downgrade-tls12)
+                (equalp last-8 downgrade-tls11))
+        (record-layer-write-alert (client-handshake-record-layer hs)
+                                  +alert-level-fatal+ +alert-illegal-parameter+)
+        (error 'tls-handshake-error
+               :message ":ILLEGAL_PARAMETER: Downgrade sentinel detected in ServerHello.random"
+               :state :wait-server-hello)))
     ;; Verify supported_versions extension
     (let ((sv-ext (find-extension extensions +extension-supported-versions+)))
       (unless sv-ext

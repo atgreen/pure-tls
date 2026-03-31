@@ -280,7 +280,7 @@ the same length.  Selection is performed byte-by-byte without branching."
    Ensures zeroization even if BODY signals an error."
   `(let ((,var ,init-form))
      (unwind-protect
-          (unquote-splicing body)
+          (progn ,@body)
        (zeroize ,var))))
 
 ;;;; String Encoding

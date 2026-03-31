@@ -697,7 +697,7 @@
        (read-response tls))"
   `(let ((,var (make-tls-client-stream ,socket ,@args)))
      (unwind-protect
-         (unquote-splicing body)
+         (progn ,@body)
        (close ,var))))
 
 (defmacro with-tls-server-stream ((var socket &rest args) &body body)
@@ -711,5 +711,5 @@
        (handle-request tls))"
   `(let ((,var (make-tls-server-stream ,socket ,@args)))
      (unwind-protect
-         (unquote-splicing body)
+         (progn ,@body)
        (close ,var))))
