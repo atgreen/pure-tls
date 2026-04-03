@@ -231,14 +231,19 @@ into the accumulator rather than short-circuiting."
   (let ((len-a (length a))
         (len-b (length b)))
     (declare (type fixnum len-a len-b))
-    (let ((diff (logand #xff (logxor len-a len-b))))
-      (declare (type (unsigned-byte 8) diff))
+    (let ((diff (logxor len-a len-b)))
+      (declare (type fixnum diff))
       (loop for i fixnum from 0 below (min len-a len-b)
             do (setf diff (logior diff (logxor (aref a i) (aref b i)))))
-      ;; diff=0 → #xFF, diff≠0 → #x00
-      ;; Note: intermediate (- diff) may produce a negative fixnum, but the
-      ;; final logand #xff masks to the correct byte result.
-      (logand #xff (lognot (ash (logior diff (- diff)) -7))))))
+      ;; Collapse diff to a single byte: OR all bytes of the fixnum together.
+      ;; This ensures any non-zero diff (including length differences > 255)
+      ;; produces a non-zero byte.
+      (let ((d (logior (logand diff #xff)
+                       (logand (ash diff -8) #xff)
+                       (logand (ash diff -16) #xff)
+                       (logand (ash diff -24) #xff))))
+        ;; d=0 → #xFF, d≠0 → #x00
+        (logand #xff (lognot (ash (logior d (- d)) -7)))))))
 
 (defun ct-select (mask a b)
   "Constant-time select: return A if MASK is #xFF, B if MASK is #x00.
