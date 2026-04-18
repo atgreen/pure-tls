@@ -38,4 +38,4 @@ produces a "not equal" result.
 
 ## Acknowledgments
 
-Security issues identified by the [CL-SEC initiative](https://github.com/CL-SEC/CL-SEC).
+Security issues identified by the [CL-SEC initiative](https://cl-sec.github.io/cl-sec-advisories/).
