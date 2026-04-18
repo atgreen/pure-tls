@@ -170,15 +170,57 @@
   (let* ((suffix (subseq pattern 1))  ; .example.com
          (suffix-len (length suffix)))
     (and
-     ;; Suffix must have at least 2 labels (reject *.com, *.co.uk patterns)
-     ;; Count dots in suffix - need at least 2 (e.g., .example.com has 2 dots)
+     ;; Reject wildcards at public suffix boundaries.
+     ;; First check: suffix must have at least 2 labels (rejects *.com).
      (>= (count #\. suffix) 2)
+     ;; Second check: reject known multi-label public suffixes (e.g., *.co.uk).
+     ;; The suffix without leading dot must not be a known public suffix.
+     (not (known-public-suffix-p (subseq suffix 1)))
      ;; Hostname must be longer than suffix
      (> (length hostname) suffix-len)
      ;; Hostname must end with suffix
      (string= suffix (subseq hostname (- (length hostname) suffix-len)))
      ;; The part before suffix must be a single label (no dots)
      (not (find #\. hostname :end (- (length hostname) suffix-len))))))
+
+(defparameter *known-public-suffixes*
+  '("co.uk" "org.uk" "me.uk" "net.uk" "ac.uk" "gov.uk"
+    "co.jp" "or.jp" "ne.jp" "ac.jp" "go.jp"
+    "com.au" "net.au" "org.au" "edu.au" "gov.au"
+    "co.nz" "net.nz" "org.nz" "govt.nz" "ac.nz"
+    "co.kr" "or.kr" "ne.kr" "go.kr" "ac.kr"
+    "com.br" "net.br" "org.br" "gov.br" "edu.br"
+    "com.cn" "net.cn" "org.cn" "gov.cn" "edu.cn"
+    "co.in" "net.in" "org.in" "gov.in" "ac.in"
+    "com.mx" "net.mx" "org.mx" "gob.mx" "edu.mx"
+    "co.za" "net.za" "org.za" "gov.za" "ac.za"
+    "com.tw" "net.tw" "org.tw" "gov.tw" "edu.tw"
+    "co.th" "or.th" "net.th" "ac.th" "go.th"
+    "co.il" "org.il" "net.il" "ac.il" "gov.il"
+    "com.sg" "net.sg" "org.sg" "gov.sg" "edu.sg"
+    "com.hk" "net.hk" "org.hk" "gov.hk" "edu.hk"
+    "com.ar" "net.ar" "org.ar" "gov.ar" "edu.ar"
+    "com.tr" "net.tr" "org.tr" "gov.tr" "edu.tr"
+    "co.id" "or.id" "net.id" "go.id" "ac.id"
+    "com.my" "net.my" "org.my" "gov.my" "edu.my"
+    "com.ph" "net.ph" "org.ph" "gov.ph" "edu.ph"
+    "com.pk" "net.pk" "org.pk" "gov.pk" "edu.pk"
+    "com.ng" "net.ng" "org.ng" "gov.ng" "edu.ng"
+    "com.eg" "net.eg" "org.eg" "gov.eg" "edu.eg"
+    "co.ke" "or.ke" "ne.ke" "go.ke" "ac.ke"
+    "com.ua" "net.ua" "org.ua" "gov.ua" "edu.ua"
+    "com.pl" "net.pl" "org.pl" "gov.pl" "edu.pl"
+    "co.cr" "or.cr"
+    "com.ve" "net.ve" "org.ve" "gov.ve" "edu.ve"
+    "com.pe" "net.pe" "org.pe" "gob.pe" "edu.pe"
+    "com.co" "net.co" "org.co" "gov.co" "edu.co")
+  "Well-known multi-label public suffixes used to reject wildcard certificates
+at public suffix boundaries (e.g., *.co.uk).  This is a conservative subset;
+a full list lives at https://publicsuffix.org/.")
+
+(defun known-public-suffix-p (domain)
+  "Return T if DOMAIN is a known multi-label public suffix."
+  (member domain *known-public-suffixes* :test #'string-equal))
 
 ;;;; Certificate Validity
 
@@ -320,17 +362,20 @@
                         :message (format nil "Certificate has been revoked (serial: ~X)"
                                         (x509-certificate-serial-number cert)))))))
   ;; Check if chain is anchored in trusted roots.
+  ;; Walk the chain looking for a certificate that is either byte-identical to
+  ;; a trusted root or whose signature can be verified against a trusted root.
+  ;; A name/issuer match alone is NOT sufficient — we must verify the
+  ;; cryptographic signature to prove the chain actually reaches the trust
+  ;; anchor.  Servers may send extra certificates beyond the anchor (e.g.
+  ;; cross-signed roots), so we check every chain member, not just the last.
   (let* ((root (first (last chain)))
-         (anchored (or (find-if (lambda (trusted)
-                                  (find-if (lambda (cert)
-                                             (or (certificate-equal-p cert trusted)
-                                                 (certificate-issued-by-p cert trusted)))
-                                           chain))
-                                trusted-roots)
-                       (find-if (lambda (trusted)
-                                  (or (certificate-equal-p root trusted)
-                                      (certificate-issued-by-p root trusted)))
-                                trusted-roots))))
+         (anchored (loop for cert in chain
+                         thereis (find-if
+                                  (lambda (trusted)
+                                    (or (certificate-equal-p cert trusted)
+                                        (and (certificate-issued-by-p cert trusted)
+                                             (verify-certificate-signature cert trusted))))
+                                  trusted-roots))))
     (unless anchored
       (let ((debug (get-environment-variable "OCICL_TLS_DEBUG")))
         (when (and debug (string/= debug ""))
@@ -345,14 +390,7 @@
                            (certificate-issuer-common-names cert)))))
       (error 'tls-verification-error
              :message "Certificate chain not anchored in trusted root"
-             :reason :unknown-ca))
-    ;; If root is not self-signed and directly matches a trusted issuer, verify it.
-    (when (and anchored
-               (certificate-issued-by-p root anchored)
-               (not (certificate-equal-p root anchored)))
-      (unless (verify-certificate-signature root anchored)
-        (error 'tls-certificate-error
-               :message "Root certificate signature verification failed"))))
+             :reason :unknown-ca)))
   t)
 
 (defun certificate-issued-by-p (cert issuer-cert)

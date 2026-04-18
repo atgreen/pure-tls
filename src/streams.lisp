@@ -57,7 +57,12 @@
    (empty-record-count
     :initform 0
     :accessor tls-stream-empty-record-count
-    :documentation "Count of consecutive empty records. Used to prevent DoS."))
+    :documentation "Count of consecutive empty records. Used to prevent DoS.")
+   (handshake-message-buffer
+    :initform nil
+    :accessor tls-stream-handshake-message-buffer
+    :documentation "Buffer for reassembling handshake messages that span records or are coalesced."))
+
   (:documentation "A TLS-encrypted stream."))
 
 (defclass tls-client-stream (tls-stream)
@@ -256,22 +261,35 @@
            (tls-stream-fill-buffer stream))
           (#.+content-type-handshake+
            ;; Post-handshake messages (e.g., NewSessionTicket, KeyUpdate)
+           ;; TLS 1.3 allows handshake messages to span records or multiple
+           ;; messages to share one record, so we must use the reassembly buffer.
            (when (zerop (length data))
              (record-layer-write-alert (tls-stream-record-layer stream)
                                        +alert-level-fatal+
                                        +alert-decode-error+)
              (error 'tls-decode-error
                     :message ":DECODE_ERROR: Zero-length handshake record"))
-           (let ((msg (parse-handshake-message data)))
-             (case (handshake-message-type msg)
-               (#.+handshake-key-update+
-                (tls-stream-process-key-update stream (handshake-message-body msg)))
-               (#.+handshake-new-session-ticket+
-                ;; NewSessionTicket - cache for session resumption
-                (tls-stream-process-new-session-ticket stream (handshake-message-body msg)))
-               (otherwise
-                ;; Unknown post-handshake message - ignore
-                nil)))
+           ;; Append incoming data to the reassembly buffer
+           (let ((buf (tls-stream-handshake-message-buffer stream)))
+             (setf (tls-stream-handshake-message-buffer stream)
+                   (if buf
+                       (concatenate '(vector (unsigned-byte 8)) buf data)
+                       data)))
+           ;; Process all complete handshake messages in the buffer
+           (loop while (handshake-buffer-has-complete-message-p
+                        (tls-stream-handshake-message-buffer stream))
+                 do (multiple-value-bind (message-bytes remaining)
+                        (handshake-buffer-extract-message
+                         (tls-stream-handshake-message-buffer stream))
+                      (setf (tls-stream-handshake-message-buffer stream) remaining)
+                      (let ((msg (parse-handshake-message message-bytes)))
+                        (case (handshake-message-type msg)
+                          (#.+handshake-key-update+
+                           (tls-stream-process-key-update stream (handshake-message-body msg)))
+                          (#.+handshake-new-session-ticket+
+                           (tls-stream-process-new-session-ticket stream (handshake-message-body msg)))
+                          (otherwise
+                           nil)))))
            ;; Recursively try to get more data
            (tls-stream-fill-buffer stream))
           (otherwise
