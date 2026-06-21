@@ -44,3 +44,4 @@ test/chrome-interop/localhost-key.pem
 
 # Large test vector files (download separately)
 test/vectors/*.rsp
+.codex

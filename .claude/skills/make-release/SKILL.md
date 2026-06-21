@@ -92,7 +92,7 @@ git log $(git describe --tags --abbrev=0)..HEAD --oneline
 ```
 
 Include ONLY user-facing changes:
-- Security fixes
+- Security fixes (reference CL-SEC advisory IDs if applicable, link to https://cl-sec.github.io/cl-sec-advisories/)
 - Bug fixes
 - New features
 - Breaking changes (if any)
