@@ -30,9 +30,11 @@
                 (let ((boringssl-ok (run! 'boringssl-tests)))
                   (format t "~%--- X509test Validation Tests ---~%")
                   (let ((x509test-ok (run! 'x509test-tests)))
+                    (format t "~%--- Security Regression Tests ---~%")
+                    (let ((security-ok (run! 'security-regression-tests)))
                     (format t "~%=== Summary ===~%")
                     (format t "Note: Run (run-network-tests) separately for network tests.~%")
-                    (and crypto-ok mldsa-ok record-ok handshake-ok cert-ok cancel-ok cancel-integration-ok openssl-ok boringssl-ok x509test-ok))))))))))))
+                    (and crypto-ok mldsa-ok record-ok handshake-ok cert-ok cancel-ok cancel-integration-ok openssl-ok boringssl-ok x509test-ok security-ok)))))))))))))
 
 (defun run-openssl-tests ()
   "Run OpenSSL test suite adaptation tests.

@@ -251,7 +251,7 @@ a full list lives at https://publicsuffix.org/.")
 ;;; For now, we provide basic building blocks.
 
 (defun verify-certificate-chain (chain trusted-roots &optional (now (get-universal-time)) hostname
-                                 &key check-revocation (trust-anchor-mode :replace))
+                                 &key check-revocation (trust-anchor-mode :replace) purpose)
   "Verify a certificate chain against trusted roots.
    CHAIN is a list of certificates, leaf first.
    TRUSTED-ROOTS is a list of trusted CA certificates. When NIL on Windows/macOS,
@@ -262,10 +262,25 @@ a full list lives at https://publicsuffix.org/.")
      :replace (default) - Use ONLY trusted-roots, ignore system store
      :extend - Use trusted-roots IN ADDITION TO system store
    Returns T if verification succeeds, signals an error otherwise.
+   PURPOSE, when non-NIL (e.g. :server-auth or :client-auth), enforces the
+   leaf certificate's ExtendedKeyUsage: a leaf whose EKU extension is present
+   but lists neither PURPOSE nor anyExtendedKeyUsage is rejected.  A leaf with
+   no EKU extension is treated as unrestricted (RFC 5280 s4.2.1.12).
    CRL fetch timeout is computed from cl-cancel:*current-cancel-context* if set."
   (declare (ignorable hostname check-revocation trust-anchor-mode))  ; Only used conditionally
   (when (null chain)
     (error 'tls-certificate-error :message "Empty certificate chain"))
+
+  ;; RFC 5280 s4.2.1.12: enforce ExtendedKeyUsage on the leaf when a purpose
+  ;; is requested.  This prevents a certificate constrained away from the
+  ;; requested purpose (e.g. a clientAuth-only certificate) from being accepted
+  ;; for TLS server authentication.
+  (when purpose
+    (unless (certificate-valid-for-purpose-p (first chain) purpose)
+      (error 'tls-certificate-error
+             :message (format nil "Leaf certificate not valid for ~A (ExtendedKeyUsage: ~A)"
+                              purpose
+                              (certificate-extended-key-usages (first chain))))))
 
   ;; On Windows with CryptoAPI enabled, use Windows verification
   #+windows

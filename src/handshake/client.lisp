@@ -1601,7 +1601,8 @@
                                    nil
                                    hostname)))
           (verify-certificate-chain chain trusted-roots
-                                    (get-universal-time) verify-hostname))))
+                                    (get-universal-time) verify-hostname
+                                    :purpose :server-auth))))
     (setf (client-handshake-state hs) :wait-finished)))
 
 ;;;; Finished Processing

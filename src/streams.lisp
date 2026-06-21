@@ -603,7 +603,8 @@
               (let ((trusted-roots (when trust-store
                                      (trust-store-certificates trust-store))))
                 (verify-certificate-chain chain trusted-roots
-                                          (get-universal-time) hostname)))))))
+                                          (get-universal-time) hostname
+                                          :purpose :server-auth)))))))
     ;; Wrap with flexi-stream if external-format specified
     (if external-format
         (flexi-streams:make-flexi-stream stream :external-format external-format)

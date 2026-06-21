@@ -18,6 +18,7 @@
    #:run-openssl-tests
    #:run-boringssl-tests
    #:run-x509test-tests
+   #:run-security-regression-tests
    ;; Test suites
    #:crypto-tests
    #:record-tests
@@ -26,4 +27,5 @@
    #:network-tests
    #:openssl-tests
    #:boringssl-tests
-   #:x509test-tests))
+   #:x509test-tests
+   #:security-regression-tests))

@@ -55,64 +55,66 @@
 
 (defun parse-ech-config-contents (data offset length)
   "Parse ECHConfigContents from data.
-   Returns (values ech-config-contents new-offset)."
-  (let* ((end (+ offset length))
-         ;; HpkeKeyConfig
-         (config-id (aref data offset))
-         (kem-id (logior (ash (aref data (1+ offset)) 8)
-                         (aref data (+ offset 2))))
-         ;; public_key<1..2^16-1>
-         (pk-len (logior (ash (aref data (+ offset 3)) 8)
-                         (aref data (+ offset 4))))
-         (pk-start (+ offset 5))
-         (public-key (subseq data pk-start (+ pk-start pk-len)))
-         (pos (+ pk-start pk-len))
-         ;; cipher_suites<4..2^16-2>
-         (cs-len (logior (ash (aref data pos) 8)
-                         (aref data (1+ pos)))))
-    (incf pos 2)
-    (unless (zerop (mod cs-len 4))
+   Returns (values ech-config-contents new-offset).
+   All length-prefixed fields are read through the bounds-checked tls-buffer
+   readers, so a malformed/oversized length signals TLS-DECODE-ERROR rather
+   than an uncaught Lisp bounds error."
+  (let ((end (+ offset length)))
+    (when (> end (length data))
       (error 'tls-handshake-error
-             :message "ECH config: invalid cipher suite list length"))
-    (multiple-value-bind (cipher-suites new-pos)
-        (parse-ech-hpke-cipher-suites data pos (/ cs-len 4))
-      (setf pos new-pos)
-      ;; maximum_name_length
-      (let ((max-name-len (aref data pos)))
-        (incf pos)
-        ;; public_name<1..255>
-        (let* ((pn-len (aref data pos))
-               (public-name (octets-to-string (subseq data (1+ pos) (+ pos 1 pn-len)))))
-          (incf pos (1+ pn-len))
-          ;; extensions<0..2^16-1>
-          (let* ((ext-len (logior (ash (aref data pos) 8)
-                                  (aref data (1+ pos))))
-                 (extensions (subseq data (+ pos 2) (+ pos 2 ext-len))))
-            (incf pos (+ 2 ext-len))
-            (unless (<= pos end)
-              (error 'tls-handshake-error
-                     :message "ECH config: data extends beyond length"))
-            (values
-             (make-ech-config-contents
-              :key-config (make-ech-hpke-key-config
-                           :config-id config-id
-                           :kem-id kem-id
-                           :public-key public-key
-                           :cipher-suites cipher-suites)
-              :maximum-name-length max-name-len
-              :public-name public-name
-              :extensions extensions)
-             pos)))))))
+             :message "ECH config: contents length exceeds available data"))
+    (let ((buf (make-tls-buffer data)))
+      (setf (tls-buffer-position buf) offset)
+      (let* (;; HpkeKeyConfig
+             (config-id (buffer-read-octet buf))
+             (kem-id (buffer-read-uint16 buf))
+             ;; public_key<1..2^16-1>
+             (public-key (buffer-read-vector16 buf))
+             ;; cipher_suites<4..2^16-2>
+             (cs-bytes (buffer-read-vector16 buf)))
+        (unless (zerop (mod (length cs-bytes) 4))
+          (error 'tls-handshake-error
+                 :message "ECH config: invalid cipher suite list length"))
+        (let (;; cs-bytes is exactly (length cs-bytes) long, so reading
+              ;; (/ (length cs-bytes) 4) suites stays in bounds.
+              (cipher-suites (parse-ech-hpke-cipher-suites
+                              cs-bytes 0 (/ (length cs-bytes) 4)))
+              ;; maximum_name_length
+              (max-name-len (buffer-read-octet buf))
+              ;; public_name<1..255>
+              (public-name (octets-to-string (buffer-read-vector8 buf)))
+              ;; extensions<0..2^16-1>
+              (extensions (buffer-read-vector16 buf)))
+          (unless (<= (tls-buffer-position buf) end)
+            (error 'tls-handshake-error
+                   :message "ECH config: data extends beyond length"))
+          (values
+           (make-ech-config-contents
+            :key-config (make-ech-hpke-key-config
+                         :config-id config-id
+                         :kem-id kem-id
+                         :public-key public-key
+                         :cipher-suites cipher-suites)
+            :maximum-name-length max-name-len
+            :public-name public-name
+            :extensions extensions)
+           (tls-buffer-position buf)))))))
 
 (defun parse-ech-config (data offset)
   "Parse a single ECHConfig from data.
    Returns (values ech-config new-offset) or NIL if version is unknown."
+  (when (< (- (length data) offset) 4)
+    (error 'tls-handshake-error
+           :message "ECH config: truncated ECHConfig header"))
   (let* ((version (logior (ash (aref data offset) 8)
                           (aref data (1+ offset))))
          ;; length of contents
          (length (logior (ash (aref data (+ offset 2)) 8)
                          (aref data (+ offset 3))))
          (contents-start (+ offset 4)))
+    (when (> (+ contents-start length) (length data))
+      (error 'tls-handshake-error
+             :message "ECH config: ECHConfig length exceeds available data"))
     (if (= version +ech-version+)
         ;; Known version - parse contents
         (multiple-value-bind (contents new-pos)

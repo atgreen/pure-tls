@@ -305,6 +305,8 @@ instance of a particular extension."
        (parse-key-usage value-bytes))
       (:crl-distribution-points
        (parse-crl-distribution-points value-bytes))
+      (:extended-key-usage
+       (parse-extended-key-usage value-bytes))
       (otherwise
        ;; Return raw bytes for unknown extensions
        value-bytes))))
@@ -361,6 +363,18 @@ instance of a particular extension."
         (when (logbitp 0 byte0) (push :encipher-only usages))
         (when (logbitp 7 byte1) (push :decipher-only usages))))
     (nreverse usages)))
+
+(defun parse-extended-key-usage (bytes)
+  "Parse ExtendedKeyUsage extension value (RFC 5280 s4.2.1.12).
+   ExtKeyUsageSyntax ::= SEQUENCE SIZE (1..MAX) OF KeyPurposeId
+   KeyPurposeId ::= OBJECT IDENTIFIER
+   Returns a list of purpose keywords (e.g. :server-auth, :client-auth,
+   :any-extended-key-usage) or raw OID lists for unrecognized purposes."
+  (let ((node (parse-der bytes)))
+    (when (asn1-sequence-p node)
+      (loop for child in (asn1-children node)
+            when (= (asn1-node-tag child) +asn1-object-identifier+)
+              collect (oid-name (asn1-node-value child))))))
 
 (defun parse-crl-distribution-points (bytes)
   "Parse CRLDistributionPoints extension value (RFC 5280 s4.2.1.13).
@@ -469,6 +483,27 @@ instance of a particular extension."
                        :key #'x509-extension-oid)))
     (when cdp-ext
       (x509-extension-value cdp-ext))))
+
+(defun certificate-extended-key-usages (cert)
+  "Get the ExtendedKeyUsage purposes as a list of keywords (or raw OID lists
+   for unrecognized purposes), or NIL if the certificate has no EKU extension.
+   Per RFC 5280, the absence of this extension means the certificate is not
+   restricted to any particular purpose."
+  (let ((eku-ext (find :extended-key-usage (x509-certificate-extensions cert)
+                       :key #'x509-extension-oid)))
+    (when eku-ext
+      (x509-extension-value eku-ext))))
+
+(defun certificate-valid-for-purpose-p (cert purpose)
+  "Return T if CERT may be used for PURPOSE (e.g. :server-auth, :client-auth).
+   A certificate with no ExtendedKeyUsage extension is unrestricted and is
+   valid for any purpose (RFC 5280 s4.2.1.12).  When EKU is present, the
+   certificate is valid for PURPOSE only if PURPOSE or anyExtendedKeyUsage is
+   listed."
+  (let ((ekus (certificate-extended-key-usages cert)))
+    (or (null ekus)
+        (member :any-extended-key-usage ekus)
+        (member purpose ekus))))
 
 (defun certificate-has-key-usage-p (cert usage)
   "Check if certificate has a specific key usage bit set.
