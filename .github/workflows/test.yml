@@ -149,9 +149,21 @@ jobs:
         with:
           go-version: '1.21'
 
-      - name: Clone BoringSSL
+      - name: Clone BoringSSL (pinned)
         run: |
-          git clone --depth 1 https://boringssl.googlesource.com/boringssl ~/boringssl
+          # Pinned to a fixed BoringSSL commit so the test suite is reproducible
+          # and test/boringssl-baseline.txt stays in sync. BoringSSL is unversioned
+          # and adds tests continuously; tracking HEAD makes the baseline drift and
+          # reports new upstream tests as spurious "regressions". To refresh: bump
+          # this ref, re-run the suite, and regenerate the baseline with
+          # `BORINGSSL_DIR=~/boringssl ./test/track-regressions.sh --save-baseline`.
+          BORINGSSL_REF=606d3a344dae49672ea567f6719e1fc092a4ae6a  # 2026-06-18
+          mkdir -p ~/boringssl
+          cd ~/boringssl
+          git init -q
+          git remote add origin https://boringssl.googlesource.com/boringssl
+          git fetch --depth 1 origin "$BORINGSSL_REF"
+          git checkout -q FETCH_HEAD
 
       - name: Setup ocicl and fetch dependencies
         run: |

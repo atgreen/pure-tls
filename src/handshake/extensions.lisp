@@ -100,6 +100,8 @@
             (parse-signature-algorithms-extension data))
            (#.+extension-server-name+
             (parse-server-name-extension data))
+           (#.+extension-certificate-authorities+
+            (parse-certificate-authorities-extension data))
            (#.+extension-application-layer-protocol-negotiation+
             (parse-alpn-extension data))
            (#.+extension-psk-key-exchange-modes+
@@ -319,20 +321,65 @@
 
 (defun parse-server-name-extension (data)
   "Parse server_name extension.
-   In server responses, this may be empty (just acknowledging SNI)."
+   In server responses, this may be empty (just acknowledging SNI).
+   Rejects trailing data after the ServerNameList and malformed entries
+   (RFC 6066 / strict DER-style length handling)."
   ;; Empty extension is valid - server acknowledges SNI
   (when (zerop (length data))
     (return-from parse-server-name-extension
       (make-server-name-ext :host-name nil)))
-  (let ((buf (make-tls-buffer data)))
-    (let ((list-data (buffer-read-vector16 buf)))
-      (when (plusp (length list-data))
-        (let ((list-buf (make-tls-buffer list-data)))
-          (let ((name-type (buffer-read-octet list-buf))
-                (name-data (buffer-read-vector16 list-buf)))
-            (when (= name-type +server-name-type-hostname+)
-              (make-server-name-ext
-               :host-name (octets-to-string name-data)))))))))
+  ;; Any structural failure (trailing data, short entry, buffer underflow in the
+  ;; length-prefixed readers) is reported uniformly as an extension parse error
+  ;; so the peer receives a decode_error alert (RFC 8446).
+  (handler-case
+      (let ((buf (make-tls-buffer data))
+            (host-name nil))
+        (let ((list-data (buffer-read-vector16 buf)))
+          ;; RFC 8446: no bytes may follow the ServerNameList.
+          (unless (zerop (buffer-remaining buf))
+            (error 'tls-decode-error :message "trailing data"))
+          (let ((list-buf (make-tls-buffer list-data)))
+            ;; Consume every ServerName entry; a malformed/short entry underflows.
+            (loop while (plusp (buffer-remaining list-buf))
+                  do (let ((name-type (buffer-read-octet list-buf))
+                           (name-data (buffer-read-vector16 list-buf)))
+                       (when (= name-type +server-name-type-hostname+)
+                         (setf host-name (octets-to-string name-data)))))))
+        (make-server-name-ext :host-name host-name))
+    (tls-decode-error ()
+      (error 'tls-decode-error
+             :message ":ERROR_PARSING_EXTENSION: malformed server_name extension"))))
+
+(defun parse-certificate-authorities-extension (data)
+  "Parse certificate_authorities extension (RFC 8446 s4.2.4).
+
+       opaque DistinguishedName<1..2^16-1>;
+       struct { DistinguishedName authorities<3..2^16-1>; }
+
+   pure-tls does not act on the CA list, but it MUST still validate the
+   structure: reject an empty list and reject trailing data after it.
+   Returns the raw DER bytes (unchanged) on success.  Any structural failure
+   is reported as an extension parse error (decode_error alert)."
+  (handler-case
+      (let ((buf (make-tls-buffer data)))
+        (let ((authorities (buffer-read-vector16 buf)))
+          ;; No bytes may follow the authorities list.
+          (unless (zerop (buffer-remaining buf))
+            (error 'tls-decode-error :message "trailing data"))
+          ;; The list is SIZE (3..2^16-1): an empty list is illegal.
+          (when (zerop (length authorities))
+            (error 'tls-decode-error :message "empty list"))
+          ;; Each DistinguishedName is opaque<1..2^16-1>; a short/over-long entry
+          ;; underflows.  This also confirms the list is exactly consumed.
+          (let ((abuf (make-tls-buffer authorities)))
+            (loop while (plusp (buffer-remaining abuf))
+                  do (let ((dn (buffer-read-vector16 abuf)))
+                       (when (zerop (length dn))
+                         (error 'tls-decode-error :message "empty DN)")))))
+          data))
+    (tls-decode-error ()
+      (error 'tls-decode-error
+             :message ":ERROR_PARSING_EXTENSION: malformed certificate_authorities extension"))))
 
 (defun serialize-server-name-extension (ext)
   "Serialize server_name extension."
