@@ -8,7 +8,7 @@
   :description "Pure Common Lisp TLS 1.3 implementation"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
-  :version "1.11.1"
+  :version "1.11.2"
   :defsystem-depends-on ("trivial-features")
   :depends-on ("ironclad"
                "trivial-gray-streams"
@@ -67,7 +67,7 @@
   :description "cl+ssl API compatibility layer for pure-tls"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
-  :version "1.11.1"
+  :version "1.11.2"
   :depends-on ("pure-tls"
                "usocket")
   :serial t
@@ -136,4 +136,5 @@
                              (:file "openssl-tests")
                              (:file "boringssl-tests")
                              (:file "x509test-tests")
+                             (:file "security-regression-tests")
                              (:file "runner")))))
