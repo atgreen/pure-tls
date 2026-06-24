@@ -67,19 +67,21 @@
       (error 'tls-crypto-error
              :operation "AES-GCM encrypt"
              :message (format nil "Invalid key length ~D (must be 16 or 32)" key-len))))
-  (let* ((mode (ironclad:make-authenticated-encryption-mode
+  (let* ((pt-len (length plaintext))
+         (mode (ironclad:make-authenticated-encryption-mode
                 :gcm :cipher-name :aes :key key
                 :initialization-vector nonce))
-         (ciphertext (make-octet-vector (length plaintext)))
+         ;; Allocate output with room for ciphertext + 16-byte tag
+         (output (make-octet-vector (+ pt-len 16)))
          (tag (make-octet-vector 16)))
     ;; Process AAD
     (ironclad:process-associated-data mode aad)
     ;; Encrypt
-    (ironclad:encrypt mode plaintext ciphertext)
-    ;; Get tag
+    (ironclad:encrypt mode plaintext output)
+    ;; Get tag and place at end of output
     (ironclad:produce-tag mode :tag tag)
-    ;; Return ciphertext || tag
-    (concat-octet-vectors ciphertext tag)))
+    (replace output tag :start1 pt-len)
+    output))
 
 (defun aes-gcm-decrypt (key nonce ciphertext-with-tag aad)
   "Decrypt using AES-GCM.
@@ -149,33 +151,38 @@
                                             :initialization-vector nonce
                                             :mode :stream)))
     (ironclad:encrypt poly-cipher zeros poly-key-block)
-    (let ((skip (make-octet-vector 64)))
-      (ironclad:encrypt data-cipher zeros skip))
-    (let ((poly-key (subseq poly-key-block 0 32)))
+    ;; Advance data cipher past block 0 (reuse poly-key-block as skip buffer)
+    (ironclad:encrypt data-cipher zeros poly-key-block)
+    (let* ((poly-key (subseq poly-key-block 0 32))
+           (pt-len (length plaintext)))
 
-      ;; Step 2: Encrypt plaintext using ChaCha20 starting at counter=1
-      (let ((ciphertext (make-octet-vector (length plaintext))))
-        (ironclad:encrypt data-cipher plaintext ciphertext)
+      ;; Step 2: Encrypt into output buffer sized for ciphertext + 16-byte tag
+      (let ((output (make-octet-vector (+ pt-len 16))))
+        (ironclad:encrypt data-cipher plaintext output
+                          :plain-end pt-len :cipher-start 0)
 
-        ;; Step 3: Construct the Poly1305 input per RFC 8439 Section 2.8
-        ;; AAD || pad16(AAD) || ciphertext || pad16(ciphertext) || len(AAD) || len(ciphertext)
+        ;; Step 3: Compute Poly1305 MAC incrementally per RFC 8439 Section 2.8
+        ;; Avoids allocating a single concatenated mac-input vector.
         (let* ((aad-len (length aad))
-               (ct-len (length ciphertext))
-               (aad-pad (chacha20-poly1305-pad16 aad-len))
-               (ct-pad (chacha20-poly1305-pad16 ct-len))
-               ;; Lengths are 64-bit little-endian
-               (mac-input (concat-octet-vectors
-                           aad
-                           (make-octet-vector aad-pad)
-                           ciphertext
-                           (make-octet-vector ct-pad)
-                           (encode-uint64-le aad-len)
-                           (encode-uint64-le ct-len)))
+               (ct-len pt-len)
                (mac (ironclad:make-mac :poly1305 poly-key)))
-          (ironclad:update-mac mac mac-input)
+          ;; AAD || pad16(AAD)
+          (ironclad:update-mac mac aad)
+          (let ((aad-pad (chacha20-poly1305-pad16 aad-len)))
+            (when (plusp aad-pad)
+              (ironclad:update-mac mac (make-octet-vector aad-pad))))
+          ;; ciphertext || pad16(ciphertext)
+          (ironclad:update-mac mac output :end ct-len)
+          (let ((ct-pad (chacha20-poly1305-pad16 ct-len)))
+            (when (plusp ct-pad)
+              (ironclad:update-mac mac (make-octet-vector ct-pad))))
+          ;; len(AAD) || len(ciphertext) as 64-bit LE
+          (ironclad:update-mac mac (encode-uint64-le aad-len))
+          (ironclad:update-mac mac (encode-uint64-le ct-len))
+          ;; Place tag at end of output
           (let ((tag (ironclad:produce-mac mac)))
-            ;; Return ciphertext || tag
-            (concat-octet-vectors ciphertext tag)))))))
+            (replace output tag :start1 ct-len))
+          output)))))
 
 (defun chacha20-poly1305-decrypt (key nonce ciphertext-with-tag aad)
   "Decrypt using ChaCha20-Poly1305 per RFC 8439.
@@ -326,28 +333,26 @@
    Returns the encrypted record payload (ciphertext + tag)."
   (let ((*record-padding-policy* padding-policy))
     ;; Build inner plaintext: content || content_type || zeros (padding)
+    ;; Allocate a single buffer and fill in place to avoid copying plaintext.
     (let* ((content-len (length plaintext))
            (target-len (compute-padded-length content-len))
            (padding-len (max 0 (- target-len content-len)))
            ;; Ensure we don't exceed max record size
            (actual-padding (min padding-len
                                 (- +max-record-size+ content-len +aead-tag-length+ 1)))
-           (inner (if (plusp actual-padding)
-                      (concat-octet-vectors
-                       plaintext
-                       (octet-vector content-type)
-                       (make-octet-vector actual-padding))  ; zeros for padding
-                      (concat-octet-vectors
-                       plaintext
-                       (octet-vector content-type))))
-           ;; AAD is the record header for the outer record
-           ;; TLSCiphertext header: content_type(1) || legacy_version(2) || length(2)
-           (encrypted-len (+ (length inner) +aead-tag-length+))
-           (aad (octet-vector +content-type-application-data+  ; outer type
-                              #x03 #x03                         ; legacy TLS 1.2 version
-                              (ldb (byte 8 8) encrypted-len)
-                              (ldb (byte 8 0) encrypted-len))))
-      (aead-encrypt cipher inner aad))))
+           (inner-len (+ content-len 1 actual-padding))
+           (inner (make-octet-vector inner-len)))
+      (replace inner plaintext)                     ; content
+      (setf (aref inner content-len) content-type)  ; content_type byte
+      ;; padding zeros already filled by make-octet-vector
+      ;; AAD is the record header for the outer record
+      ;; TLSCiphertext header: content_type(1) || legacy_version(2) || length(2)
+      (let* ((encrypted-len (+ inner-len +aead-tag-length+))
+             (aad (octet-vector +content-type-application-data+  ; outer type
+                                #x03 #x03                         ; legacy TLS 1.2 version
+                                (ldb (byte 8 8) encrypted-len)
+                                (ldb (byte 8 0) encrypted-len))))
+        (aead-encrypt cipher inner aad)))))
 
 (defun tls13-decrypt-record (cipher ciphertext record-header)
   "Decrypt a TLS 1.3 record.
