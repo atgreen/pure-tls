@@ -66,6 +66,11 @@
   (offered-psk nil)  ; session-ticket if we offered a PSK
   (psk-accepted nil :type boolean)  ; T if server accepted our PSK
   (resumption-master-secret nil :type (or null octet-vector))  ; For ticket derivation
+  ;; Hostname this connection's peer was certificate-verified for under
+  ;; +verify-required+.  Carried onto any NewSessionTicket minted on this
+  ;; connection so a later resumption inherits the proven authentication
+  ;; (RFC 8446 Section 4.2.11).
+  (verified-hostname nil :type (or null string))
   ;; Client authentication (mTLS)
   (certificate-requested nil :type boolean)  ; T if server sent CertificateRequest
   (cert-request-context nil :type (or null octet-vector))  ; Context from CertificateRequest
@@ -1982,11 +1987,31 @@
                 (client-handshake-update-transcript hs raw-bytes)
                 (process-certificate hs message))
                (#.+handshake-finished+
-                ;; Server sent Finished without certificate (PSK mode)
-                ;; This is NOT allowed when verify-mode is +verify-required+
+                ;; Server sent Finished without a Certificate.  In a resumed
+                ;; PSK session the server legitimately skips Certificate and
+                ;; CertificateVerify (RFC 8446 Sections 2.2 and 4.2.11): the
+                ;; resumed session inherits the authentication of the handshake
+                ;; that minted the ticket.  Under +verify-required+ accept the
+                ;; certificate-less Finished ONLY when the PSK we offered was
+                ;; genuinely accepted and its ticket proves the original
+                ;; handshake certificate-verified the SAME host under
+                ;; +verify-required+.  Anything less fails closed.
                 (when (= (client-handshake-verify-mode hs) +verify-required+)
-                  (error 'tls-certificate-error
-                         :message "Server did not provide a certificate but verification is required"))
+                  (let ((ticket (client-handshake-offered-psk hs)))
+                    (unless (and (client-handshake-psk-accepted hs)
+                                 ticket
+                                 (session-ticket-verified-hostname ticket)
+                                 (client-handshake-hostname hs)
+                                 (string= (session-ticket-verified-hostname ticket)
+                                          (client-handshake-hostname hs)))
+                      (error 'tls-certificate-error
+                             :message "Server did not provide a certificate but verification is required"))
+                    ;; Authenticated resumption: carry the proven authentication
+                    ;; forward so a NewSessionTicket minted on this resumed
+                    ;; connection inherits the same provenance, keeping repeated
+                    ;; warm-cache resumptions working.
+                    (setf (client-handshake-verified-hostname hs)
+                          (session-ticket-verified-hostname ticket))))
                 ;; Don't update transcript yet - process-server-finished will do it after verification
                 (setf (client-handshake-state hs) :wait-finished)
                 (process-server-finished hs message raw-bytes))
