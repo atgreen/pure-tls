@@ -32,7 +32,14 @@
   ;; Server hostname (for matching)
   (hostname nil :type (or null string))
   ;; Max early data size (0 if not allowed)
-  (max-early-data-size 0 :type (unsigned-byte 32)))
+  (max-early-data-size 0 :type (unsigned-byte 32))
+  ;; Hostname that was certificate-verified under +verify-required+ by the
+  ;; handshake that minted this ticket.  RFC 8446
+  ;; Sections 2.2 and 4.2.11: a resumed PSK session inherits the authentication
+  ;; of that original handshake.  NIL means the origin proved no such
+  ;; verification, so a resumption offering this ticket must fail closed under
+  ;; +verify-required+.
+  (verified-hostname nil :type (or null string)))
 
 ;;;; Session Ticket Cache
 
@@ -115,9 +122,14 @@
 
 ;;;; NewSessionTicket Handling
 
-(defun process-new-session-ticket (nst resumption-master-secret cipher-suite hostname)
+(defun process-new-session-ticket (nst resumption-master-secret cipher-suite hostname
+                                   &optional verified-hostname)
   "Process a NewSessionTicket message and cache the ticket.
    NST is the parsed new-session-ticket structure.
+   VERIFIED-HOSTNAME, when non-NIL, is the hostname the minting handshake
+   certificate-verified under +verify-required+; it is recorded on the ticket
+   so a later resumption can carry that authentication forward (RFC 8446
+   Section 4.2.11).
    Returns the session-ticket structure."
   (let ((ticket (make-session-ticket
                  :identity (new-session-ticket-ticket nst)
@@ -126,9 +138,11 @@
                  :lifetime (new-session-ticket-ticket-lifetime nst)
                  :age-add (new-session-ticket-ticket-age-add nst)
                  :nonce (new-session-ticket-ticket-nonce nst)
-                 :hostname hostname)))
+                 :hostname hostname
+                 :verified-hostname verified-hostname)))
     ;; Check for early_data extension
-    ;; RFC 8446 Section 4.6.1: early_data in NewSessionTicket contains uint32 max_early_data_size
+    ;; RFC 8446 Section 4.6.1: early_data in NewSessionTicket contains
+    ;; uint32 max_early_data_size
     (let ((early-data-ext (find-extension (new-session-ticket-extensions nst)
                                           +extension-early-data+)))
       (when early-data-ext

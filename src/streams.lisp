@@ -141,7 +141,8 @@
             (cipher-suite (client-handshake-selected-cipher-suite hs))
             (hostname (client-handshake-hostname hs)))
         (when (and resumption-secret hostname)
-          (process-new-session-ticket nst resumption-secret cipher-suite hostname))))))
+          (process-new-session-ticket nst resumption-secret cipher-suite hostname
+                                      (client-handshake-verified-hostname hs)))))))
 
 (defun tls-stream-process-key-update (stream key-update)
   "Process a KeyUpdate message, updating read keys and responding if requested."
@@ -604,7 +605,14 @@
                                      (trust-store-certificates trust-store))))
                 (verify-certificate-chain chain trusted-roots
                                           (get-universal-time) hostname
-                                          :purpose :server-auth)))))))
+                                          :purpose :server-auth)))
+            ;; Record the verified identity when this full handshake proved it
+            ;; under +verify-required+ (hostname supplied, hostname + chain
+            ;; verified without error above).  A NewSessionTicket read later on
+            ;; this stream carries this forward so a resumption can rely on the
+            ;; original handshake's authentication (RFC 8446 Section 4.2.11).
+            (when (and (= verify +verify-required+) hostname chain)
+              (setf (client-handshake-verified-hostname hs) hostname))))))
     ;; Wrap with flexi-stream if external-format specified
     (if external-format
         (flexi-streams:make-flexi-stream stream :external-format external-format)
