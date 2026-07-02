@@ -58,9 +58,11 @@
 
 ;;;; Certificate Parsing
 
-(defun known-extension-p (oid)
-  "Check if an extension OID is known (has a symbolic name).
-Per RFC 5280 s4.2, unknown critical extensions must cause rejection."
+(defun known-certificate-extension-p (oid)
+  "Check if a certificate extension OID is known (has a symbolic name).
+Per RFC 5280 s4.2, unknown critical extensions must cause rejection.
+Note: distinct from KNOWN-EXTENSION-P in handshake/extensions.lisp, which
+checks TLS extension type codes."
   (symbolp oid))
 
 (defun validate-implicit-bit-string (raw-bytes)
@@ -166,7 +168,7 @@ Per DER (X.690): unused bits count must be 0-7 and padding bits must be zero."
       ;; Per RFC 5280 s4.2: reject certificates with unknown critical extensions
       (dolist (ext (x509-certificate-extensions cert))
         (when (and (x509-extension-critical ext)
-                   (not (known-extension-p (x509-extension-oid ext))))
+                   (not (known-certificate-extension-p (x509-extension-oid ext))))
           (error 'tls-decode-error
                  :message (format nil "Unknown critical extension: ~A"
                                   (x509-extension-oid ext))))))

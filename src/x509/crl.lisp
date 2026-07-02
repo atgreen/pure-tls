@@ -213,7 +213,7 @@
                                :ecdsa-with-SHA512))
            (let* ((hash-algo (crl-sig-algorithm-to-hash algorithm))
                   (hash (ironclad:digest-sequence hash-algo tbs))
-                  (parsed-sig (parse-ecdsa-signature signature))
+                  (parsed-sig (crl-parse-ecdsa-signature signature))
                   (r (getf parsed-sig :r))
                   (s (getf parsed-sig :s))
                   (curve (cond
@@ -228,7 +228,7 @@
                                 (:secp521r1 66)))
                   (r-bytes (ironclad:integer-to-octets r :n-bits (* 8 coord-size)))
                   (s-bytes (ironclad:integer-to-octets s :n-bits (* 8 coord-size)))
-                  (public-key (make-ecdsa-public-key key-algorithm public-key-bytes)))
+                  (public-key (crl-make-ecdsa-public-key key-algorithm public-key-bytes)))
              (when (and public-key r s)
                (ironclad:verify-signature public-key hash
                                           (ironclad:make-signature curve :r r-bytes :s s-bytes)))))
@@ -270,8 +270,10 @@
                          :ecdsa-with-SHA512)) :sha512)
     (t :sha256)))
 
-(defun parse-ecdsa-signature (signature)
-  "Parse a DER-encoded ECDSA signature into r and s values."
+(defun crl-parse-ecdsa-signature (signature)
+  "Parse a DER-encoded ECDSA signature into r and s values.
+Lenient variant for CRL verification: returns NIL on malformed input.
+Distinct from PARSE-ECDSA-SIGNATURE in handshake/client.lisp."
   (handler-case
       (let ((parsed (parse-der signature)))
         (when (asn1-sequence-p parsed)
@@ -281,8 +283,9 @@
                     :s (asn1-node-value (second children)))))))
     (error () nil)))
 
-(defun make-ecdsa-public-key (key-algorithm public-key-bytes)
-  "Create an ECDSA public key from encoded bytes."
+(defun crl-make-ecdsa-public-key (key-algorithm public-key-bytes)
+  "Create an ECDSA public key from encoded bytes, mapping KEY-ALGORITHM to a curve.
+Distinct from MAKE-ECDSA-PUBLIC-KEY in handshake/client.lisp, which takes a curve."
   (let ((curve (cond
                  ((member key-algorithm '(:ecdsa-p256 :secp256r1 :prime256v1
                                           :ec-public-key)) :secp256r1)
