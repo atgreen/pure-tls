@@ -28,4 +28,5 @@
    #:openssl-tests
    #:boringssl-tests
    #:x509test-tests
-   #:security-regression-tests))
+   #:security-regression-tests
+   #:resumption-interop-tests))

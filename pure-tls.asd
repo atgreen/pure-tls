@@ -137,4 +137,5 @@
                              (:file "boringssl-tests")
                              (:file "x509test-tests")
                              (:file "security-regression-tests")
+                             (:file "resumption-interop-tests")
                              (:file "runner")))))

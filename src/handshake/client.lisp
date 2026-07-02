@@ -217,16 +217,22 @@
                             (setf (client-handshake-grease-ext-data hs)
                                   (random-bytes 1)))))
           extensions)
+    ;; Always advertise psk_key_exchange_modes, not just when offering a PSK.
+    ;; RFC 8446 Section 4.6.1 forbids servers from sending NewSessionTicket
+    ;; to a client that did not offer psk_dhe_ke, and strict implementations
+    ;; (e.g. JSSE) enforce this - so a client that only sends this extension
+    ;; alongside pre_shared_key can never obtain a ticket from them in the
+    ;; first place, and session resumption silently never happens.  Mainstream
+    ;; clients (Chrome, Firefox, OpenSSL) include it in every ClientHello.
+    (push (make-tls-extension
+           :type +extension-psk-key-exchange-modes+
+           :data (make-psk-key-exchange-modes-ext
+                  :modes (list +psk-dhe-ke+)))  ; We require DHE with PSK
+          extensions)
     ;; Check for cached session ticket for resumption
     (let ((ticket (and (client-handshake-hostname hs)
                        (session-ticket-cache-get (client-handshake-hostname hs)))))
       (when ticket
-        ;; Add psk_key_exchange_modes extension (required when offering PSK)
-        (push (make-tls-extension
-               :type +extension-psk-key-exchange-modes+
-               :data (make-psk-key-exchange-modes-ext
-                      :modes (list +psk-dhe-ke+)))  ; We require DHE with PSK
-              extensions)
         ;; Store that we're offering this ticket
         (setf (client-handshake-offered-psk hs) ticket)))
     ;; Store key exchange for later
@@ -388,15 +394,25 @@
     ;; the full ClientHello message (including handshake header) truncated
     ;; to exclude only the binder values.  The handshake header must retain
     ;; the original length field covering the complete message.
+    ;;
+    ;; For a ClientHello sent in response to a HelloRetryRequest, the binder
+    ;; transcript additionally includes ClientHello1 (as message_hash, per
+    ;; Section 4.4.1) and the HelloRetryRequest.  At this point the handshake
+    ;; transcript holds exactly that prefix (it was replaced by
+    ;; PROCESS-HELLO-RETRY-REQUEST); for an initial ClientHello it is empty.
     (let* ((hello-bytes (serialize-client-hello hello))
            (full-message (wrap-handshake-message +handshake-client-hello+ hello-bytes))
            (binders-len (pre-shared-key-ext-binders-length
                          (tls-extension-data psk-ext)))
            ;; Truncate from full message — preserves original header length
            (partial-message (subseq full-message 0 (- (length full-message) binders-len)))
+           (transcript-prefix (client-handshake-transcript hs))
+           (binder-transcript (if transcript-prefix
+                                  (concat-octet-vectors transcript-prefix partial-message)
+                                  partial-message))
            (transcript-hash (ironclad:digest-sequence
                              (cipher-suite-digest cipher-suite)
-                             partial-message))
+                             binder-transcript))
            ;; Compute actual binder
            (binder (compute-binder psk transcript-hash cipher-suite)))
       ;; Update the binder in the extension
@@ -823,8 +839,14 @@
   (let* ((ee (handshake-message-body message))
          (extensions (encrypted-extensions-extensions ee)))
     ;; Validate extensions: only allow those permitted in EncryptedExtensions.
-    ;; RFC 8446 restricts EE to extensions not in ServerHello and only those
-    ;; defined for EE. We currently support ALPN and server_name (empty).
+    ;; RFC 8446 Section 4.2 restricts EE to extensions defined for EE, and
+    ;; Section 4.2 also requires rejecting responses to extensions we never
+    ;; offered.  We accept the EE-permitted extensions we always/optionally
+    ;; offer: server_name (empty echo), supported_groups (informational,
+    ;; Section 4.2.7 - client MUST NOT act upon it; JSSE servers send this),
+    ;; ALPN, and ECH.  Extensions we never offer (max_fragment_length,
+    ;; use_srtp, heartbeat, certificate types, early_data) remain rejected
+    ;; as unsolicited.
     (let ((seen (make-hash-table :test 'eql)))
       (dolist (ext extensions)
         (let ((ext-type (tls-extension-type ext)))
@@ -837,6 +859,7 @@
           (setf (gethash ext-type seen) t)
           (unless (member ext-type (list +extension-application-layer-protocol-negotiation+
                                          +extension-server-name+
+                                         +extension-supported-groups+
                                          +extension-ech+))
             (record-layer-write-alert (client-handshake-record-layer hs)
                                       +alert-level-fatal+

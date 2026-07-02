@@ -32,9 +32,11 @@
                   (let ((x509test-ok (run! 'x509test-tests)))
                     (format t "~%--- Security Regression Tests ---~%")
                     (let ((security-ok (run! 'security-regression-tests)))
+                    (format t "~%--- Resumption Interop Tests ---~%")
+                    (let ((resumption-ok (run! 'resumption-interop-tests)))
                     (format t "~%=== Summary ===~%")
                     (format t "Note: Run (run-network-tests) separately for network tests.~%")
-                    (and crypto-ok mldsa-ok record-ok handshake-ok cert-ok cancel-ok cancel-integration-ok openssl-ok boringssl-ok x509test-ok security-ok)))))))))))))
+                    (and crypto-ok mldsa-ok record-ok handshake-ok cert-ok cancel-ok cancel-integration-ok openssl-ok boringssl-ok x509test-ok security-ok resumption-ok))))))))))))))
 
 (defun run-openssl-tests ()
   "Run OpenSSL test suite adaptation tests.

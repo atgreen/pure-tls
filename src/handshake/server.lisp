@@ -128,12 +128,25 @@
                        ;; Derive the PSK
                        (let ((psk (derive-resumption-psk resumption-master-secret
                                                           nonce cipher-suite)))
-                         ;; Compute transcript hash up to but not including binders
+                         ;; Compute transcript hash up to but not including binders.
+                         ;; RFC 8446 Section 4.2.11.2: for a ClientHello after a
+                         ;; HelloRetryRequest the binder transcript also covers
+                         ;; message_hash(ClientHello1) || HelloRetryRequest.  The
+                         ;; handshake transcript currently holds that prefix
+                         ;; followed by this ClientHello, so strip the trailing
+                         ;; raw ClientHello bytes to recover the prefix (empty
+                         ;; for an initial ClientHello).
                          (let* ((binders-len (pre-shared-key-ext-binders-length psk-ext))
                                 (truncated-len (- (length raw-client-hello) binders-len))
                                 (truncated-hello (subseq raw-client-hello 0 truncated-len))
+                                (full-transcript (server-handshake-transcript hs))
+                                (prefix (subseq full-transcript
+                                                0 (- (length full-transcript)
+                                                     (length raw-client-hello))))
                                 (digest (cipher-suite-digest cipher-suite))
-                                (transcript-hash (ironclad:digest-sequence digest truncated-hello)))
+                                (transcript-hash (ironclad:digest-sequence
+                                                  digest
+                                                  (concat-octet-vectors prefix truncated-hello))))
                            ;; Verify the binder
                            (let ((binder-ok (verify-binder psk transcript-hash binder cipher-suite)))
                              (hs-log "~&[HS] try-accept-psk: binder=~A~%" binder-ok)
