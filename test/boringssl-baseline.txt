@@ -1376,7 +1376,6 @@ FAIL Peek-Shutdown
 FAIL PointFormat-Client-Missing
 FAIL PointFormat-Client-MissingUncompressed
 FAIL PointFormat-Client-Tolerance
-FAIL PointFormat-EncryptedExtensions-TLS13
 FAIL PointFormat-ServerHello-TLS12
 FAIL PointFormat-Server-Missing
 FAIL PointFormat-Server-MissingUncompressed
@@ -1933,7 +1932,6 @@ FAIL SRTP-Server-Ignore-TLS-TLS11
 FAIL SRTP-Server-Ignore-TLS-TLS12
 FAIL StrayHelloRequest
 FAIL StrayHelloRequest-Packed
-FAIL SupportedCurves-EncryptedExtensions-TLS13
 FAIL SupportedCurves-ServerHello-TLS12
 FAIL SupportedVersionSelection-TLS12
 FAIL TicketCallback-Skip-TLS-TLS1

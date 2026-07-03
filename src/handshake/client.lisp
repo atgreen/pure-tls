@@ -869,12 +869,16 @@
             (record-layer-write-alert (client-handshake-record-layer hs)
                                       +alert-level-fatal+
                                       +alert-unsupported-extension+)
-            ;; Use different error messages for known vs unknown extensions
-            ;; - Known extensions in wrong context → :ERROR_PARSING_EXTENSION:
-            ;; - Unknown/custom extensions → :UNEXPECTED_EXTENSION:
+            ;; Error classification mirrors BoringSSL's taxonomy:
+            ;; - ec_point_formats (11) is a recognized server-response
+            ;;   extension in TLS 1.2, so its appearance here is a parse
+            ;;   failure in context → :ERROR_PARSING_EXTENSION:
+            ;; - Everything else (including recognized types like the
+            ;;   certificate_type extensions that we simply never offered)
+            ;;   is unsolicited → :UNEXPECTED_EXTENSION:
             (error 'tls-handshake-error
                    :message (format nil "~A Extension ~D not allowed in EncryptedExtensions"
-                                    (if (known-extension-p ext-type)
+                                    (if (= ext-type 11)  ; ec_point_formats
                                         ":ERROR_PARSING_EXTENSION:"
                                         ":UNEXPECTED_EXTENSION:")
                                     ext-type)))
