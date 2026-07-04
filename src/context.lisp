@@ -101,10 +101,29 @@
             (load-private-key private-key-file)))
     ;; Load trusted CAs
     (cond
-      ;; Explicit CA file or directory specified
+      ;; Explicit CA file or directory specified: fail closed.
+      ;; A caller who names :ca-file / :ca-directory is asserting a
+      ;; specific set of trust anchors. If that source cannot be read
+      ;; (missing/unreadable/directory) or yields zero usable anchors
+      ;; (empty or non-PEM garbage), that is a misconfiguration, not a
+      ;; silent trust-nothing store. Resignal any non-tls-error as a
+      ;; catchable tls-certificate-error so a non-interactive consumer's
+      ;; fail-closed handler catches it instead of the image dying on a
+      ;; raw file-error. (The system auto-load path below stays
+      ;; warn-and-continue; only an explicit source fails closed.)
       ((or ca-file ca-directory)
-       (setf (tls-context-trust-store ctx)
-             (make-trust-store-from-sources ca-file ca-directory)))
+       (let ((store
+               (handler-case (make-trust-store-from-sources ca-file ca-directory)
+                 (tls-error (e) (error e))
+                 (error (e)
+                   (error 'tls-certificate-error
+                          :message (format nil "Failed to load CA trust store from~@[ file ~S~]~@[ directory ~S~]: ~A"
+                                           ca-file ca-directory e))))))
+         (unless (trust-store-certificates store)
+           (error 'tls-certificate-error
+                  :message (format nil "CA trust store from~@[ file ~S~]~@[ directory ~S~] contains no usable certificates"
+                                   ca-file ca-directory)))
+         (setf (tls-context-trust-store ctx) store)))
       ;; Auto-load system CAs if verify-required and enabled
       ((and auto-load-system-ca
             (= verify-mode +verify-required+))
