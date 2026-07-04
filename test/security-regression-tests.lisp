@@ -353,6 +353,202 @@
 
 ;;;; Test Runner
 
+;;;; ---------------------------------------------------------------------------
+;;;; Finding: Adversarial certificate-chain validation (Georgiev et al.).
+;;;;
+;;;; verify-certificate-chain must fail closed on every class of forged chain:
+;;;; a non-CA issuer, a violated path-length budget, a corrupted signature, and
+;;;; an out-of-window validity date.  These tests drive the real pure-Lisp
+;;;; verifier (OS native store disabled, :trust-anchor-mode :replace with an
+;;;; explicit root list) so the decision is made by our own code, not the OS.
+;;;;
+;;;; The CA / date proofs use certificates constructed in-image: those checks
+;;;; fire before signature verification, so no valid signatures are needed.  The
+;;;; path-length and tampered-signature proofs need a chain whose earlier checks
+;;;; genuinely pass, so they load a real OpenSSL-signed leaf+intermediate chain
+;;;; (goodcn2-chain.pem) anchored at root-cert.pem and corrupt exactly one input.
+;;;; ---------------------------------------------------------------------------
+
+(defun %pem-chain (path)
+  "Parse every CERTIFICATE block in a PEM file, in file order (leaf first).
+   parse-certificate-from-file only decodes the first block, so multi-cert
+   chain fixtures need this."
+  (let ((text (pure-tls::octets-to-string (pure-tls::read-file-bytes path)))
+        (certs nil)
+        (pos 0)
+        (begin "-----BEGIN CERTIFICATE-----")
+        (end "-----END CERTIFICATE-----"))
+    (loop for b = (search begin text :start2 pos)
+          while b
+          for e = (search end text :start2 b)
+          while e
+          do (push (pure-tls::parse-certificate
+                    (pure-tls::base64-decode
+                     (remove-if (lambda (c) (member c '(#\Newline #\Return #\Space)))
+                                (subseq text (+ b (length begin)) e))))
+                   certs)
+             (setf pos (+ e (length end))))
+    (nreverse certs)))
+
+(defun %chain-cert (subject-cn issuer-cn
+                    &key (basic-constraints :ca-true) path-length
+                         (key-usage '(:key-cert-sign :crl-sign))
+                         (not-before 0) (not-after most-positive-fixnum))
+  "Construct an in-image X.509 certificate for chain-verification proofs.
+   BASIC-CONSTRAINTS is :ca-true, :ca-false, or :absent.  The default validity
+   window is always-valid; NOT-BEFORE / NOT-AFTER override it for date proofs.
+   Names are single-CN so certificate-issued-by-p links a leaf to its issuer by
+   equal CN."
+  (pure-tls::make-x509-certificate
+   :subject (pure-tls::make-x509-name :rdns (list (cons :common-name subject-cn)))
+   :issuer (pure-tls::make-x509-name :rdns (list (cons :common-name issuer-cn)))
+   :validity-not-before not-before
+   :validity-not-after not-after
+   :extensions
+   (append
+    (ecase basic-constraints
+      (:ca-true (list (pure-tls::make-x509-extension
+                       :oid :basic-constraints :critical t
+                       :value (if path-length
+                                  (list :ca t :path-length-constraint path-length)
+                                  (list :ca t)))))
+      (:ca-false (list (pure-tls::make-x509-extension
+                        :oid :basic-constraints :critical t
+                        :value (list :ca nil))))
+      (:absent nil))
+    (when key-usage
+      (list (pure-tls::make-x509-extension
+             :oid :key-usage :critical t :value key-usage))))))
+
+(test chain-rejects-ca-false-intermediate
+  "An issuer with BasicConstraints cA=FALSE (or absent) must not be accepted as
+   a signing CA."
+  (let ((pure-tls:*use-windows-certificate-store* nil)
+        (pure-tls:*use-macos-keychain* nil)
+        (now (get-universal-time)))
+    ;; Intermediate explicitly asserts cA=FALSE.
+    (let ((leaf (%chain-cert "leaf.example" "Intermediate CA"
+                             :basic-constraints :absent))
+          (inter (%chain-cert "Intermediate CA" "Root CA"
+                              :basic-constraints :ca-false)))
+      (signals pure-tls:tls-certificate-error
+        (pure-tls::verify-certificate-chain (list leaf inter) (list inter)
+                                            now nil :trust-anchor-mode :replace)))
+    ;; Intermediate carries no BasicConstraints extension at all.
+    (let ((leaf (%chain-cert "leaf.example" "Intermediate CA"
+                             :basic-constraints :absent))
+          (inter (%chain-cert "Intermediate CA" "Root CA"
+                              :basic-constraints :absent)))
+      (signals pure-tls:tls-certificate-error
+        (pure-tls::verify-certificate-chain (list leaf inter) (list inter)
+                                            now nil :trust-anchor-mode :replace)))))
+
+(test chain-rejects-pathlen-violation
+  "A CA asserting pathLenConstraint=0 with an intermediate CA below it in the
+   chain must be rejected."
+  (let ((pure-tls:*use-windows-certificate-store* nil)
+        (pure-tls:*use-macos-keychain* nil)
+        (now (get-universal-time)))
+    (destructuring-bind (leaf inter)
+        (%pem-chain (test-cert-path "openssl/goodcn2-chain.pem"))
+      (let ((root (pure-tls:parse-certificate-from-file
+                   (test-cert-path "openssl/root-cert.pem"))))
+        ;; Baseline: the untampered chain verifies, so the rejection below is
+        ;; attributable solely to the path-length constraint.
+        (is (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
+                                                now nil :trust-anchor-mode :replace)
+            "Untampered goodcn2 chain should verify")
+        ;; Assert pathLenConstraint=0 on the trusted root: it may issue end
+        ;; entities but no intermediate CA -- and the chain has exactly one.
+        (let ((bc (find :basic-constraints
+                        (pure-tls::x509-certificate-extensions root)
+                        :key #'pure-tls::x509-extension-oid)))
+          (setf (pure-tls::x509-extension-value bc)
+                (list :ca t :path-length-constraint 0)))
+        (signals pure-tls:tls-certificate-error
+          (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
+                                              now nil :trust-anchor-mode :replace))))))
+
+(test chain-rejects-tampered-signature
+  "A chain that passes name / CA / pathLen / date checks but whose leaf
+   signature is corrupted must be rejected at signature verification."
+  (let ((pure-tls:*use-windows-certificate-store* nil)
+        (pure-tls:*use-macos-keychain* nil)
+        (now (get-universal-time)))
+    (destructuring-bind (leaf inter)
+        (%pem-chain (test-cert-path "openssl/goodcn2-chain.pem"))
+      (let ((root (pure-tls:parse-certificate-from-file
+                   (test-cert-path "openssl/root-cert.pem"))))
+        ;; Baseline: the untampered chain verifies.
+        (is (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
+                                                now nil :trust-anchor-mode :replace)
+            "Untampered goodcn2 chain should verify")
+        ;; Flip one byte of the leaf signature.  Every earlier check still
+        ;; passes, so a rejection can only come from signature verification.
+        (let ((sig (copy-seq (pure-tls::x509-certificate-signature leaf))))
+          (setf (aref sig 20) (logxor #xff (aref sig 20)))
+          (setf (pure-tls::x509-certificate-signature leaf) sig))
+        (signals pure-tls:tls-certificate-error
+          (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
+                                              now nil :trust-anchor-mode :replace))))))
+
+(test chain-rejects-expired-leaf
+  "A leaf whose notAfter is in the past must be rejected."
+  (let ((pure-tls:*use-windows-certificate-store* nil)
+        (pure-tls:*use-macos-keychain* nil)
+        (now (get-universal-time)))
+    (let ((root (%chain-cert "Root CA" "Root CA" :basic-constraints :ca-true))
+          (leaf (%chain-cert "leaf.example" "Root CA"
+                             :basic-constraints :absent
+                             :not-after (- now 100000))))
+      ;; tls-certificate-expired is internal to pure-tls (double colon).
+      (signals pure-tls::tls-certificate-expired
+        (pure-tls::verify-certificate-chain (list leaf root) (list root)
+                                            now nil :trust-anchor-mode :replace)))))
+
+(test chain-rejects-not-yet-valid-leaf
+  "A leaf whose notBefore is in the future must be rejected."
+  (let ((pure-tls:*use-windows-certificate-store* nil)
+        (pure-tls:*use-macos-keychain* nil)
+        (now (get-universal-time)))
+    (let ((root (%chain-cert "Root CA" "Root CA" :basic-constraints :ca-true))
+          (leaf (%chain-cert "leaf.example" "Root CA"
+                             :basic-constraints :absent
+                             :not-before (+ now 100000000))))
+      ;; tls-certificate-not-yet-valid is internal to pure-tls (double colon).
+      (signals pure-tls::tls-certificate-not-yet-valid
+        (pure-tls::verify-certificate-chain (list leaf root) (list root)
+                                            now nil :trust-anchor-mode :replace)))))
+
+;;;; ---------------------------------------------------------------------------
+;;;; Finding: RFC 5280 4.2.1.3 -- an issuer whose KeyUsage extension is present
+;;;; but omits keyCertSign must not be accepted as a signing CA, even when its
+;;;; BasicConstraints assert cA=TRUE.  keyCertSign is the specific bit that
+;;;; authorizes certificate signing; a CA scoped to (say) CRL signing only must
+;;;; not be able to mint end-entity certificates.
+;;;;
+;;;; The fixture is arranged so that keyCertSign is the OPERATIVE rejection:
+;;;; the issuer is cA=TRUE (CA check passes), the leaf's issuer name matches
+;;;; (issued-by passes), and both certs are always-valid (date checks pass), so
+;;;; the only failing check is the missing keyCertSign key usage.
+;;;; ---------------------------------------------------------------------------
+
+(test chain-rejects-keycertsign-absent-issuer
+  "An issuer with KeyUsage present but lacking keyCertSign must be rejected as a
+   signing CA, even with BasicConstraints cA=TRUE."
+  (let ((pure-tls:*use-windows-certificate-store* nil)
+        (pure-tls:*use-macos-keychain* nil)
+        (now (get-universal-time)))
+    (let ((leaf (%chain-cert "leaf.example" "Issuing CA"
+                             :basic-constraints :absent))
+          ;; cA=TRUE, but KeyUsage is present WITHOUT :key-cert-sign.
+          (issuer (%chain-cert "Issuing CA" "Root CA"
+                               :basic-constraints :ca-true
+                               :key-usage '(:crl-sign))))
+      (signals pure-tls:tls-certificate-error
+        (pure-tls::verify-certificate-chain (list leaf issuer) (list issuer)
+                                            now nil :trust-anchor-mode :replace)))))
+
 (defun run-security-regression-tests ()
   "Run the security regression suite.  Returns T if all tests pass."
   (format t "~&=== Running pure-tls Security Regression Tests ===~%~%")
