@@ -10,6 +10,28 @@
 
 ;;;; Hostname Verification (RFC 6125 / RFC 2818)
 
+(defun valid-dns-name-p (name)
+  "Return T if NAME is a syntactically safe DNS name for identity comparison.
+   Rejects an embedded NUL and any byte outside the LDH set (ASCII letters,
+   digits, hyphen, dot).  A single leading \"*.\" wildcard label is permitted
+   so that legitimate wildcard SAN patterns still validate.  IP-literal
+   identities are handled by the IP path and are not expected here."
+  (and (stringp name)
+       (plusp (length name))
+       (let ((start 0))
+         ;; Allow one leading "*." wildcard label; the remainder must be LDH.
+         (when (and (>= (length name) 2)
+                    (char= (char name 0) #\*)
+                    (char= (char name 1) #\.))
+           (setf start 2))
+         (loop for i from start below (length name)
+               for c = (char name i)
+               always (or (char<= #\a c #\z)
+                          (char<= #\A c #\Z)
+                          (char<= #\0 c #\9)
+                          (char= c #\-)
+                          (char= c #\.))))))
+
 (defun verify-hostname (cert hostname)
   "Verify that HOSTNAME matches the certificate.
    Supports both DNS hostnames and IP address literals.
@@ -25,13 +47,24 @@
                    :hostname hostname
                    :message "IP address does not match any IP SAN entry")))))
 
+  ;; DNS hostname - the requested identity must itself be a safe DNS name.
+  ;; Defense in depth: an embedded NUL or a non-LDH byte must cause outright
+  ;; rejection, never a silent unequal-compare (e.g. "www.bank.com\0.evil.com").
+  (unless (valid-dns-name-p hostname)
+    (error 'tls-verification-error
+           :hostname hostname
+           :message "Requested hostname is not a valid DNS name (embedded NUL or non-LDH byte)"))
+
   ;; DNS hostname - check Subject Alternative Name extension first
   (let ((san-names (certificate-dns-names cert))
         (san-ips (certificate-ip-addresses cert)))
     (when (or san-names san-ips)
       ;; If SAN is present, only use SAN (ignore CN per RFC 6125)
       (if (some (lambda (san-name)
-                  (hostname-matches-p san-name hostname))
+                  ;; A malformed SAN dNSName (embedded NUL / non-LDH byte) can
+                  ;; never be the basis of a match; skip it before comparing.
+                  (and (valid-dns-name-p san-name)
+                       (hostname-matches-p san-name hostname)))
                 san-names)
           (return-from verify-hostname t)
           (error 'tls-verification-error
