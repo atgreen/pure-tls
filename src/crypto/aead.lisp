@@ -151,15 +151,18 @@
                                             :initialization-vector nonce
                                             :mode :stream)))
     (ironclad:encrypt poly-cipher zeros poly-key-block)
-    ;; Advance data cipher past block 0 (reuse poly-key-block as skip buffer)
+    ;; Advance data cipher past block 0, reusing poly-key-block as the skip
+    ;; buffer: both ciphers share key/nonce, so this writes the identical
+    ;; block-0 keystream and the Poly1305 key bytes are preserved.
     (ironclad:encrypt data-cipher zeros poly-key-block)
     (let* ((poly-key (subseq poly-key-block 0 32))
            (pt-len (length plaintext)))
 
-      ;; Step 2: Encrypt into output buffer sized for ciphertext + 16-byte tag
+      ;; Step 2: Encrypt into output buffer sized for ciphertext + 16-byte tag.
+      ;; ironclad:encrypt processes (length plaintext) bytes, so the oversized
+      ;; output is safe; the last 16 bytes are filled with the tag below.
       (let ((output (make-octet-vector (+ pt-len 16))))
-        (ironclad:encrypt data-cipher plaintext output
-                          :plain-end pt-len :cipher-start 0)
+        (ironclad:encrypt data-cipher plaintext output)
 
         ;; Step 3: Compute Poly1305 MAC incrementally per RFC 8439 Section 2.8
         ;; Avoids allocating a single concatenated mac-input vector.
@@ -337,9 +340,11 @@
     (let* ((content-len (length plaintext))
            (target-len (compute-padded-length content-len))
            (padding-len (max 0 (- target-len content-len)))
-           ;; Ensure we don't exceed max record size
-           (actual-padding (min padding-len
-                                (- +max-record-size+ content-len +aead-tag-length+ 1)))
+           ;; Ensure we don't exceed max record size.  The cap goes negative
+           ;; for a near-full record (content-len > 16367), so clamp at zero:
+           ;; inner-len must never drop below content-len + 1.
+           (actual-padding (max 0 (min padding-len
+                                       (- +max-record-size+ content-len +aead-tag-length+ 1))))
            (inner-len (+ content-len 1 actual-padding))
            (inner (make-octet-vector inner-len)))
       (replace inner plaintext)                     ; content

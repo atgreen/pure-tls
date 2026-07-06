@@ -51,6 +51,31 @@
   (is (= pure-tls::+max-record-size-with-padding+ 16640)
       "Max encrypted record should be 2^14 + 256 (16640) per RFC 8446 §5.4"))
 
+(test full-size-record-roundtrip
+  "A record at or near the 16384-byte maximum must encrypt and decrypt
+   correctly with both cipher suites.  Regression for the padding-cap term
+   in tls13-encrypt-record going negative above content-len 16367, which
+   once shrank the inner buffer below the content length."
+  (dolist (suite (list pure-tls::+tls-chacha20-poly1305-sha256+
+                       pure-tls::+tls-aes-128-gcm-sha256+))
+    (dolist (len (list 16367 16368 pure-tls::+max-record-size+))
+      (let* ((key (pure-tls::make-octet-vector 32))
+             (iv (pure-tls::make-octet-vector 12))
+             (enc (pure-tls::make-aead suite key iv))
+             (dec (pure-tls::make-aead suite key iv))
+             (pt (pure-tls::make-octet-vector len)))
+        (dotimes (i len) (setf (aref pt i) (mod i 251)))
+        (let* ((rec (pure-tls::tls13-encrypt-record enc 23 pt))
+               (hdr (pure-tls::octet-vector 23 3 3
+                                            (ldb (byte 8 8) (length rec))
+                                            (ldb (byte 8 0) (length rec)))))
+          (multiple-value-bind (out content-type)
+              (pure-tls::tls13-decrypt-record dec rec hdr)
+            (is (= content-type 23)
+                "suite ~4,'0X len ~D: content type survives" suite len)
+            (is (equalp out pt)
+                "suite ~4,'0X len ~D: plaintext round-trips" suite len)))))))
+
 ;;;; AEAD Nonce Construction (RFC 8446 Section 5.3)
 
 (test aead-nonce-construction
