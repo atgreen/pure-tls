@@ -44,9 +44,13 @@
    automatically loads the system trust store."
   (unless *default-tls-context*
     (let ((ctx (make-tls-context)))
-      ;; Auto-load system trust store if verify-required and no trust store set
+      ;; Auto-load system trust store whenever verification is enabled
+      ;; (+verify-peer+ or +verify-required+) and no trust store is set.
+      ;; +verify-peer+ still verifies a presented certificate, so it needs
+      ;; system roots too; loading them only for +verify-required+ left
+      ;; +verify-peer+ contexts with an empty trust store.
       (when (and *auto-load-system-trust-store*
-                 (= (tls-context-verify-mode ctx) +verify-required+)
+                 (/= (tls-context-verify-mode ctx) +verify-none+)
                  (null (tls-context-trust-store ctx)))
         (setf (tls-context-trust-store ctx) (load-system-trust-store)))
       (setf *default-tls-context* ctx)))
@@ -86,7 +90,8 @@
    ALPN-PROTOCOLS - List of ALPN protocol names.
 
    AUTO-LOAD-SYSTEM-CA - If T (default), automatically load system CA store
-     when verify-mode is +VERIFY-REQUIRED+ and no CA file/directory is specified."
+     when verification is enabled (+VERIFY-PEER+ or +VERIFY-REQUIRED+) and no
+     CA file/directory is specified."
   (let ((ctx (make-tls-context-struct
               :verify-mode verify-mode
               :verify-depth verify-depth
@@ -124,9 +129,13 @@
                   :message (format nil "CA trust store from~@[ file ~S~]~@[ directory ~S~] contains no usable certificates"
                                    ca-file ca-directory)))
          (setf (tls-context-trust-store ctx) store)))
-      ;; Auto-load system CAs if verify-required and enabled
+      ;; Auto-load system CAs whenever verification is enabled and no
+      ;; explicit CA source was given. This covers +verify-peer+ as well as
+      ;; +verify-required+: +verify-peer+ verifies a presented certificate,
+      ;; so it needs system roots (e.g. the cl+ssl compatibility layer builds
+      ;; its default context with +verify-peer+).
       ((and auto-load-system-ca
-            (= verify-mode +verify-required+))
+            (/= verify-mode +verify-none+))
        (setf (tls-context-trust-store ctx)
              (load-system-trust-store))))
     ;; Set cipher suites

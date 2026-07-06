@@ -130,6 +130,7 @@
                              (:file "record-tests")
                              (:file "handshake-tests")
                              (:file "certificate-tests")
+                             (:file "trust-store-tests")
                              (:file "cancel-tests")
                              (:file "cancel-integration-tests")
                              (:file "network-tests")
