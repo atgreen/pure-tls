@@ -351,6 +351,70 @@
         (pure-tls::session-ticket-cache-clear host)
         (ignore-errors (bt:join-thread thread))))))
 
+;;;; ---------------------------------------------------------------------------
+;;;; Finding: an unusable explicit :ca-file crashes the image instead of
+;;;; signalling a catchable condition.
+;;;;
+;;;; make-tls-context's explicit-CA branch loaded the trust store through
+;;;; read-file-bytes, which opens with-open-file with no :if-does-not-exist,
+;;;; so a missing/unreadable file raised a raw FILE-ERROR.  FILE-ERROR is not
+;;;; a subtype of PURE-TLS:TLS-ERROR, so a non-interactive consumer's
+;;;; fail-closed handler (which catches only the tls-error family) could not
+;;;; catch it and the image died.  A garbage or empty file was worse: the
+;;;; parser swallowed the decode error and returned an empty trust store, so
+;;;; the context silently trusted nothing.
+;;;;
+;;;; Secure behaviour: an explicitly-named CA source that cannot be read or
+;;;; that yields zero trust anchors is a misconfiguration -- make-tls-context
+;;;; must fail closed with a catchable PURE-TLS:TLS-CERTIFICATE-ERROR and the
+;;;; image must survive.  Each case passes :auto-load-system-ca nil so the bad
+;;;; file is the only trust source (no accidental system-store fallback).
+;;;; ---------------------------------------------------------------------------
+
+(test explicit-ca-source-fails-closed
+  "An unusable explicit :ca-file must signal a catchable tls-error-family
+   condition, never crash the image with a raw file-error."
+  (let* ((dir (uiop:temporary-directory))
+         (empty (merge-pathnames "pure-tls-fail-closed-empty.pem" dir))
+         (garbage (merge-pathnames "pure-tls-fail-closed-garbage.pem" dir))
+         (missing (merge-pathnames "pure-tls-fail-closed-does-not-exist.pem" dir)))
+    (unwind-protect
+         (progn
+           ;; Empty file: zero certificates parse -> fail closed on empty store.
+           (with-open-file (s empty :direction :output :if-exists :supersede
+                                    :if-does-not-exist :create
+                                    :element-type '(unsigned-byte 8)))
+           ;; Garbage non-PEM bytes (invalid UTF-8 lead bytes): decode/parse
+           ;; failure -> resignalled as a certificate error.
+           (with-open-file (s garbage :direction :output :if-exists :supersede
+                                      :if-does-not-exist :create
+                                      :element-type '(unsigned-byte 8))
+             (write-sequence #(255 254 0 1 2 3 128 200 66 66 7 7) s))
+           ;; Make sure the "missing" path really is absent.
+           (ignore-errors (delete-file missing))
+           ;; Missing path (guaranteed absent).
+           (signals pure-tls:tls-certificate-error
+             (pure-tls:make-tls-context :ca-file (namestring missing)
+                                        :auto-load-system-ca nil))
+           ;; Empty file (zero usable anchors).
+           (signals pure-tls:tls-certificate-error
+             (pure-tls:make-tls-context :ca-file (namestring empty)
+                                        :auto-load-system-ca nil))
+           ;; Garbage non-PEM file.
+           (signals pure-tls:tls-certificate-error
+             (pure-tls:make-tls-context :ca-file (namestring garbage)
+                                        :auto-load-system-ca nil))
+           ;; Not-a-regular-file: pass the temp directory itself.  Opening a
+           ;; directory as a file signals an error, which is portable AND
+           ;; root-safe -- chmod 000 is bypassed when the suite runs as root,
+           ;; so we deliberately use a directory path rather than an unreadable
+           ;; regular file.
+           (signals pure-tls:tls-certificate-error
+             (pure-tls:make-tls-context :ca-file (namestring dir)
+                                        :auto-load-system-ca nil)))
+      (ignore-errors (delete-file empty))
+      (ignore-errors (delete-file garbage)))))
+
 ;;;; Test Runner
 
 ;;;; ---------------------------------------------------------------------------
