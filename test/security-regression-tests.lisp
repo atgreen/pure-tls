@@ -613,6 +613,39 @@
         (pure-tls::verify-certificate-chain (list leaf issuer) (list issuer)
                                             now nil :trust-anchor-mode :replace)))))
 
+;;;; ---------------------------------------------------------------------------
+;;;; DNS name-safety in hostname verification.
+;;;;
+;;;; verify-hostname must reject a syntactically unsafe DNS name (embedded NUL,
+;;;; non-LDH bytes) outright rather than letting it reach a silent
+;;;; unequal-compare.  These drive the real validator with certificate objects
+;;;; constructed in-image (no private keys / OpenSSL fixtures needed for the
+;;;; identity decision).
+;;;; ---------------------------------------------------------------------------
+
+(defun %san-cert (&rest dns-names)
+  "Build a certificate whose only identity is the given SAN dNSName(s)."
+  (pure-tls::make-x509-certificate
+   :extensions (list (pure-tls::make-x509-extension
+                      :oid :subject-alt-name
+                      :value (mapcar (lambda (d) (list :dns d)) dns-names)))))
+
+(defun %nul-name ()
+  "The classic embedded-NUL truncation-confusion SAN: www.bank.com<NUL>.evil.com."
+  (concatenate 'string "www.bank.com" (string (code-char 0)) ".evil.com"))
+
+(test verify-hostname-embedded-nul-san-is-rejected
+  "A SAN dNSName carrying an embedded NUL must never be the basis of a match."
+  (let ((evil-name (%nul-name)))
+    ;; (a) The malicious name reaching the validator as the SAN, with the
+    ;;     truncated benign identity requested, must not match.
+    (signals pure-tls:tls-verification-error
+      (pure-tls:verify-hostname (%san-cert evil-name) "www.bank.com"))
+    ;; (b) The malicious name reaching the validator as the requested identity
+    ;;     is rejected outright as an invalid DNS name.
+    (signals pure-tls:tls-verification-error
+      (pure-tls:verify-hostname (%san-cert "www.bank.com") evil-name))))
+
 (defun run-security-regression-tests ()
   "Run the security regression suite.  Returns T if all tests pass."
   (format t "~&=== Running pure-tls Security Regression Tests ===~%~%")
