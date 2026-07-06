@@ -47,10 +47,12 @@
                    :hostname hostname
                    :message "IP address does not match any IP SAN entry")))))
 
-  ;; DNS hostname - the requested identity must itself be a safe DNS name.
-  ;; Defense in depth: an embedded NUL or a non-LDH byte must cause outright
-  ;; rejection, never a silent unequal-compare (e.g. "www.bank.com\0.evil.com").
-  (unless (valid-dns-name-p hostname)
+  ;; DNS hostname - the requested identity must be a safe DNS name after IDNA
+  ;; normalization (a U-label is converted to its xn-- A-label first, so IDN
+  ;; hostnames still verify).  Defense in depth: an embedded NUL or other
+  ;; non-LDH byte survives normalization and must cause outright rejection,
+  ;; never a silent unequal-compare (e.g. "www.bank.com\0.evil.com").
+  (unless (valid-dns-name-p (normalize-hostname-to-ascii hostname))
     (error 'tls-verification-error
            :hostname hostname
            :message "Requested hostname is not a valid DNS name (embedded NUL or non-LDH byte)"))
@@ -61,9 +63,10 @@
     (when (or san-names san-ips)
       ;; If SAN is present, only use SAN (ignore CN per RFC 6125)
       (if (some (lambda (san-name)
-                  ;; A malformed SAN dNSName (embedded NUL / non-LDH byte) can
-                  ;; never be the basis of a match; skip it before comparing.
-                  (and (valid-dns-name-p san-name)
+                  ;; A SAN dNSName still malformed after IDNA normalization
+                  ;; (embedded NUL / non-LDH byte) can never be the basis of
+                  ;; a match; skip it before comparing.
+                  (and (valid-dns-name-p (normalize-hostname-to-ascii san-name))
                        (hostname-matches-p san-name hostname)))
                 san-names)
           (return-from verify-hostname t)

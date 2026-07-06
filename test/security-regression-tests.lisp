@@ -646,6 +646,14 @@
     (signals pure-tls:tls-verification-error
       (pure-tls:verify-hostname (%san-cert "www.bank.com") evil-name))))
 
+(test verify-hostname-u-label-still-verifies
+  "The DNS name-safety check runs after IDNA normalization, so a Unicode
+   (U-label) requested identity still verifies against its punycode A-label
+   SAN rather than being rejected as non-LDH."
+  (let ((u-label (format nil "m~Cnchen.example.com" (code-char 252)))) ; münchen
+    (is-true (pure-tls:verify-hostname
+              (%san-cert "xn--mnchen-3ya.example.com") u-label))))
+
 (defun run-security-regression-tests ()
   "Run the security regression suite.  Returns T if all tests pass."
   (format t "~&=== Running pure-tls Security Regression Tests ===~%~%")
