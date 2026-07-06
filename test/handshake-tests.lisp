@@ -728,6 +728,105 @@
 
 ;;;; Test Runner
 
+;;;; ---------------------------------------------------------------------------
+;;;; ServerHello hardening: compression-off + TLS-1.3 version floor.
+;;;;
+;;;; process-server-hello fails closed on three malformed/hostile ServerHellos,
+;;;; each signalling pure-tls:tls-handshake-error after writing a fatal alert to
+;;;; the record layer:
+;;;;   (1) legacy_compression_method != 0 (RFC 8446 4.1.3) -> decode_error.
+;;;;   (2) a TLS 1.3 downgrade sentinel (DOWNGRD01 / DOWNGRD00) in the last 8
+;;;;       bytes of ServerHello.random (RFC 8446 4.1.3) -> illegal_parameter.
+;;;;   (3) supported_versions.selected_version != TLS 1.3 -> reject (we are a
+;;;;       TLS-1.3-only client; anything lower is refused).
+;;;;
+;;;; The driver stands up a minimal in-memory client-handshake + record-layer
+;;;; (an in-memory output stream, no socket) so the fatal-alert write succeeds
+;;;; and the rejection can be observed as a raised condition.  Each test starts
+;;;; from an otherwise-valid ServerHello and flips exactly one field, so the
+;;;; rejection is attributable to the field under test (verified: the messages
+;;;; are the compression, downgrade-sentinel, and version-floor errors
+;;;; respectively; no earlier check pre-empts them).
+;;;; ---------------------------------------------------------------------------
+
+(defun %drive-server-hello (server-hello)
+  "Drive process-server-hello against SERVER-HELLO using a minimal in-memory
+   client-handshake + record-layer (no socket).  Fatal alerts are written into
+   an in-memory stream, so the ServerHello rejections fire without a live
+   connection.  Signals whatever process-server-hello signals."
+  (let* ((out (flexi-streams:make-in-memory-output-stream))
+         (rl (pure-tls::make-record-layer out))
+         (hs (pure-tls::make-client-handshake
+              :record-layer rl
+              :legacy-session-id (pure-tls::make-octet-vector 0)
+              :cipher-suites (list pure-tls::+tls-aes-128-gcm-sha256+)))
+         (msg (pure-tls::make-handshake-message :type 2 :body server-hello))
+         (raw (pure-tls::make-octet-vector 40)))
+    (pure-tls::process-server-hello hs msg raw)))
+
+(defun %sentinel-free-random ()
+  "A 32-byte ServerHello.random with bytes 24..31 forced to a fixed non-sentinel
+   pattern, so the downgrade-sentinel check is not tripped incidentally."
+  (let ((r (pure-tls::random-bytes 32)))
+    (loop for i from 24 below 32 do (setf (aref r i) #x11))
+    r))
+
+(defun %supported-versions-server-hello-ext (version)
+  "A supported_versions ServerHello extension selecting VERSION."
+  (pure-tls::make-tls-extension
+   :type pure-tls::+extension-supported-versions+
+   :data (pure-tls::make-supported-versions-ext :selected-version version)))
+
+(test server-hello-nonzero-compression-rejected
+  "RFC 8446 4.1.3: a ServerHello with legacy_compression_method != 0 must be
+   rejected with a fatal handshake error."
+  (signals pure-tls:tls-handshake-error
+    (%drive-server-hello
+     (pure-tls::make-server-hello
+      :random (%sentinel-free-random)
+      :legacy-session-id-echo (pure-tls::make-octet-vector 0)
+      :cipher-suite pure-tls::+tls-aes-128-gcm-sha256+
+      :legacy-compression-method 1
+      :extensions (list (%supported-versions-server-hello-ext pure-tls::+tls-1.3+))))))
+
+(test server-hello-downgrade-sentinel-rejected
+  "RFC 8446 4.1.3: a TLS 1.3 downgrade sentinel in the last 8 bytes of
+   ServerHello.random must be rejected with a fatal handshake error."
+  ;; DOWNGRD01 (server negotiated <= TLS 1.2 while capable of 1.3).
+  (signals pure-tls:tls-handshake-error
+    (%drive-server-hello
+     (let ((r (%sentinel-free-random)))
+       (replace r (pure-tls::hex-to-octets "444F574E47524401") :start1 24)
+       (pure-tls::make-server-hello
+        :random r
+        :legacy-session-id-echo (pure-tls::make-octet-vector 0)
+        :cipher-suite pure-tls::+tls-aes-128-gcm-sha256+
+        :legacy-compression-method 0
+        :extensions (list (%supported-versions-server-hello-ext pure-tls::+tls-1.3+))))))
+  ;; DOWNGRD00 (server negotiated <= TLS 1.1) must be rejected too.
+  (signals pure-tls:tls-handshake-error
+    (%drive-server-hello
+     (let ((r (%sentinel-free-random)))
+       (replace r (pure-tls::hex-to-octets "444F574E47524400") :start1 24)
+       (pure-tls::make-server-hello
+        :random r
+        :legacy-session-id-echo (pure-tls::make-octet-vector 0)
+        :cipher-suite pure-tls::+tls-aes-128-gcm-sha256+
+        :legacy-compression-method 0
+        :extensions (list (%supported-versions-server-hello-ext pure-tls::+tls-1.3+)))))))
+
+(test server-hello-below-tls-1.3-rejected
+  "TLS-1.3-only client: a ServerHello whose supported_versions selects a version
+   below TLS 1.3 must be rejected with a fatal handshake error."
+  (signals pure-tls:tls-handshake-error
+    (%drive-server-hello
+     (pure-tls::make-server-hello
+      :random (%sentinel-free-random)
+      :legacy-session-id-echo (pure-tls::make-octet-vector 0)
+      :cipher-suite pure-tls::+tls-aes-128-gcm-sha256+
+      :legacy-compression-method 0
+      :extensions (list (%supported-versions-server-hello-ext pure-tls::+tls-1.2+))))))
+
 (defun run-handshake-tests ()
   "Run all handshake tests."
   (run! 'handshake-tests))
