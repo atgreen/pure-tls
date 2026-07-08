@@ -47,6 +47,13 @@
    #:certificate-free
    #:verify-hostname
 
+   ;; Hostname-verification policy
+   #:hostname-policy
+   #:make-hostname-policy
+   #:hostname-policy-allow-wildcards
+   #:hostname-policy-allow-cn-fallback
+   #:*general-hostname-policy*
+
    ;; Crypto utilities
    #:random-bytes
    #:constant-time-equal

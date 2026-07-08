@@ -28,7 +28,9 @@
   ;; ALPN protocols
   (alpn-protocols nil :type list)
   ;; Session cache (for session resumption - future)
-  (session-cache nil))
+  (session-cache nil)
+  ;; RFC 6125 hostname-verification policy threaded into VERIFY-HOSTNAME
+  (hostname-policy *general-hostname-policy* :type hostname-policy))
 
 ;;;; Default Context
 
@@ -63,7 +65,8 @@
                            ca-directory
                            cipher-suites
                            alpn-protocols
-                           (auto-load-system-ca t))
+                           (auto-load-system-ca t)
+                           (hostname-policy *general-hostname-policy*))
   "Create a new TLS context with the specified configuration.
 
    VERIFY-MODE - Certificate verification mode:
@@ -86,11 +89,16 @@
    ALPN-PROTOCOLS - List of ALPN protocol names.
 
    AUTO-LOAD-SYSTEM-CA - If T (default), automatically load system CA store
-     when verify-mode is +VERIFY-REQUIRED+ and no CA file/directory is specified."
+     when verify-mode is +VERIFY-REQUIRED+ and no CA file/directory is specified.
+
+   HOSTNAME-POLICY - HOSTNAME-POLICY value governing the RFC 6125 identity
+     decision for connections made with this context; defaults to
+     *GENERAL-HOSTNAME-POLICY* (the general profile)."
   (let ((ctx (make-tls-context-struct
               :verify-mode verify-mode
               :verify-depth verify-depth
-              :alpn-protocols alpn-protocols)))
+              :alpn-protocols alpn-protocols
+              :hostname-policy hostname-policy)))
     ;; Load certificate chain if specified
     (when certificate-chain-file
       (setf (tls-context-certificate-chain ctx)

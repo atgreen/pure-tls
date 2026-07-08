@@ -32,10 +32,28 @@
                           (char= c #\-)
                           (char= c #\.))))))
 
-(defun verify-hostname (cert hostname)
-  "Verify that HOSTNAME matches the certificate.
+(defun wildcard-pattern-p (name)
+  "Return T if NAME is a wildcard-pattern SAN: a leading \"*.\" label.  Used to
+   optionally exclude wildcard SANs from matching when a policy disables
+   ALLOW-WILDCARDS; the general RFC 6125 matcher itself is left untouched."
+  (and (stringp name)
+       (>= (length name) 2)
+       (char= (char name 0) #\*)
+       (char= (char name 1) #\.)))
+
+(defun verify-hostname (cert hostname &key (policy *general-hostname-policy*))
+  "Verify that HOSTNAME matches the certificate CERT under POLICY.
    Supports both DNS hostnames and IP address literals.
-   Returns T if verification succeeds, signals TLS-VERIFICATION-ERROR otherwise."
+   Returns T if verification succeeds, signals TLS-VERIFICATION-ERROR otherwise.
+
+   POLICY is a HOSTNAME-POLICY value; the default *GENERAL-HOSTNAME-POLICY* is
+   the RFC 6125 general profile.  Two orthogonal knobs shape the identity
+   decision: ALLOW-WILDCARDS gates whether wildcard-pattern SANs participate in
+   matching (the general matcher applies the RFC 6125 wildcard rules), and
+   ALLOW-CN-FALLBACK gates whether a certificate carrying no subjectAltName may
+   be matched against its Subject Common Name.  Embedded-NUL / non-LDH name
+   safety and IP-literal handling are pure correctness and apply under every
+   policy."
   ;; Check if hostname is an IP address literal
   (let ((ip-bytes (parse-ip-address hostname)))
     (when ip-bytes
@@ -57,16 +75,21 @@
            :hostname hostname
            :message "Requested hostname is not a valid DNS name (embedded NUL or non-LDH byte)"))
 
-  ;; DNS hostname - check Subject Alternative Name extension first
+  ;; DNS hostname - check Subject Alternative Name extension first.  When a SAN
+  ;; is present the Common Name is not consulted (RFC 6125).  A wildcard-pattern
+  ;; SAN participates only when the policy allows wildcards; otherwise it is
+  ;; skipped and the general matcher applies the RFC 6125 wildcard rules to the
+  ;; remaining SANs.
   (let ((san-names (certificate-dns-names cert))
         (san-ips (certificate-ip-addresses cert)))
     (when (or san-names san-ips)
-      ;; If SAN is present, only use SAN (ignore CN per RFC 6125)
       (if (some (lambda (san-name)
                   ;; A SAN dNSName still malformed after IDNA normalization
                   ;; (embedded NUL / non-LDH byte) can never be the basis of
                   ;; a match; skip it before comparing.
                   (and (valid-dns-name-p (normalize-hostname-to-ascii san-name))
+                       (or (hostname-policy-allow-wildcards policy)
+                           (not (wildcard-pattern-p san-name)))
                        (hostname-matches-p san-name hostname)))
                 san-names)
           (return-from verify-hostname t)
@@ -74,16 +97,19 @@
                  :hostname hostname
                  :message "Hostname does not match any SAN entry"))))
 
-  ;; Fall back to Common Name if no SAN (deprecated but still supported)
-  (let ((cns (certificate-subject-common-names cert)))
-    (when cns
-      (if (some (lambda (cn)
-                  (hostname-matches-p cn hostname))
-                cns)
-          (return-from verify-hostname t)
-          (error 'tls-verification-error
-                 :hostname hostname
-                 :message "Hostname does not match certificate CN"))))
+  ;; Fall back to Common Name if no SAN (deprecated but still supported), when
+  ;; the policy permits it.  With CN fallback disabled a no-SAN certificate
+  ;; carries no acceptable identity and is rejected.
+  (when (hostname-policy-allow-cn-fallback policy)
+    (let ((cns (certificate-subject-common-names cert)))
+      (when cns
+        (if (some (lambda (cn)
+                    (hostname-matches-p cn hostname))
+                  cns)
+            (return-from verify-hostname t)
+            (error 'tls-verification-error
+                   :hostname hostname
+                   :message "Hostname does not match certificate CN")))))
 
   ;; No SAN or CN to check
   (error 'tls-verification-error
@@ -780,7 +806,8 @@ TRUST-ANCHOR-MODE controls how trusted-roots interact with system store:
 (defun verify-peer-certificate (cert hostname &key
                                                verify-mode
                                                trust-store
-                                               (check-dates t))
+                                               (check-dates t)
+                                               (hostname-policy *general-hostname-policy*))
   "Perform full verification of a peer certificate.
 
    CERT - The certificate to verify.
@@ -788,6 +815,8 @@ TRUST-ANCHOR-MODE controls how trusted-roots interact with system store:
    VERIFY-MODE - One of +VERIFY-NONE+, +VERIFY-PEER+, or +VERIFY-REQUIRED+.
    TRUST-STORE - Trust store for chain verification (optional).
    CHECK-DATES - Whether to check validity dates (default T).
+   HOSTNAME-POLICY - HOSTNAME-POLICY value governing the RFC 6125 identity
+     decision; defaults to *GENERAL-HOSTNAME-POLICY* (the general profile).
 
    Returns T on success, signals appropriate error on failure."
   ;; Skip if verification disabled
@@ -798,7 +827,7 @@ TRUST-ANCHOR-MODE controls how trusted-roots interact with system store:
     (verify-certificate-dates cert))
   ;; Verify hostname
   (when hostname
-    (verify-hostname cert hostname))
+    (verify-hostname cert hostname :policy hostname-policy))
   ;; Chain verification (if trust store provided)
   (when trust-store
     (let ((issuer (trust-store-find-issuer trust-store cert)))

@@ -83,3 +83,25 @@
   (if context
       (cl-cancel:close-stream-on-cancel socket context)
       (lambda () nil)))
+
+;;; Hostname-verification policy
+
+(defstruct hostname-policy
+  "Orthogonal RFC 6125 hostname-verification knobs threaded into VERIFY-HOSTNAME.
+
+   ALLOW-WILDCARDS   - When true (default), wildcard-pattern SANs (\"*.\" left
+     label) are matched per RFC 6125 via the general matcher.  When NIL, such
+     SANs are excluded from matching.
+   ALLOW-CN-FALLBACK - When true (default), a certificate carrying no
+     subjectAltName may be matched against its Subject Common Name (deprecated
+     but still widely deployed).  When NIL, identity is trusted only through the
+     subjectAltName and a no-SAN certificate is rejected outright."
+  (allow-wildcards   t)
+  (allow-cn-fallback t))
+
+(defvar *general-hostname-policy* (make-hostname-policy)
+  "The default hostname-verification policy: the general RFC 6125 profile.
+   Honors wildcard SANs via the general matcher and permits Common Name
+   fallback when no subjectAltName is present.  Preserves the library's
+   general-purpose behaviour for every caller that does not compose a stricter
+   policy.")
