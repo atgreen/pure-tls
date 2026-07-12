@@ -53,4 +53,17 @@
    #:acme-error
    #:acme-challenge-error
    #:acme-order-error
-   #:acme-certificate-error))
+   #:acme-certificate-error
+   #:acme-http-error
+   #:acme-bad-nonce
+   #:acme-not-ready
+   #:acme-rate-limited
+   #:acme-http-error-status
+   #:acme-http-error-problem
+   #:acme-http-error-headers
+   #:acme-http-error-url
+   #:acme-http-error-method
+   #:acme-http-error-retry-after
+
+   ;; Retry policy (for issuance drivers)
+   #:with-acme-retries))

@@ -46,6 +46,53 @@
 (define-condition acme-certificate-error (acme-error) ())
 
 ;;; ----------------------------------------------------------------------------
+;;; HTTP-level conditions (recoverable via restarts)
+;;;
+;;; These map ACME HTTP responses onto typed conditions. A policy handler
+;;; (see WITH-ACME-RETRIES) turns each recoverable condition into a RETRY
+;;; restart that re-drives the offending request, without unwinding the stack.
+;;; ----------------------------------------------------------------------------
+
+(define-condition acme-http-error (acme-error)
+  ((status :initarg :status :initform nil :reader acme-http-error-status
+           :documentation "HTTP status code of the offending response.")
+   (problem :initarg :problem :initform nil :reader acme-http-error-problem
+            :documentation "Decoded RFC 7807 problem document alist, or NIL.")
+   (headers :initarg :headers :initform nil :reader acme-http-error-headers
+            :documentation "Response headers alist.")
+   (url :initarg :url :initform nil :reader acme-http-error-url
+        :documentation "URL of the request that produced this response.")
+   (method :initarg :method :initform nil :reader acme-http-error-method
+           :documentation "HTTP method keyword of the request (:get / :post).")
+   (retry-after :initarg :retry-after :initform nil :reader acme-http-error-retry-after
+                :documentation "Parsed Retry-After delay in seconds, or NIL."))
+  (:default-initargs :message "ACME HTTP error")
+  (:report
+   (lambda (condition stream)
+     (format stream "ACME HTTP ~A error for ~A ~A~@[: ~A~]"
+             (acme-http-error-status condition)
+             (acme-http-error-method condition)
+             (acme-http-error-url condition)
+             (let ((problem (acme-http-error-problem condition)))
+               (and (consp problem) (rest (assoc :detail problem)))))))
+  (:documentation "Base condition for a recoverable ACME HTTP response."))
+
+(define-condition acme-bad-nonce (acme-http-error) ()
+  (:documentation
+   "The ACME server rejected the request nonce (error type badNonce).
+    Recoverable: refresh the nonce and retry the request."))
+
+(define-condition acme-not-ready (acme-http-error) ()
+  (:documentation
+   "The requested ACME resource is not yet ready (e.g. HTTP 202 Accepted).
+    Recoverable: wait per Retry-After and retry the request."))
+
+(define-condition acme-rate-limited (acme-http-error) ()
+  (:documentation
+   "The ACME server rate-limited the request (HTTP 429 or error type
+    rateLimited). Recoverable: wait per Retry-After and retry the request."))
+
+;;; ----------------------------------------------------------------------------
 ;;; Base64URL encoding (ACME requires this, not standard base64)
 ;;; ----------------------------------------------------------------------------
 

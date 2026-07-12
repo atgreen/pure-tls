@@ -139,3 +139,14 @@
                              (:file "security-regression-tests")
                              (:file "resumption-interop-tests")
                              (:file "runner")))))
+
+(asdf:defsystem "pure-tls/acme/test"
+  :description "Tests for the pure-tls ACME client retry/restart handling"
+  :author "Anthony Green <green@moxielogic.com>"
+  :license "MIT"
+  :depends-on ("pure-tls/acme"
+               "fiveam")
+  :serial t
+  :components ((:module "test/acme"
+                :serial t
+                :components ((:file "client-retry-tests")))))
