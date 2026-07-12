@@ -420,6 +420,31 @@ pure-tls/acme uses the TLS-ALPN-01 challenge type, which validates domain owners
   :logger #'my-logger)   ; Custom logging function (optional)
 ```
 
+### Transient Error Recovery
+
+The ACME client automatically recovers from transient CA responses:
+`badNonce` rejections (RFC 8555 §6.5) are retried with a fresh nonce, and
+rate-limited (`429`/`rateLimited`) or not-ready (`202`) responses are
+retried after the server's `Retry-After` delay. Recovery is bounded by
+both a retry count and a total-wait ceiling, so it never loops forever.
+Each client function establishes sensible defaults on its own; a driver
+running a whole issuance can place one policy around the region instead:
+
+```lisp
+(pure-tls/acme:with-acme-retries (:max-nonce-retries 3
+                                  :max-retry-after-attempts 10
+                                  :max-total-wait 120)
+  ;; create order, complete challenges, finalize, download certificate
+  ...)
+```
+
+Recoverable responses are signaled as typed conditions —
+`acme-http-error` and its subtypes `acme-bad-nonce`, `acme-rate-limited`,
+and `acme-not-ready` — with a `retry` restart, so custom handlers can
+implement their own policy via the standard condition system. When the
+retry budget is exhausted, the condition propagates (or the terminal
+response is returned as-is), never a silent failure.
+
 ### Debugging
 
 Enable debug logging:
@@ -508,15 +533,44 @@ Create a TLS server stream over a TCP socket.
 
 ### Context Management
 
-#### `make-tls-context` (&key verify-mode certificate-chain private-key alpn-protocols ca-certificates)
+#### `make-tls-context` (&key verify-mode verify-depth certificate-chain-file private-key-file ca-file ca-directory cipher-suites alpn-protocols auto-load-system-ca hostname-policy)
 
 Create a reusable TLS context for configuration.
+
+- `verify-mode` - One of the verification modes below (default `+verify-required+`)
+- `verify-depth` - Maximum certificate chain depth (default 100)
+- `certificate-chain-file` / `private-key-file` - PEM files for the local certificate and key (for servers)
+- `ca-file` / `ca-directory` - Trusted CA certificates; when neither is given and verification is enabled, the system trust store is loaded automatically (disable with `:auto-load-system-ca nil`)
+- `cipher-suites` - List of allowed cipher suites
+- `alpn-protocols` - List of ALPN protocol names
+- `hostname-policy` - RFC 6125 hostname-verification policy (see below)
 
 ### Verification Modes
 
 - `+verify-none+` (0) - No certificate verification
 - `+verify-peer+` (1) - Verify peer certificate if provided
 - `+verify-required+` (2) - Require and verify peer certificate
+
+### Hostname Verification Policy
+
+By default pure-tls applies the general RFC 6125 profile: wildcard SANs
+(`*.example.com`) match per the RFC 6125 rules, and a certificate with no
+subjectAltName may fall back to its Subject Common Name (deprecated but
+still deployed). Clients that authenticate one specific server name can
+opt into a stricter profile via the context:
+
+```lisp
+(pure-tls:make-tls-context
+  :verify-mode pure-tls:+verify-required+
+  :hostname-policy (pure-tls:make-hostname-policy
+                     :allow-wildcards nil      ; reject wildcard SANs
+                     :allow-cn-fallback nil))  ; reject no-SAN certificates
+```
+
+The two knobs are independent and both default to the permissive value
+(`*general-hostname-policy*`), so existing callers see no change.
+Embedded-NUL/non-LDH name rejection and IP-literal handling are
+correctness checks, not policy, and apply unconditionally.
 
 ## Certificate Verification
 
