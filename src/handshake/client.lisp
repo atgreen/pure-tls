@@ -20,6 +20,8 @@
   (trust-store nil)
   ;; Skip hostname verification (for SNI-only hostname)
   (skip-hostname-verify nil :type boolean)
+  ;; RFC 6125 hostname-verification policy threaded into VERIFY-HOSTNAME
+  (hostname-policy *general-hostname-policy* :type hostname-policy)
   ;; Cipher suites we support (in preference order)
   ;; ChaCha20-Poly1305 is preferred when available because it provides
   ;; better side-channel resistance than AES-GCM in pure software implementations.
@@ -1622,7 +1624,7 @@
     (when (member verify-mode (list +verify-peer+ +verify-required+))
       ;; Verify hostname matches certificate (unless skip-hostname-verify is set)
       (when (and hostname (not (client-handshake-skip-hostname-verify hs)))
-        (verify-hostname cert hostname))
+        (verify-hostname cert hostname :policy (client-handshake-hostname-policy hs)))
       ;; Verify certificate chain
       ;; Pass nil for hostname when skip-hostname-verify is set to avoid
       ;; platform-specific hostname verification (macOS/Windows)
@@ -1892,7 +1894,8 @@
                                                    client-private-key
                                                    client-certificate-chain
                                                    ech-configs
-                                                   (ech-enabled t))
+                                                   (ech-enabled t)
+                                                   (hostname-policy *general-hostname-policy*))
   "Perform the TLS 1.3 client handshake.
    Returns a CLIENT-HANDSHAKE structure on success.
    TRUST-STORE is used for certificate chain verification when verify-mode is +verify-required+.
@@ -1907,6 +1910,7 @@
              :verify-mode verify-mode
              :trust-store trust-store
              :skip-hostname-verify skip-hostname-verify
+             :hostname-policy hostname-policy
              :client-certificate client-certificate
              :client-private-key client-private-key
              :client-certificate-chain client-certificate-chain

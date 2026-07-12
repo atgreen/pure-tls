@@ -586,7 +586,8 @@
                   :client-private-key private-key
                   :client-certificate-chain chain-certs
                   :ech-configs parsed-ech-configs
-                  :ech-enabled ech-enabled)))
+                  :ech-enabled ech-enabled
+                  :hostname-policy (tls-context-hostname-policy context))))
         (setf (tls-stream-handshake stream) hs)
         ;; Verify certificate chain and hostname if verification enabled
         (when (and (member verify (list +verify-peer+ +verify-required+))
@@ -595,7 +596,7 @@
                 (chain (client-handshake-peer-certificate-chain hs)))
             ;; Verify hostname - only if hostname (not just sni-hostname) was provided
             (when hostname
-              (verify-hostname cert hostname))
+              (verify-hostname cert hostname :policy (tls-context-hostname-policy context)))
             ;; Verify certificate chain for both +verify-peer+ and +verify-required+
             ;; (+verify-peer+ means "verify if presented" - servers always present certs)
             (when chain
