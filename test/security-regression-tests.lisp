@@ -630,6 +630,12 @@
                       :oid :subject-alt-name
                       :value (mapcar (lambda (d) (list :dns d)) dns-names)))))
 
+(defun %cn-only-cert (common-name)
+  "Build a certificate with a Subject Common Name and NO subjectAltName."
+  (pure-tls::make-x509-certificate
+   :subject (pure-tls::make-x509-name
+             :rdns (list (cons :common-name common-name)))))
+
 (defun %nul-name ()
   "The classic embedded-NUL truncation-confusion SAN: www.bank.com<NUL>.evil.com."
   (concatenate 'string "www.bank.com" (string (code-char 0)) ".evil.com"))
@@ -653,6 +659,55 @@
   (let ((u-label (format nil "m~Cnchen.example.com" (code-char 252)))) ; münchen
     (is-true (pure-tls:verify-hostname
               (%san-cert "xn--mnchen-3ya.example.com") u-label))))
+
+;;;; ---------------------------------------------------------------------------
+;;;; Hostname-verification policy: two orthogonal RFC 6125 knobs on the TLS
+;;;; context, both defaulting to the permissive value so the default profile is
+;;;; byte-for-byte the general-purpose behaviour.  ALLOW-WILDCARDS gates whether
+;;;; wildcard SANs match; ALLOW-CN-FALLBACK gates Common Name fallback for a
+;;;; no-SAN certificate.
+;;;; ---------------------------------------------------------------------------
+
+(test verify-hostname-default-honors-wildcard-san
+  "The default policy honors an RFC 6125 wildcard SAN: *.example.com must
+   authenticate www.example.com when no explicit policy is supplied."
+  (is (pure-tls:verify-hostname (%san-cert "*.example.com") "www.example.com")
+      "A wildcard SAN must authenticate a single-label host under the default policy"))
+
+(test verify-hostname-allow-wildcards-nil-excludes-wildcard-san
+  "With ALLOW-WILDCARDS disabled, a wildcard SAN is excluded from matching even
+   where the general matcher would cover it, while an exact SAN still matches."
+  (let ((policy (pure-tls:make-hostname-policy :allow-wildcards nil)))
+    (signals pure-tls:tls-verification-error
+      (pure-tls:verify-hostname (%san-cert "*.example.com") "foo.example.com"
+                                :policy policy))
+    (is (pure-tls:verify-hostname (%san-cert "dns.google") "dns.google"
+                                  :policy policy)
+        "An exact SAN must still match when wildcards are disabled")))
+
+(test verify-hostname-default-permits-cn-fallback
+  "The default policy falls back to the Subject Common Name for a no-SAN
+   certificate (deprecated but still deployed)."
+  (is (pure-tls:verify-hostname (%cn-only-cert "www.example.com")
+                                "www.example.com")
+      "CN fallback must authenticate a matching no-SAN certificate by default"))
+
+(test verify-hostname-allow-cn-fallback-nil-rejects-no-san
+  "With ALLOW-CN-FALLBACK disabled the Common Name is never consulted, so a
+   no-SAN certificate is rejected even when its CN matches exactly."
+  (let ((policy (pure-tls:make-hostname-policy :allow-cn-fallback nil)))
+    (signals pure-tls:tls-verification-error
+      (pure-tls:verify-hostname (%cn-only-cert "www.example.com")
+                                "www.example.com"
+                                :policy policy))))
+
+(test hostname-policy-general-matcher-unchanged
+  "The general RFC 6125 wildcard matcher is untouched by the policy seam: a
+   single-label wildcard still matches structurally, *.com does not, and a
+   wildcard over a multi-label public suffix does not."
+  (is (pure-tls::hostname-matches-p "*.example.com" "foo.example.com"))
+  (is (not (pure-tls::hostname-matches-p "*.com" "foo.com")))
+  (is (not (pure-tls::hostname-matches-p "*.co.uk" "foo.co.uk"))))
 
 (defun run-security-regression-tests ()
   "Run the security regression suite.  Returns T if all tests pass."
