@@ -251,6 +251,18 @@
    0 means no limit. Set to a positive value to enforce a limit.
    Used to prevent DoS via excessively large certificate chains.")
 
+(defconstant +max-handshake-message-length+ (1- (expt 2 24))
+  "Protocol maximum for a handshake message body: the uint24 length field
+   in the handshake header cannot encode more than 2^24 - 1 bytes.")
+
+(defparameter *max-handshake-message-size* +max-record-size+
+  "Maximum body size in bytes accepted for a non-certificate handshake
+   message. Enforced as soon as the peer's advertised uint24 length is
+   visible, before buffering further record fragments, to prevent DoS via
+   huge fragmented handshake messages. Certificate messages are instead
+   bounded by *MAX-CERTIFICATE-LIST-SIZE* (or the uint24 protocol maximum
+   when that is 0/unlimited).")
+
 ;;;; HPKE Constants (RFC 9180)
 
 ;; HPKE Modes

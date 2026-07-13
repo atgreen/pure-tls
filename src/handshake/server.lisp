@@ -70,7 +70,9 @@
   (resumption-master-secret nil :type (or null octet-vector))  ; For ticket generation
   (ticket-nonce-counter 0 :type fixnum)  ; Counter for ticket nonces
   ;; Message buffer for reassembling fragmented handshake messages
-  (message-buffer nil :type (or null octet-vector))
+  ;; Reassembly buffer: a simple octet vector or an adjustable vector with
+  ;; fill pointer (see handshake-buffer-append), hence (vector octet).
+  (message-buffer nil :type (or null (vector octet)))
   ;; HelloRetryRequest state
   (hello-retry-sent nil :type boolean)  ; T if we've sent HRR
   (hrr-selected-group nil)              ; Group we requested in HRR
@@ -942,7 +944,10 @@
   ;; Read more data if needed until we have a complete message
   (loop while (not (handshake-buffer-has-complete-message-p
                     (server-handshake-message-buffer hs)))
-        do (handler-case
+        ;; Reject an over-large advertised message before buffering more
+        do (check-handshake-buffer-size (server-handshake-message-buffer hs)
+                                        (server-handshake-record-layer hs))
+           (handler-case
                (multiple-value-bind (content-type data)
                    (record-layer-read (server-handshake-record-layer hs))
                  ;; Handle alerts
@@ -957,9 +962,7 @@
                             :state (server-handshake-state hs)))
                    ;; Append to buffer
                    (setf (server-handshake-message-buffer hs)
-                         (if (server-handshake-message-buffer hs)
-                             (concat-octet-vectors (server-handshake-message-buffer hs) data)
-                             data))))
+                         (handshake-buffer-append (server-handshake-message-buffer hs) data))))
              ;; Handle record overflow - send alert and re-signal
              (tls-record-overflow (e)
                (handler-case

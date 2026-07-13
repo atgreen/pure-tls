@@ -40,7 +40,9 @@
   ;; Handshake transcript (raw bytes for hashing)
   (transcript nil :type (or null octet-vector))
   ;; Buffer for handshake messages (multiple messages may arrive in one record)
-  (message-buffer nil :type (or null octet-vector))
+  ;; Reassembly buffer: a simple octet vector or an adjustable vector with
+  ;; fill pointer (see handshake-buffer-append), hence (vector octet).
+  (message-buffer nil :type (or null (vector octet)))
   ;; Server's certificate (parsed X.509)
   (peer-certificate nil)
   ;; Full certificate chain (list of parsed certificates)
@@ -1823,7 +1825,10 @@
   ;; Read more data if needed
   (loop while (not (handshake-buffer-has-complete-message-p
                     (client-handshake-message-buffer hs)))
-        do (handler-case
+        ;; Reject an over-large advertised message before buffering more
+        do (check-handshake-buffer-size (client-handshake-message-buffer hs)
+                                        (client-handshake-record-layer hs))
+           (handler-case
                (multiple-value-bind (content-type data)
                    (record-layer-read (client-handshake-record-layer hs))
                  ;; Handle alerts
@@ -1837,9 +1842,7 @@
                             :message (format nil ":UNEXPECTED_MESSAGE: Expected handshake, got content type ~D" content-type)))
                    ;; Append to buffer
                    (setf (client-handshake-message-buffer hs)
-                         (if (client-handshake-message-buffer hs)
-                             (concat-octet-vectors (client-handshake-message-buffer hs) data)
-                             data))))
+                         (handshake-buffer-append (client-handshake-message-buffer hs) data))))
              ;; Handle record overflow - send alert and re-signal
              (tls-record-overflow (e)
                (handler-case
@@ -2088,7 +2091,10 @@
   ;; Read more data if needed until we have a complete message
   (loop while (not (handshake-buffer-has-complete-message-p
                     (client-handshake-message-buffer hs)))
-        do (handler-case
+        ;; Reject an over-large advertised message before buffering more
+        do (check-handshake-buffer-size (client-handshake-message-buffer hs)
+                                        (client-handshake-record-layer hs))
+           (handler-case
                (multiple-value-bind (content-type data)
                    (record-layer-read (client-handshake-record-layer hs))
                  ;; Handle alerts
@@ -2102,9 +2108,7 @@
                             :message (format nil ":UNEXPECTED_MESSAGE: Expected handshake, got content type ~D" content-type)))
                    ;; Append to buffer
                    (setf (client-handshake-message-buffer hs)
-                         (if (client-handshake-message-buffer hs)
-                             (concat-octet-vectors (client-handshake-message-buffer hs) data)
-                             data))))
+                         (handshake-buffer-append (client-handshake-message-buffer hs) data))))
              ;; Handle record overflow - send alert and re-signal
              (tls-record-overflow (e)
                (handler-case

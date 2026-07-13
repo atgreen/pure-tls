@@ -470,6 +470,70 @@
     (let ((msg-length (decode-uint24 buffer 1)))
       (>= (length buffer) (+ 4 msg-length)))))
 
+(defun max-handshake-message-body-size (msg-type)
+  "Return the maximum acceptable body size in bytes for a handshake message
+   of MSG-TYPE. Certificate messages may carry a peer certificate chain and
+   are bounded by *MAX-CERTIFICATE-LIST-SIZE* (plus framing overhead for the
+   certificate_request_context and list length), or by the uint24 protocol
+   maximum when that is 0/unlimited. All other messages are bounded by
+   *MAX-HANDSHAKE-MESSAGE-SIZE*."
+  (if (= msg-type +handshake-certificate+)
+      (if (plusp *max-certificate-list-size*)
+          ;; context length (1) + context (<= 255) + list length (3)
+          (+ *max-certificate-list-size* 259)
+          +max-handshake-message-length+)
+      *max-handshake-message-size*))
+
+(defun check-handshake-buffer-size (buffer record-layer &key max-body-size)
+  "Reject an over-large handshake message before buffering more fragments.
+   Once BUFFER holds the 4-byte handshake header, compare the advertised
+   uint24 body length against MAX-BODY-SIZE (default: the per-message-type
+   limit from MAX-HANDSHAKE-MESSAGE-BODY-SIZE). On violation, send a fatal
+   illegal_parameter alert on RECORD-LAYER (when non-NIL) and signal
+   TLS-HANDSHAKE-ERROR. No-op while the header is still incomplete."
+  (when (and buffer (>= (length buffer) 4))
+    (let* ((msg-type (aref buffer 0))
+           (msg-length (decode-uint24 buffer 1))
+           (max-body (or max-body-size (max-handshake-message-body-size msg-type))))
+      (when (> msg-length max-body)
+        (when record-layer
+          (ignore-errors
+            (record-layer-write-alert record-layer
+                                      +alert-level-fatal+
+                                      +alert-illegal-parameter+)))
+        (error 'tls-handshake-error
+               :message (format nil ":EXCESSIVE_MESSAGE_SIZE: ~A handshake message length ~D exceeds maximum ~D"
+                                (handshake-message-name msg-type)
+                                msg-length max-body))))))
+
+(defun handshake-buffer-append (buffer data)
+  "Append octet vector DATA to the handshake reassembly BUFFER (which may be
+   NIL) and return the resulting buffer. The result is an adjustable octet
+   vector with a fill pointer, grown geometrically, so reassembling a message
+   from many record fragments copies each fragment O(1) times instead of
+   re-copying the whole accumulated buffer per fragment."
+  (let ((data-len (length data)))
+    (if (and buffer
+             (adjustable-array-p buffer)
+             (array-has-fill-pointer-p buffer))
+        (let* ((old-len (fill-pointer buffer))
+               (needed (+ old-len data-len)))
+          (when (> needed (array-dimension buffer 0))
+            (adjust-array buffer (max needed (* 2 (array-dimension buffer 0)))))
+          (setf (fill-pointer buffer) needed)
+          (replace buffer data :start1 old-len)
+          buffer)
+        (let* ((old-len (if buffer (length buffer) 0))
+               (needed (+ old-len data-len))
+               (new (make-array (max needed 64)
+                                :element-type 'octet
+                                :adjustable t
+                                :fill-pointer needed)))
+          (when buffer
+            (replace new buffer))
+          (replace new data :start1 old-len)
+          new))))
+
 (defun handshake-buffer-extract-message (buffer)
   "Extract one complete handshake message from the buffer.
    Returns (VALUES message-bytes remaining-buffer).
