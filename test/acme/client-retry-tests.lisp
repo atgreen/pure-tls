@@ -226,6 +226,32 @@
       (is (= 1 (length *stub-requests*))
           "a non-recoverable 4xx must not be retried"))))
 
+(test register-account-log-omits-account-email
+  "The pre-POST account-registration log must never carry the account email.
+   Install a capturing logger, drive registration over the stubbed transport
+   (no network), and assert the registration log line is emitted verbatim with
+   no '@' and no address text anywhere in what was logged."
+  (let ((client (make-test-client))
+        (captured '()))
+    (setf (acme::acme-client-logger client)
+          (lambda (level format-string &rest args)
+            (declare (ignore level))
+            (push (apply #'format nil format-string args) captured)))
+    (setf (acme::acme-client-nonce client) "nonce-1")
+    (with-acme-stub
+        ((list
+          (list "{\"status\":\"valid\"}" 201
+                '((:location . "https://example.test/acct/1")
+                  (:replay-nonce . "nonce-2")))))
+      (acme::client-register-account client "ops@example.test"))
+    (let ((messages (reverse captured)))
+      (is (member "Registering ACME account" messages :test #'string=)
+          "the registration log line must be emitted verbatim, address-free")
+      (is (notany (lambda (m) (find #\@ m)) messages)
+          "no emitted log line may contain an @ (the account email must not leak)")
+      (is (notany (lambda (m) (search "ops@example.test" m)) messages)
+          "the account email must never appear in any emitted log line"))))
+
 ;;;; ---------------------------------------------------------------------------
 ;;;; Runner
 ;;;; ---------------------------------------------------------------------------
