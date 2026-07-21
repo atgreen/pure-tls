@@ -386,6 +386,40 @@
 
 ;;;; Test Runner
 
+(test acme-identifier-critical-extension-accepted
+  "Test that an id-pe-acmeIdentifier (RFC 8737) CRITICAL extension parses.
+A tls-alpn-01 challenge certificate carries the key-authorization digest in a
+critical extension at OID 1.3.6.1.5.5.7.1.31, so the parser must recognize it
+as :acme-identifier rather than rejecting it as an unknown critical extension.
+The fixture is genuine output of pure-tls's own ACME challenge-certificate path,
+and that provenance is why it is kept verbatim rather than regenerated.  Only
+the parse is exercised here; no validity date is ever evaluated, so the
+fixture's notAfter is immaterial and it needs no reissuing once it lapses."
+  (let* ((cert-path (test-cert-path "acme-tls-alpn-challenge.pem"))
+         ;; Must not signal an unknown-critical tls-decode-error.
+         (cert (pure-tls:parse-certificate-from-file cert-path))
+         (ext (find :acme-identifier
+                    (pure-tls::x509-certificate-extensions cert)
+                    :key #'pure-tls::x509-extension-oid)))
+    (is (not (null ext))
+        "Certificate should carry an acmeIdentifier extension")
+    (is (eq :acme-identifier (pure-tls::x509-extension-oid ext))
+        "acmeIdentifier OID should resolve to the :acme-identifier keyword")
+    (is (pure-tls::x509-extension-critical ext)
+        "acmeIdentifier extension should be marked critical")
+    (is (null (pure-tls::certificate-has-unknown-critical-extensions-p cert))
+        "A recognized acmeIdentifier should not count as an unknown critical extension")))
+
+(test unknown-critical-extension-still-rejected
+  "Test that an unrecognized CRITICAL extension is still rejected.
+Accepting id-pe-acmeIdentifier must not weaken RFC 5280 s4.2 enforcement: a
+critical extension at an unrelated, unrecognized OID must still fail to parse,
+proving the allowance is scoped to the single acmeIdentifier OID.  The fixture
+is a self-signed certificate carrying one critical extension at 1.3.6.1.4.1.99999.1."
+  (let ((cert-path (test-cert-path "unknown-critical-extension.pem")))
+    (signals pure-tls:tls-decode-error
+      (pure-tls:parse-certificate-from-file cert-path))))
+
 (defun run-certificate-tests ()
   "Run all certificate tests."
   (run! 'certificate-tests))

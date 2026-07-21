@@ -309,6 +309,9 @@ Per DER (X.690): integers must be minimally encoded."
     ((1 3 6 1 5 5 7 3 9) . :ocsp-signing)
     ;; Authority Information Access (RFC 5280)
     ((1 3 6 1 5 5 7 1 1) . :authority-info-access)
+    ;; ACME Identifier (RFC 8737, id-pe-acmeIdentifier) - carries the
+    ;; key-authorization digest presented in a tls-alpn-01 challenge certificate.
+    ((1 3 6 1 5 5 7 1 31) . :acme-identifier)
     ((1 3 6 1 5 5 7 48 1) . :ocsp)
     ((1 3 6 1 5 5 7 48 2) . :ca-issuers)
     ;; Signature Algorithms
