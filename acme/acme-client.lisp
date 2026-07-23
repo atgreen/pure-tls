@@ -355,7 +355,7 @@
 (defun client-register-account (client email)
   "Register new account or fetch existing one.
    Returns the account URL on success."
-  (client-log client :info "Registering account for ~A" email)
+  (client-log client :info "Registering ACME account")
   (multiple-value-bind (response status location)
       (client-post client
                    (rest (assoc :new-account (acme-client-directory client)))
