@@ -540,7 +540,8 @@ instance of a particular extension."
                                      :policy-constraints
                                      :inhibit-any-policy
                                      :extended-key-usage
-                                     :crl-distribution-points)))
+                                     :crl-distribution-points
+                                     :acme-identifier)))
     (loop for ext in (x509-certificate-extensions cert)
           when (and (x509-extension-critical ext)
                     (not (member (x509-extension-oid ext) known-critical-extensions)))
