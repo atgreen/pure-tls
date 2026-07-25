@@ -709,6 +709,100 @@
   (is (not (pure-tls::hostname-matches-p "*.com" "foo.com")))
   (is (not (pure-tls::hostname-matches-p "*.co.uk" "foo.co.uk"))))
 
+;;;; ---------------------------------------------------------------------------
+;;;; Handshake reassembly hardening: a peer controls the uint24 length in the
+;;;; handshake message header and could previously force pure-tls to buffer up
+;;;; to 16 MiB per message via many record-sized fragments, with O(n^2) copy
+;;;; work from repeated full-buffer concatenation.  The fix (a) rejects an
+;;;; excessive advertised length as soon as the 4-byte header is visible,
+;;;; before further fragments are buffered, and (b) reassembles into a
+;;;; growable buffer so each fragment is copied O(1) times.
+;;;; ---------------------------------------------------------------------------
+
+(defun %hs-header (msg-type body-length &optional (body-bytes 0))
+  "Build a handshake message prefix: 4-byte header advertising BODY-LENGTH,
+   followed by BODY-BYTES zero bytes of (possibly partial) body."
+  (pure-tls::concat-octet-vectors
+   (pure-tls::octet-vector msg-type
+                           (ldb (byte 8 16) body-length)
+                           (ldb (byte 8 8) body-length)
+                           (ldb (byte 8 0) body-length))
+   (pure-tls::make-octet-vector body-bytes)))
+
+(test handshake-buffer-rejects-excessive-non-certificate-length
+  "A non-certificate handshake header advertising one byte over
+   *max-handshake-message-size* is rejected before any further append."
+  (let ((buffer (%hs-header pure-tls::+handshake-finished+
+                            (1+ pure-tls::*max-handshake-message-size*))))
+    (signals pure-tls:tls-handshake-error
+      (pure-tls::check-handshake-buffer-size buffer nil))))
+
+(test handshake-buffer-accepts-length-at-cap
+  "A handshake header advertising exactly the configured maximum passes the
+   size check (and an incomplete header is never checked)."
+  (is-false (pure-tls::check-handshake-buffer-size
+             (%hs-header pure-tls::+handshake-finished+
+                         pure-tls::*max-handshake-message-size*)
+             nil))
+  ;; Header incomplete: no length to validate yet
+  (is-false (pure-tls::check-handshake-buffer-size
+             (pure-tls::octet-vector pure-tls::+handshake-finished+ 0) nil)))
+
+(test handshake-buffer-certificate-honors-configured-cap
+  "A Certificate message is bounded by *max-certificate-list-size* (plus
+   framing overhead) when that limit is set, and rejected above it."
+  (let ((pure-tls:*max-certificate-list-size* 1000))
+    ;; Within cap + framing overhead: accepted
+    (is-false (pure-tls::check-handshake-buffer-size
+               (%hs-header pure-tls::+handshake-certificate+ 1259) nil))
+    ;; One byte over: rejected
+    (signals pure-tls:tls-handshake-error
+      (pure-tls::check-handshake-buffer-size
+       (%hs-header pure-tls::+handshake-certificate+ 1260) nil))))
+
+(test handshake-buffer-certificate-unlimited-allows-protocol-max
+  "With *max-certificate-list-size* = 0 (unlimited), a Certificate message may
+   advertise up to the uint24 protocol maximum, preserving existing behavior."
+  (let ((pure-tls:*max-certificate-list-size* 0))
+    (is-false (pure-tls::check-handshake-buffer-size
+               (%hs-header pure-tls::+handshake-certificate+ #xFFFFFF) nil))
+    ;; But a non-certificate type claiming the same length is still rejected
+    (signals pure-tls:tls-handshake-error
+      (pure-tls::check-handshake-buffer-size
+       (%hs-header pure-tls::+handshake-encrypted-extensions+ #xFFFFFF) nil))))
+
+(test handshake-buffer-fragmented-message-reassembles
+  "A message fragmented across several appends still reassembles and extracts
+   correctly through the growable reassembly buffer."
+  (let* ((body-length 100)
+         (fragment-1 (%hs-header pure-tls::+handshake-finished+ body-length 40))
+         (fragment-2 (pure-tls::make-octet-vector 40 :initial-element 1))
+         (fragment-3 (pure-tls::make-octet-vector 20 :initial-element 2))
+         (buffer nil))
+    (setf buffer (pure-tls::handshake-buffer-append buffer fragment-1))
+    (is-false (pure-tls::handshake-buffer-has-complete-message-p buffer))
+    (is-false (pure-tls::check-handshake-buffer-size buffer nil))
+    (setf buffer (pure-tls::handshake-buffer-append buffer fragment-2))
+    (is-false (pure-tls::handshake-buffer-has-complete-message-p buffer))
+    (setf buffer (pure-tls::handshake-buffer-append buffer fragment-3))
+    (is-true (pure-tls::handshake-buffer-has-complete-message-p buffer))
+    (multiple-value-bind (message-bytes remaining)
+        (pure-tls::handshake-buffer-extract-message buffer)
+      (is (null remaining))
+      (is (equalp (pure-tls::concat-octet-vectors fragment-1 fragment-2 fragment-3)
+                  message-bytes)))))
+
+(test handshake-buffer-append-grows-in-place
+  "handshake-buffer-append reuses the growable buffer across appends instead
+   of allocating and re-copying the full accumulated buffer per fragment."
+  (let* ((first (pure-tls::make-octet-vector 512 :initial-element 3))
+         (second (pure-tls::make-octet-vector 512 :initial-element 4))
+         (buffer (pure-tls::handshake-buffer-append nil first)))
+    (is (eq buffer (pure-tls::handshake-buffer-append buffer second)))
+    (is (= 1024 (length buffer)))
+    (is (equalp (pure-tls::concat-octet-vectors first second)
+                (coerce buffer '(vector (unsigned-byte 8)))))))
+
 (defun run-security-regression-tests ()
   "Run the security regression suite.  Returns T if all tests pass."
   (format t "~&=== Running pure-tls Security Regression Tests ===~%~%")

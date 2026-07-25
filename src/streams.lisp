@@ -271,11 +271,17 @@
              (error 'tls-decode-error
                     :message ":DECODE_ERROR: Zero-length handshake record"))
            ;; Append incoming data to the reassembly buffer
-           (let ((buf (tls-stream-handshake-message-buffer stream)))
-             (setf (tls-stream-handshake-message-buffer stream)
-                   (if buf
-                       (concatenate '(vector (unsigned-byte 8)) buf data)
-                       data)))
+           (setf (tls-stream-handshake-message-buffer stream)
+                 (handshake-buffer-append
+                  (tls-stream-handshake-message-buffer stream) data))
+           ;; Post-handshake messages (KeyUpdate, NewSessionTicket) are small;
+           ;; reject over-large advertised lengths before buffering more.
+           ;; Certificate messages are never legitimate here, so the plain
+           ;; cap applies to all message types.
+           (check-handshake-buffer-size
+            (tls-stream-handshake-message-buffer stream)
+            (tls-stream-record-layer stream)
+            :max-body-size *max-handshake-message-size*)
            ;; Process all complete handshake messages in the buffer
            (loop while (handshake-buffer-has-complete-message-p
                         (tls-stream-handshake-message-buffer stream))

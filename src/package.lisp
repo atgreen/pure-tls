@@ -111,6 +111,7 @@
    #:*default-buffer-size*
    #:*default-verify-mode*
    #:*max-certificate-list-size*
+   #:*max-handshake-message-size*
 
    ;; Session resumption
    #:*session-ticket-cache*
