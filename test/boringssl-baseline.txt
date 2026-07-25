@@ -1239,7 +1239,6 @@ FAIL GarbageInitialRecordVersion-TLS11
 FAIL GarbageInitialRecordVersion-TLS12
 FAIL GarbageInitialRecordVersion-TLS13
 FAIL GREASE-Client-TLS12
-FAIL GREASE-Client-TLS13
 FAIL GREASE-Server-TLS13
 FAIL HttpCONNECT
 FAIL HttpGET
@@ -1381,6 +1380,7 @@ FAIL PointFormat-ServerHello-TLS12
 FAIL PointFormat-Server-Missing
 FAIL PointFormat-Server-MissingUncompressed
 FAIL PointFormat-Server-Tolerance
+FAIL PostQuantumNotEnabledByDefaultInClients
 FAIL PSK-Client-AcceptFirst-TLS
 FAIL PSK-Client-AcceptSecond-TLS
 FAIL PSK-Client-NoKeyShare-TLS
@@ -2141,8 +2141,6 @@ FAIL TrailingMessageData-ServerHello-TLS
 FAIL TrailingMessageData-ServerKeyExchange-TLS
 FAIL TrailingMessageData-TLS13-ClientCertificate-TLS
 FAIL TrailingMessageData-TLS13-ClientCertificateVerify-TLS
-FAIL TrustAnchorGroups-MatchExact-Server
-FAIL TrustAnchorGroups-Match-Server
 FAIL TrustAnchors-ClientRequestEmpty
 FAIL TrustAnchors-ClientRequest-Match
 FAIL TrustAnchors-ClientRequest-Match-Non-Empty-Extension
