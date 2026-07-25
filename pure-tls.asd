@@ -8,7 +8,7 @@
   :description "Pure Common Lisp TLS 1.3 implementation"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
-  :version "1.12.1"
+  :version "1.13.0"
   :defsystem-depends-on ("trivial-features")
   :depends-on ("ironclad"
                "trivial-gray-streams"
@@ -67,7 +67,7 @@
   :description "cl+ssl API compatibility layer for pure-tls"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
-  :version "1.12.1"
+  :version "1.13.0"
   :depends-on ("pure-tls"
                "usocket")
   :serial t
@@ -78,7 +78,7 @@
   :description "ACME client for automatic certificate management (Let's Encrypt)"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
-  :version "2.0.0"
+  :version "1.13.0"
   :depends-on ("pure-tls"
                "drakma"
                "cl-json"
@@ -103,7 +103,7 @@
   :description "Hunchentoot integration for pure-tls/acme"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
-  :version "2.0.0"
+  :version "1.13.0"
   :depends-on ("pure-tls/acme"
                "hunchentoot")
   :serial t
