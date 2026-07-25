@@ -232,20 +232,28 @@
       ;; No encryption - return plaintext record
       (values content-type fragment))))
 
-(defun record-layer-write (layer content-type data)
-  "Write and potentially encrypt a record to the record layer."
+(defun record-layer-write (layer content-type data &key (start 0) (end (length data)))
+  "Write and potentially encrypt a record to the record layer.
+   START/END bound the region of DATA to send, avoiding a subseq copy when the
+   caller already holds the payload in a larger buffer."
   (let* ((cipher (record-layer-write-cipher layer))
          (stream (record-layer-stream layer)))
     (if cipher
-        ;; Encrypted write
-        (let* ((encrypted (tls13-encrypt-record cipher content-type data))
+        ;; Encrypted write.  tls13-encrypt-record copies DATA[start,end) into
+        ;; its own inner buffer, so no slice needs to be materialized here.
+        (let* ((encrypted (tls13-encrypt-record cipher content-type data
+                                                :start start :end end))
                (record (make-tls-record
                         :content-type +content-type-application-data+
                         :version +tls-1.2+
                         :fragment encrypted)))
           (write-tls-record stream record))
-        ;; Plaintext write
-        (let ((record (make-plaintext-record content-type data)))
+        ;; Plaintext write - only materialize a slice when one is requested.
+        (let ((record (make-plaintext-record
+                       content-type
+                       (if (and (= start 0) (= end (length data)))
+                           data
+                           (subseq data start end)))))
           (write-tls-record stream record)))))
 
 (defun record-layer-write-alert (layer level description)
@@ -257,9 +265,11 @@
   "Write a handshake record, fragmenting if necessary."
   (record-layer-write-fragmented layer +content-type-handshake+ handshake-data))
 
-(defun record-layer-write-application-data (layer data)
-  "Write application data, fragmenting if necessary."
-  (record-layer-write-fragmented layer +content-type-application-data+ data))
+(defun record-layer-write-application-data (layer data &key (start 0) (end (length data)))
+  "Write application data, fragmenting if necessary.
+   START/END bound the region of DATA to send."
+  (record-layer-write-fragmented layer +content-type-application-data+ data
+                                 :start start :end end))
 
 (defun record-layer-write-change-cipher-spec (layer)
   "Write a dummy change_cipher_spec record for middlebox compatibility.
@@ -283,13 +293,19 @@
       (loop for start from 0 below (length data) by max-size
             collect (subseq data start (min (+ start max-size) (length data))))))
 
-(defun record-layer-write-fragmented (layer content-type data)
-  "Write DATA as potentially multiple records, fragmenting if necessary.
-   Respects the max-send-fragment setting of the record layer.
-   MAX-SEND-FRAGMENT is the maximum plaintext payload size before encryption."
+(defun record-layer-write-fragmented (layer content-type data
+                                      &key (start 0) (end (length data)))
+  "Write DATA[start,end) as potentially multiple records, fragmenting if
+   necessary.  Respects the max-send-fragment setting of the record layer.
+   MAX-SEND-FRAGMENT is the maximum plaintext payload size before encryption.
+   Fragments are written as bounded slices of DATA, so no per-fragment subseq
+   copies are allocated."
   (let ((max-size (record-layer-max-send-fragment layer)))
-    (dolist (fragment (fragment-data data max-size))
-      (record-layer-write layer content-type fragment))))
+    (if (<= (- end start) max-size)
+        (record-layer-write layer content-type data :start start :end end)
+        (loop for s from start below end by max-size
+              do (record-layer-write layer content-type data
+                                     :start s :end (min end (+ s max-size)))))))
 
 ;;;; Alert Processing
 

@@ -421,11 +421,13 @@
 
 (defmethod stream-force-output ((stream tls-stream))
   (when (plusp (tls-stream-output-position stream))
-    (let ((data (subseq (tls-stream-output-buffer stream)
-                        0 (tls-stream-output-position stream))))
-      (record-layer-write-application-data
-       (tls-stream-record-layer stream) data)
-      (setf (tls-stream-output-position stream) 0)))
+    ;; Pass the pending region of the output buffer directly; the record layer
+    ;; bounds it with :end, so no subseq copy of the payload is made per flush.
+    (record-layer-write-application-data
+     (tls-stream-record-layer stream)
+     (tls-stream-output-buffer stream)
+     :end (tls-stream-output-position stream))
+    (setf (tls-stream-output-position stream) 0))
   (force-output (tls-stream-underlying-stream stream)))
 
 (defmethod stream-finish-output ((stream tls-stream))

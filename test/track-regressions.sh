@@ -114,10 +114,14 @@ save_baseline() {
 
     run_tests "$tmpresults"
 
-    cp "$tmpresults" "$BASELINE_FILE"
+    # Track only FAIL lines in the baseline.  SKIP/unimplemented entries are
+    # environment-dependent noise (they balloon the file by thousands of lines)
+    # and are ignored by compare_results, which reads only "^FAIL " lines from
+    # both the baseline and the current results.
+    grep '^FAIL ' "$tmpresults" > "$BASELINE_FILE"
     echo ""
     echo "Baseline saved to $BASELINE_FILE"
-    echo "Tests tracked: $(wc -l < "$BASELINE_FILE")"
+    echo "Failures tracked: $(wc -l < "$BASELINE_FILE")"
 }
 
 compare_results() {
