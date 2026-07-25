@@ -83,13 +83,18 @@
     (replace output tag :start1 pt-len)
     output))
 
-(defun aes-gcm-decrypt (key nonce ciphertext-with-tag aad)
+(defun aes-gcm-decrypt (key nonce ciphertext-with-tag aad &key output)
   "Decrypt using AES-GCM.
 
    KEY               - 16 or 32 byte encryption key (AES-128 or AES-256).
    NONCE             - 12 byte nonce.
    CIPHERTEXT-WITH-TAG - Ciphertext with 16-byte tag appended.
    AAD               - Additional authenticated data.
+   OUTPUT            - Optional destination buffer for the plaintext.  When
+                       supplied it must hold at least (- (length
+                       CIPHERTEXT-WITH-TAG) 16) bytes; the decrypted plaintext
+                       is written into its prefix and OUTPUT is returned,
+                       letting callers reuse a pooled buffer.
 
    Returns plaintext, or signals TLS-MAC-ERROR if authentication fails."
   (let ((key-len (length key)))
@@ -100,17 +105,19 @@
   (when (< (length ciphertext-with-tag) 16)
     (error 'tls-mac-error))
   (let* ((ct-len (- (length ciphertext-with-tag) 16))
-         (ciphertext (subseq ciphertext-with-tag 0 ct-len))
+         ;; The trailing 16 bytes are the tag; only 16 bytes, so copying them
+         ;; out is cheap.  The ciphertext body is left in place and bounded via
+         ;; :ciphertext-end below to avoid a full-record subseq copy.
          (tag (subseq ciphertext-with-tag ct-len))
          (mode (ironclad:make-authenticated-encryption-mode
                 :gcm :cipher-name :aes :key key
                 :initialization-vector nonce))
-         (plaintext (make-octet-vector ct-len))
+         (plaintext (or output (make-octet-vector ct-len)))
          (computed-tag (make-octet-vector 16)))
     ;; Process AAD
     (ironclad:process-associated-data mode aad)
-    ;; Decrypt
-    (ironclad:decrypt mode ciphertext plaintext)
+    ;; Decrypt only the ciphertext portion, leaving the tag untouched.
+    (ironclad:decrypt mode ciphertext-with-tag plaintext :ciphertext-end ct-len)
     ;; Get computed tag
     (ironclad:produce-tag mode :tag computed-tag)
     ;; Verify tag (constant-time comparison)
@@ -187,19 +194,23 @@
             (replace output tag :start1 ct-len))
           output)))))
 
-(defun chacha20-poly1305-decrypt (key nonce ciphertext-with-tag aad)
+(defun chacha20-poly1305-decrypt (key nonce ciphertext-with-tag aad &key output)
   "Decrypt using ChaCha20-Poly1305 per RFC 8439.
 
    KEY               - 32 byte encryption key.
    NONCE             - 12 byte nonce.
    CIPHERTEXT-WITH-TAG - Ciphertext with 16-byte tag appended.
    AAD               - Additional authenticated data.
+   OUTPUT            - Optional destination buffer for the plaintext (see
+                       AES-GCM-DECRYPT); reused instead of allocating when
+                       supplied.
 
    Returns plaintext, or signals TLS-MAC-ERROR if authentication fails."
   (when (< (length ciphertext-with-tag) 16)
     (error 'tls-mac-error))
   (let* ((ct-len (- (length ciphertext-with-tag) 16))
-         (ciphertext (subseq ciphertext-with-tag 0 ct-len))
+         ;; Only the trailing 16-byte tag is copied out; the ciphertext body is
+         ;; MAC'd and decrypted in place via bounds below.
          (tag (subseq ciphertext-with-tag ct-len)))
 
     ;; Step 1: Generate Poly1305 one-time key using ChaCha20 with counter=0
@@ -215,31 +226,42 @@
                                               :initialization-vector nonce
                                               :mode :stream)))
       (ironclad:encrypt poly-cipher zeros poly-key-block)
-      (let ((skip (make-octet-vector 64)))
-        (ironclad:encrypt data-cipher zeros skip))
+      ;; Advance data cipher past block 0, reusing poly-key-block as the skip
+      ;; buffer: both ciphers share key/nonce, so this rewrites the identical
+      ;; block-0 keystream and the Poly1305 key bytes are preserved.
+      (ironclad:encrypt data-cipher zeros poly-key-block)
       (let ((poly-key (subseq poly-key-block 0 32)))
 
-        ;; Step 2: Verify the Poly1305 tag before decrypting (verify-then-decrypt)
+        ;; Step 2: Verify the Poly1305 tag before decrypting (verify-then-decrypt).
+        ;; Compute the MAC incrementally per RFC 8439 Section 2.8 to avoid
+        ;; allocating a single concatenated mac-input vector (matches the
+        ;; encrypt path).
         (let* ((aad-len (length aad))
-               (aad-pad (chacha20-poly1305-pad16 aad-len))
-               (ct-pad (chacha20-poly1305-pad16 ct-len))
-               (mac-input (concat-octet-vectors
-                           aad
-                           (make-octet-vector aad-pad)
-                           ciphertext
-                           (make-octet-vector ct-pad)
-                           (encode-uint64-le aad-len)
-                           (encode-uint64-le ct-len)))
                (mac (ironclad:make-mac :poly1305 poly-key)))
-          (ironclad:update-mac mac mac-input)
+          ;; AAD || pad16(AAD)
+          (ironclad:update-mac mac aad)
+          (let ((aad-pad (chacha20-poly1305-pad16 aad-len)))
+            (when (plusp aad-pad)
+              (ironclad:update-mac mac (make-octet-vector aad-pad))))
+          ;; ciphertext || pad16(ciphertext)
+          (ironclad:update-mac mac ciphertext-with-tag :end ct-len)
+          (let ((ct-pad (chacha20-poly1305-pad16 ct-len)))
+            (when (plusp ct-pad)
+              (ironclad:update-mac mac (make-octet-vector ct-pad))))
+          ;; len(AAD) || len(ciphertext) as 64-bit LE
+          (ironclad:update-mac mac (encode-uint64-le aad-len))
+          (ironclad:update-mac mac (encode-uint64-le ct-len))
           (let ((computed-tag (ironclad:produce-mac mac)))
             ;; Constant-time comparison to prevent timing attacks
             (unless (constant-time-equal tag computed-tag)
               (error 'tls-mac-error))))
 
-        ;; Step 3: Decrypt the ciphertext using ChaCha20 starting at counter=1
-        (let ((plaintext (make-octet-vector ct-len)))
-          (ironclad:encrypt data-cipher ciphertext plaintext)  ; XOR-based, same as decrypt
+        ;; Step 3: Decrypt the ciphertext using ChaCha20 starting at counter=1.
+        ;; :plaintext-end bounds the input to the ciphertext body, skipping the
+        ;; trailing tag without a subseq copy.
+        (let ((plaintext (or output (make-octet-vector ct-len))))
+          (ironclad:encrypt data-cipher ciphertext-with-tag plaintext
+                            :plaintext-end ct-len)  ; XOR-based, same as decrypt
           plaintext)))))
 
 (defun encode-uint64-le (n)
@@ -274,19 +296,21 @@
     (aead-increment-sequence cipher)
     result))
 
-(defun aead-decrypt (cipher ciphertext aad)
+(defun aead-decrypt (cipher ciphertext aad &key output)
   "Decrypt ciphertext using the AEAD cipher.
+   OUTPUT, when supplied, is a destination buffer the plaintext is written
+   into (see AES-GCM-DECRYPT) so callers can reuse a pooled buffer.
    Returns plaintext or signals TLS-MAC-ERROR on authentication failure."
   (let* ((key (aead-cipher-key cipher))
          (nonce (aead-compute-nonce cipher))
          (suite (aead-cipher-cipher-suite cipher))
          (result (case suite
                    (#.+tls-aes-128-gcm-sha256+
-                    (aes-gcm-decrypt key nonce ciphertext aad))
+                    (aes-gcm-decrypt key nonce ciphertext aad :output output))
                    (#.+tls-aes-256-gcm-sha384+
-                    (aes-gcm-decrypt key nonce ciphertext aad))
+                    (aes-gcm-decrypt key nonce ciphertext aad :output output))
                    (#.+tls-chacha20-poly1305-sha256+
-                    (chacha20-poly1305-decrypt key nonce ciphertext aad))
+                    (chacha20-poly1305-decrypt key nonce ciphertext aad :output output))
                    (otherwise (error 'tls-crypto-error
                              :operation "AEAD decrypt"
                              :message (format nil "Unsupported cipher suite: ~X" suite))))))
@@ -325,19 +349,23 @@
        (funcall policy plaintext-length))
       (t plaintext-length))))
 
-(defun tls13-encrypt-record (cipher content-type plaintext &optional (padding-policy *record-padding-policy*))
+(defun tls13-encrypt-record (cipher content-type plaintext
+                             &key (padding-policy *record-padding-policy*)
+                                  (start 0) (end (length plaintext)))
   "Encrypt a TLS 1.3 record.
 
    The plaintext is padded with the inner content type and optional zeros,
    then encrypted with AAD being the record header.
 
    PADDING-POLICY overrides *record-padding-policy* for this record.
+   START/END bound the region of PLAINTEXT to encrypt, letting callers pass a
+   slice of a larger buffer without a subseq copy.
 
    Returns the encrypted record payload (ciphertext + tag)."
   (let ((*record-padding-policy* padding-policy))
     ;; Build inner plaintext: content || content_type || zeros (padding)
     ;; Allocate a single buffer and fill in place to avoid copying plaintext.
-    (let* ((content-len (length plaintext))
+    (let* ((content-len (- end start))
            (target-len (compute-padded-length content-len))
            (padding-len (max 0 (- target-len content-len)))
            ;; Ensure we don't exceed max record size.  The cap goes negative
@@ -347,7 +375,7 @@
                                        (- +max-record-size+ content-len +aead-tag-length+ 1))))
            (inner-len (+ content-len 1 actual-padding))
            (inner (make-octet-vector inner-len)))
-      (replace inner plaintext)                     ; content
+      (replace inner plaintext :start2 start :end2 end)  ; content
       (setf (aref inner content-len) content-type)  ; content_type byte
       ;; padding zeros already filled by make-octet-vector
       ;; AAD is the record header for the outer record
@@ -370,18 +398,31 @@
 
    All decryption failures signal TLS-MAC-ERROR to avoid oracles.
    Per RFC 8446, all failures should appear as 'bad_record_mac'."
-  (let* ((inner (aead-decrypt cipher ciphertext record-header))
-         ;; Find the content type (last non-zero byte)
-         (content-type-pos (position-if-not #'zerop inner :from-end t)))
+  ;; Decrypt into a pooled scratch buffer (recycled by the enclosing
+  ;; WITH-BUFFER-CONTEXT in RECORD-LAYER-READ) so the exact-sized plaintext
+  ;; returned below is the only per-record heap allocation, rather than one
+  ;; full-record buffer from the AEAD plus a second from the trim.  SCRATCH may
+  ;; be larger than the plaintext (tier-sized), so all length reasoning uses
+  ;; CT-LEN, not (length inner).
+  (let* ((ct-len (max 0 (- (length ciphertext) +aead-tag-length+)))
+         (scratch (buffer-pool-allocate *buffer-pool* ct-len))
+         (inner (aead-decrypt cipher ciphertext record-header :output scratch))
+         ;; Find the content type (last non-zero byte within the CT-LEN prefix)
+         (content-type-pos (position-if-not #'zerop inner :end ct-len :from-end t)))
     ;; Missing content type is also reported as MAC error to avoid oracle
     (unless content-type-pos
       (error 'tls-mac-error))
     ;; Check inner plaintext size - RFC 8446 Section 5.4:
     ;; The inner plaintext (content + type + padding) must not exceed 2^14 + 1 bytes.
     ;; This ensures content + padding <= 16384, allowing for the type byte.
-    (when (> (length inner) (1+ +max-record-size+))
+    (when (> ct-len (1+ +max-record-size+))
       (error 'tls-record-overflow
-             :size (length inner)
+             :size ct-len
              :message ":DATA_LENGTH_TOO_LONG:"))
-    (values (subseq inner 0 content-type-pos)
-            (aref inner content-type-pos))))
+    (let ((plaintext (make-octet-vector content-type-pos))
+          (content-type (aref inner content-type-pos)))
+      (replace plaintext inner :end2 content-type-pos)
+      ;; Wipe the decrypted plaintext from the pooled scratch buffer before it
+      ;; is recycled, so cleartext does not linger in a shared buffer.
+      (fill inner 0 :end ct-len)
+      (values plaintext content-type))))
