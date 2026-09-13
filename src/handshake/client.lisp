@@ -63,6 +63,7 @@
   (grease-cipher nil)
   (grease-version nil)
   (grease-group nil)
+  (grease-sig-alg nil)  ; GREASE signature algorithm
   (grease-key-share-bytes nil :type (or null octet-vector))  ; Random bytes for GREASE key share
   (grease-ext-type nil)  ; GREASE extension type
   (grease-ext-data nil :type (or null octet-vector))  ; GREASE extension data
@@ -151,6 +152,9 @@
          (grease-cipher (or (client-handshake-grease-cipher hs)
                             (setf (client-handshake-grease-cipher hs)
                                   (random-grease-value *grease-cipher-suite-values*))))
+         (grease-sig-alg (or (client-handshake-grease-sig-alg hs)
+                             (setf (client-handshake-grease-sig-alg hs)
+                                   (random-grease-value *grease-extension-values*))))
          ;; Prepend GREASE cipher suite to the list
          (cipher-suites-with-grease (cons grease-cipher (client-handshake-cipher-suites hs)))
          (extensions (list
@@ -163,11 +167,12 @@
                       (make-tls-extension
                        :type +extension-supported-groups+
                        :data (make-supported-groups-ext :groups (cons grease-group *supported-groups*)))
-                      ;; signature_algorithms
+                      ;; signature_algorithms (include GREASE value)
                       (make-tls-extension
                        :type +extension-signature-algorithms+
                        :data (make-signature-algorithms-ext
-                              :algorithms (supported-signature-algorithms-tls13)))
+                              :algorithms (cons grease-sig-alg
+                                                (supported-signature-algorithms-tls13))))
                       ;; key_share extension
                       ;; RFC 8446 Section 4.1.2: If HRR includes key_share, CH2 contains
                       ;; only the requested group (no GREASE). Otherwise include GREASE + real.
