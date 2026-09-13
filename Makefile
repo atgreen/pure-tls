@@ -14,7 +14,7 @@ SBCL := sbcl --noinform --non-interactive
 #           (push (truename ".") asdf:*central-registry*))
 SETUP := 1
 
-.PHONY: all test check all-tests unit-tests network-tests boringssl-tests boringssl-shim load clean help save-test-baseline check-regressions
+.PHONY: all test check all-tests unit-tests network-tests boringssl-tests boringssl-shim pure-tls-shim load clean help save-test-baseline check-regressions
 
 all: help
 
@@ -24,6 +24,7 @@ help:
 	@echo "  check           - Alias for test"
 	@echo "  all-tests       - Run all tests (unit, network, verify, connect, boringssl)"
 	@echo "  unit-tests      - Run unit tests (crypto, record, handshake, certificate)"
+	@echo "  acme-tests      - Run ACME client tests (offline, stubbed transport)"
 	@echo "  network-tests   - Run network integration tests (requires internet)"
 	@echo "  boringssl-shim  - Build the BoringSSL test shim"
 	@echo "  boringssl-tests - Run BoringSSL TLS 1.3 test suite"
@@ -39,13 +40,20 @@ test: all-tests
 
 check: all-tests
 
-all-tests: unit-tests network-tests verify connect boringssl-tests
+all-tests: unit-tests acme-tests network-tests verify connect boringssl-tests
 
 unit-tests:
 	@echo "=== Running pure-tls Unit Tests ==="
 	$(SBCL) --eval '$(SETUP)' \
 	        --eval '(asdf:load-system :pure-tls/test)' \
 	        --eval '(if (pure-tls/test:run-tests) (sb-ext:exit :code 0) (sb-ext:exit :code 1))'
+
+# Run ACME client tests (retry/restart + renewal information; offline, stubbed transport)
+acme-tests:
+	@echo "=== Running ACME Client Tests ==="
+	$(SBCL) --eval '$(SETUP)' \
+	        --eval '(asdf:load-system :pure-tls/acme/test)' \
+	        --eval '(if (and (pure-tls/acme/test:run-acme-retry-tests) (pure-tls/acme/test:run-ari-tests)) (sb-ext:exit :code 0) (sb-ext:exit :code 1))'
 
 # Run network tests (requires internet connectivity)
 network-tests:

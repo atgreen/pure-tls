@@ -58,13 +58,13 @@ jobs:
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           ocicl setup > ~/.sbclrc
-          ocicl install ironclad trivial-gray-streams flexi-streams alexandria cl-base64 trivial-features idna bordeaux-threads usocket cl-cancel cffi fiveam iparse cl-ppcre drakma
+          ocicl install ironclad trivial-gray-streams flexi-streams alexandria cl-base64 trivial-features idna bordeaux-threads usocket cl-cancel cffi fiveam iparse cl-ppcre drakma cl-json
 
       - name: Setup ocicl and fetch dependencies (macOS/Windows)
         if: runner.os != 'Linux'
         run: |
           ocicl setup > ~/.sbclrc
-          ocicl install ironclad trivial-gray-streams flexi-streams alexandria cl-base64 trivial-features idna bordeaux-threads usocket cl-cancel cffi fiveam iparse cl-ppcre drakma
+          ocicl install ironclad trivial-gray-streams flexi-streams alexandria cl-base64 trivial-features idna bordeaux-threads usocket cl-cancel cffi fiveam iparse cl-ppcre drakma cl-json
 
       - name: Setup ASDF
         run: |
@@ -106,6 +106,21 @@ jobs:
           sbcl --non-interactive \
             --eval '(asdf:load-system :pure-tls/test)' \
             --eval '(unless (pure-tls/test:run-tests) (uiop:quit 1))'
+
+      - name: Run ACME client tests (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          sbcl --non-interactive \
+            --eval '(asdf:load-system :pure-tls/acme/test)' \
+            --eval '(unless (and (pure-tls/acme/test:run-acme-retry-tests) (pure-tls/acme/test:run-ari-tests)) (uiop:quit 1))'
+
+      - name: Run ACME client tests (macOS/Windows)
+        if: runner.os != 'Linux'
+        run: |
+          sbcl --non-interactive \
+            --eval '(asdf:load-system :pure-tls/acme/test)' \
+            --eval '(unless (and (pure-tls/acme/test:run-acme-retry-tests) (pure-tls/acme/test:run-ari-tests)) (uiop:quit 1))'
 
       - name: Run network tests (Linux)
         if: runner.os == 'Linux'
@@ -169,7 +184,7 @@ jobs:
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           ocicl setup > ~/.sbclrc
-          ocicl install ironclad trivial-gray-streams flexi-streams alexandria cl-base64 trivial-features idna bordeaux-threads usocket cl-cancel cffi fiveam iparse cl-ppcre drakma
+          ocicl install ironclad trivial-gray-streams flexi-streams alexandria cl-base64 trivial-features idna bordeaux-threads usocket cl-cancel cffi fiveam iparse cl-ppcre drakma cl-json
 
       - name: Setup ASDF
         run: |
