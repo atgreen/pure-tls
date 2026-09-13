@@ -613,7 +613,8 @@
               (let ((trusted-roots (when trust-store
                                      (trust-store-certificates trust-store))))
                 (verify-certificate-chain chain trusted-roots
-                                          (get-universal-time) hostname
+                                          :now (get-universal-time)
+                                          :hostname hostname
                                           :purpose :server-auth)))
             ;; Record the verified identity when this full handshake proved it
             ;; under +verify-required+ (hostname supplied, hostname + chain

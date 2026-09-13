@@ -303,17 +303,17 @@ a full list lives at https://publicsuffix.org/.")
 
 ;;;; Certificate Chain Verification
 
-(defun verify-certificate-chain (chain trusted-roots &optional (now (get-universal-time)) hostname
-                                 &key check-revocation (trust-anchor-mode :replace) purpose)
+(defun verify-certificate-chain (chain trusted-roots
+                                 &key (now (get-universal-time)) hostname
+                                      check-revocation (trust-anchor-mode :replace) purpose)
   "Verify a certificate chain against trusted roots.
    CHAIN is a list of certificates, leaf first.
    TRUSTED-ROOTS is a list of trusted CA certificates. When NIL on Windows/macOS,
    native OS verification uses the system trust store.
    HOSTNAME is optional; if provided, enables hostname verification on native platforms.
    NOW must be a universal time (a non-negative real) and HOSTNAME a string or
-   NIL; both are positional parameters ahead of the keywords, and a value of
-   the wrong type in either slot (such as a misplaced keyword argument)
-   signals TLS-CERTIFICATE-ERROR at entry rather than being silently consumed.
+   NIL; a value of the wrong type in either argument signals
+   TLS-CERTIFICATE-ERROR at entry.
    CHECK-REVOCATION if T, checks certificate revocation (default NIL): via CRL
    on the pure Lisp path, or delegated to the OS (which may also use OCSP) on
    the native Windows/macOS paths.
@@ -327,42 +327,35 @@ a full list lives at https://publicsuffix.org/.")
    no EKU extension is treated as unrestricted (RFC 5280 s4.2.1.12).
    CRL fetch timeout is computed from cl-cancel:*current-cancel-context* if set."
 
-  ;; NOW and HOSTNAME are optional positional parameters ahead of the keywords, so
-  ;; a caller that goes straight to a keyword argument has it consumed as NOW:
-  ;; (verify-certificate-chain chain roots :check-revocation t) binds NOW to
-  ;; :CHECK-REVOCATION and HOSTNAME to T, and the requested check never runs.
-  ;; What the caller sees after that depends on the platform and on the swallowed
-  ;; value, and none of it names the certificate or the argument responsible.
-  ;; Rejecting the time here, ahead of the native dispatches, gives one condition
-  ;; that says what is wrong, and refuses the variant whose swallowed value is NIL
-  ;; that the native paths would otherwise verify cleanly with no sign an argument
-  ;; went astray.
+  ;; NOW has no type check of its own further in, and both bad shapes reach the
+  ;; notBefore / notAfter comparisons and fail there without naming the
+  ;; argument.  A value that is not a real raises a bare TYPE-ERROR about REAL,
+  ;; naming the comparison.  A negative real is below every notBefore, so it
+  ;; signals TLS-CERTIFICATE-NOT-YET-VALID and accuses the certificate of
+  ;; something the argument caused.  Rejecting both here, ahead of the native
+  ;; dispatches, gives one condition that names the argument instead.
   (unless (and (realp now) (>= now 0))
     (error 'tls-certificate-error
            :message (format nil
                             "Verification time must be a universal time (a ~
-                             non-negative real), not ~S~:[~;; NOW and HOSTNAME ~
-                             are positional parameters and a keyword argument ~
-                             passed in their place is silently consumed~]."
+                             non-negative real), not ~S~:[~;; a keyword here ~
+                             usually means the value was omitted and the next ~
+                             argument name was read in its place~]."
                             now (keywordp now))))
 
-  ;; A keyword argument can also land one position further along, on HOSTNAME:
-  ;; (verify-certificate-chain chain roots now :check-revocation) passes the
-  ;; guard above with a genuine time, binds HOSTNAME to :CHECK-REVOCATION, and
-  ;; leaves CHECK-REVOCATION NIL.  HOSTNAME is read only by the Windows and
-  ;; macOS native dispatches, so on the pure-Lisp path nothing ever looks at the
-  ;; swallowed keyword and the call succeeds: the chain verifies to T while the
-  ;; revocation checking the caller asked for was never performed.  A silent
-  ;; success is the worst of the outcomes available here, and rejecting a
-  ;; HOSTNAME that is neither NIL nor a string is what closes it.
+  ;; HOSTNAME is read only by the Windows and macOS native dispatches, which
+  ;; hand it to a foreign string conversion.  Without this guard a value that is
+  ;; neither NIL nor a string is a CFFI error on those two platforms and is
+  ;; ignored entirely on the pure-Lisp path, where the chain then verifies to T
+  ;; with no hostname checked at all.  Rejecting it here makes every path
+  ;; agree, and turns the silent success into a condition.
   (unless (or (null hostname) (stringp hostname))
     (error 'tls-certificate-error
            :message (format nil
-                            "HOSTNAME must be a string or NIL, not ~S~:[~;; NOW ~
-                             and HOSTNAME are positional parameters ahead of the ~
-                             keywords, so a keyword argument passed in their ~
-                             place is silently consumed and the keyword it names ~
-                             never takes effect~]."
+                            "HOSTNAME must be a string or NIL, not ~S~:[~;; a ~
+                             keyword here usually means the value was omitted ~
+                             and the next argument name was read in its ~
+                             place~]."
                             hostname (keywordp hostname))))
 
   (when (null chain)

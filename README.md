@@ -75,7 +75,8 @@ Use with drakma via cl+ssl compatibility layer (drop-in OpenSSL replacement):
 
 ```lisp
 ;; Enable CRL revocation checking during verification
-(pure-tls::verify-certificate-chain chain roots now hostname
+(pure-tls::verify-certificate-chain chain roots
+                                    :now now :hostname hostname
                                     :check-revocation t)
 
 ;; Check a single certificate

@@ -109,10 +109,9 @@
                   (pure-tls::certificate-critical-extensions leaf))
           "Fixture leaf should carry a critical ExtendedKeyUsage extension")
       ;; With :purpose :server-auth, a clientAuth-only leaf must be rejected.
-      ;; (now and hostname are positional &optional args before the &key.)
       (signals pure-tls:tls-certificate-error
         (pure-tls::verify-certificate-chain (list leaf) (list root)
-                                            (get-universal-time) nil
+                                            :now (get-universal-time)
                                             :purpose :server-auth)))))
 
 ;;;; ---------------------------------------------------------------------------
@@ -497,7 +496,7 @@
                               :basic-constraints :ca-false)))
       (signals pure-tls:tls-certificate-error
         (pure-tls::verify-certificate-chain (list leaf inter) (list inter)
-                                            now nil :trust-anchor-mode :replace)))
+                                            :now now :trust-anchor-mode :replace)))
     ;; Intermediate carries no BasicConstraints extension at all.
     (let ((leaf (%chain-cert "leaf.example" "Intermediate CA"
                              :basic-constraints :absent))
@@ -505,7 +504,7 @@
                               :basic-constraints :absent)))
       (signals pure-tls:tls-certificate-error
         (pure-tls::verify-certificate-chain (list leaf inter) (list inter)
-                                            now nil :trust-anchor-mode :replace)))))
+                                            :now now :trust-anchor-mode :replace)))))
 
 (test chain-rejects-pathlen-violation
   "A CA asserting pathLenConstraint=0 with an intermediate CA below it in the
@@ -520,7 +519,7 @@
         ;; Baseline: the untampered chain verifies, so the rejection below is
         ;; attributable solely to the path-length constraint.
         (is (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
-                                                now nil :trust-anchor-mode :replace)
+                                                :now now :trust-anchor-mode :replace)
             "Untampered goodcn2 chain should verify")
         ;; Assert pathLenConstraint=0 on the trusted root: it may issue end
         ;; entities but no intermediate CA -- and the chain has exactly one.
@@ -531,7 +530,7 @@
                 (list :ca t :path-length-constraint 0)))
         (signals pure-tls:tls-certificate-error
           (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
-                                              now nil :trust-anchor-mode :replace))))))
+                                              :now now :trust-anchor-mode :replace))))))
 
 (test chain-rejects-tampered-signature
   "A chain that passes name / CA / pathLen / date checks but whose leaf
@@ -545,7 +544,7 @@
                    (test-cert-path "openssl/root-cert.pem"))))
         ;; Baseline: the untampered chain verifies.
         (is (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
-                                                now nil :trust-anchor-mode :replace)
+                                                :now now :trust-anchor-mode :replace)
             "Untampered goodcn2 chain should verify")
         ;; Flip one byte of the leaf signature.  Every earlier check still
         ;; passes, so a rejection can only come from signature verification.
@@ -554,7 +553,7 @@
           (setf (pure-tls::x509-certificate-signature leaf) sig))
         (signals pure-tls:tls-certificate-error
           (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
-                                              now nil :trust-anchor-mode :replace))))))
+                                              :now now :trust-anchor-mode :replace))))))
 
 (test chain-rejects-expired-leaf
   "A leaf whose notAfter is in the past must be rejected."
@@ -568,7 +567,7 @@
       ;; tls-certificate-expired is internal to pure-tls (double colon).
       (signals pure-tls::tls-certificate-expired
         (pure-tls::verify-certificate-chain (list leaf root) (list root)
-                                            now nil :trust-anchor-mode :replace)))))
+                                            :now now :trust-anchor-mode :replace)))))
 
 (test chain-rejects-not-yet-valid-leaf
   "A leaf whose notBefore is in the future must be rejected."
@@ -582,7 +581,7 @@
       ;; tls-certificate-not-yet-valid is internal to pure-tls (double colon).
       (signals pure-tls::tls-certificate-not-yet-valid
         (pure-tls::verify-certificate-chain (list leaf root) (list root)
-                                            now nil :trust-anchor-mode :replace)))))
+                                            :now now :trust-anchor-mode :replace)))))
 
 ;;;; ---------------------------------------------------------------------------
 ;;;; Finding: RFC 5280 4.2.1.3 -- an issuer whose KeyUsage extension is present
@@ -611,7 +610,7 @@
                                :key-usage '(:crl-sign))))
       (signals pure-tls:tls-certificate-error
         (pure-tls::verify-certificate-chain (list leaf issuer) (list issuer)
-                                            now nil :trust-anchor-mode :replace)))))
+                                            :now now :trust-anchor-mode :replace)))))
 
 ;;;; ---------------------------------------------------------------------------
 ;;;; DNS name-safety in hostname verification.
@@ -804,32 +803,23 @@
                 (coerce buffer '(vector (unsigned-byte 8)))))))
 
 ;;;; ---------------------------------------------------------------------------
-;;;; Finding: a keyword argument passed in place of the positional NOW is
-;;;; swallowed, the check the caller asked for never runs, and the resulting
-;;;; failure names neither the certificate nor the argument responsible.
+;;;; Finding: a NOW that is not a real is not type-checked where it is used, so
+;;;; the fault gets misattributed to the certificate.
 ;;;;
-;;;; verify-certificate-chain takes NOW and HOSTNAME as positional &optional
-;;;; parameters ahead of its &key parameters, so
-;;;;   (verify-certificate-chain chain roots :check-revocation t)
-;;;; binds NOW to :CHECK-REVOCATION and HOSTNAME to T, leaving CHECK-REVOCATION
-;;;; NIL.  Revocation checking is not applied, and what the caller sees instead
-;;;; depends on the platform.  On Windows and macOS NOW is never read at all,
-;;;; but HOSTNAME is not inert there: both treat a non-NIL hostname as a string
-;;;; and hand it to a foreign string conversion (windows-verify.lisp
-;;;; cffi:with-foreign-string, macos-verify.lisp %cf-string-create, whose
-;;;; argument is declared :string), which rejects a non-string.  On other
-;;;; platforms NOW reaches the pure-Lisp validity checks and raises a bare
-;;;; TYPE-ERROR, not a TLS condition.
+;;;; A non-real NOW flows into the notBefore / notAfter comparisons and fails
+;;;; there, as a bare TYPE-ERROR naming a comparison rather than the argument
+;;;; that was wrong.  A caller reading that condition sees a problem with the
+;;;; chain it passed in.  On Windows and macOS the native dispatches never read
+;;;; NOW at all, so the same bad value produces a different outcome again.
 ;;;;
-;;;; Secure behaviour: a NOW that is not a universal time is rejected outright,
-;;;; ahead of the native dispatches, so the call fails in one place with an
-;;;; error that says what is wrong rather than failing differently per platform
-;;;; with the requested check quietly skipped.
+;;;; Secure behaviour: a NOW that is not a real is rejected outright, ahead of
+;;;; the native dispatches, so the call fails in one place on every platform
+;;;; with a condition that names the argument responsible.
 ;;;; ---------------------------------------------------------------------------
 
-(test chain-verification-rejects-keyword-in-place-of-time
-  "A keyword argument landing on the positional NOW must be rejected, and a
-   correctly positioned call must be unaffected."
+(test non-real-verification-time-is-rejected
+  "A NOW that is not a real must be rejected, and a call supplying a real one
+   must be unaffected."
   (let ((pure-tls:*use-windows-certificate-store* nil)
         (pure-tls:*use-macos-keychain* nil)
         (now (get-universal-time)))
@@ -837,37 +827,78 @@
         (%pem-chain (test-cert-path "openssl/goodcn2-chain.pem"))
       (let ((root (pure-tls:parse-certificate-from-file
                    (test-cert-path "openssl/root-cert.pem"))))
-        ;; Baseline: with all four positionals supplied the chain verifies, so
-        ;; the rejection below is attributable solely to argument position.
+        ;; Baseline: with a real NOW the chain verifies, so the rejection below
+        ;; is attributable solely to the value of NOW.
         (is (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
-                                                now nil :trust-anchor-mode :replace)
+                                                :now now :trust-anchor-mode :replace)
             "Untampered goodcn2 chain should verify")
-        ;; The keyword lands on NOW instead.  This must signal a certificate
-        ;; error naming the problem, rather than fail further in with an error
-        ;; about something else and revocation checking quietly disabled.
+        ;; A NOW that is not a real must signal a certificate error naming the
+        ;; argument, rather than reaching the date comparisons and failing there
+        ;; with a condition that reads as a fault in the certificate.
         (signals pure-tls:tls-certificate-error
           (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
-                                              :check-revocation t))))))
+                                              :now :not-a-time))))))
 
 ;;;; ---------------------------------------------------------------------------
-;;;; Finding: the same misplacement one position further along is worse, because
-;;;; it succeeds.  With a real time supplied for NOW,
-;;;;   (verify-certificate-chain chain roots now :check-revocation)
-;;;; binds HOSTNAME to :CHECK-REVOCATION and leaves CHECK-REVOCATION NIL.
-;;;; HOSTNAME is read only inside the Windows and macOS native dispatches, so on
-;;;; the pure-Lisp path the swallowed keyword is never looked at: the chain
-;;;; verifies to T and the revocation checking the caller asked for never runs.
-;;;; Nothing in the return value distinguishes that from a chain that really was
-;;;; checked for revocation.
+;;;; Finding: a negative NOW is a real, so it passes a type check and still
+;;;; reaches the date comparisons, where it is misread as a fact about the
+;;;; certificate.
+;;;;
+;;;; A negative universal time is below every notBefore, so the chain is
+;;;; refused with TLS-CERTIFICATE-NOT-YET-VALID.  The caller is told their
+;;;; certificate is not yet valid when the certificate was never at fault, and
+;;;; nothing in that condition points at the argument that caused it.  This is
+;;;; the half a bare REALP check does not cover.
+;;;;
+;;;; Secure behaviour: NOW is required to be non-negative as well as real, so
+;;;; the bad argument is named at entry instead of being reported as a property
+;;;; of the chain.
+;;;; ---------------------------------------------------------------------------
+
+(test negative-verification-time-is-rejected
+  "A negative NOW must be refused as a bad argument, not passed through to the
+   date comparisons where it reads as a fault in the certificate."
+  (let ((pure-tls:*use-windows-certificate-store* nil)
+        (pure-tls:*use-macos-keychain* nil))
+    (destructuring-bind (leaf inter)
+        (%pem-chain (test-cert-path "openssl/goodcn2-chain.pem"))
+      (let* ((root (pure-tls:parse-certificate-from-file
+                    (test-cert-path "openssl/root-cert.pem")))
+             (condition (handler-case
+                            (progn (pure-tls::verify-certificate-chain
+                                    (list leaf inter root) (list root) :now -1)
+                                   nil)
+                          (pure-tls:tls-certificate-error (e) e))))
+        ;; A negative NOW is below every notBefore, so without the non-negative
+        ;; half of the guard it reaches the date comparisons and signals
+        ;; TLS-CERTIFICATE-NOT-YET-VALID, blaming the certificate for a fault in
+        ;; the argument.  Asserting the condition type is what separates the two.
+        (is (typep condition 'pure-tls:tls-certificate-error)
+            "A negative NOW should signal")
+        (is (not (typep condition 'pure-tls::tls-certificate-not-yet-valid))
+            "A negative NOW should name the argument, not the certificate")))))
+
+;;;; ---------------------------------------------------------------------------
+;;;; Finding: a HOSTNAME that is neither a string nor NIL is read by the two
+;;;; native dispatches and ignored on the pure-Lisp path, and it is the path
+;;;; that ignores it where the call succeeds.
+;;;;
+;;;; HOSTNAME is read only inside the Windows and macOS native dispatches, which
+;;;; hand it to a foreign string conversion (windows-verify.lisp
+;;;; cffi:with-foreign-string, macos-verify.lisp %cf-string-create, whose
+;;;; argument is declared :string).  A non-string is a CFFI error there.  On the
+;;;; pure-Lisp path nothing ever looks at it: the chain verifies to T with no
+;;;; hostname checked, and nothing in the return value distinguishes that from a
+;;;; chain whose hostname really was verified.
 ;;;;
 ;;;; Secure behaviour: a HOSTNAME that is neither NIL nor a string is rejected
-;;;; alongside the time, so the misplaced argument fails loudly instead of
-;;;; producing a verification the caller will trust for more than it did.
+;;;; alongside the time, so every path agrees and the silent success becomes a
+;;;; condition.
 ;;;; ---------------------------------------------------------------------------
 
-(test keyword-in-hostname-position-is-rejected
-  "A keyword argument landing on the positional HOSTNAME must be rejected, and a
-   correctly positioned call must be unaffected."
+(test non-string-hostname-is-rejected
+  "A HOSTNAME that is neither a string nor NIL must be rejected, and a call
+   supplying NIL must be unaffected."
   (let ((pure-tls:*use-windows-certificate-store* nil)
         (pure-tls:*use-macos-keychain* nil)
         (now (get-universal-time)))
@@ -875,18 +906,16 @@
         (%pem-chain (test-cert-path "openssl/goodcn2-chain.pem"))
       (let ((root (pure-tls:parse-certificate-from-file
                    (test-cert-path "openssl/root-cert.pem"))))
-        ;; Baseline: with all four positionals supplied the chain verifies, so
-        ;; the rejection below is attributable solely to argument position.
+        ;; Baseline: with HOSTNAME left at its NIL default the chain verifies,
+        ;; so the rejection below is attributable solely to HOSTNAME.
         (is (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
-                                                now nil :trust-anchor-mode :replace)
+                                                :now now :trust-anchor-mode :replace)
             "Untampered goodcn2 chain should verify")
-        ;; NOW is a genuine time here, so the time guard passes and the keyword
-        ;; lands on HOSTNAME instead.  The pure-Lisp path never reads HOSTNAME,
-        ;; so without a guard this call returns T with revocation checking
-        ;; silently skipped.
+        ;; The pure-Lisp path never reads HOSTNAME, so without the guard this
+        ;; call returns T with no hostname checked at all.
         (signals pure-tls:tls-certificate-error
           (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
-                                              now :check-revocation))))))
+                                              :now now :hostname t))))))
 
 (defun run-security-regression-tests ()
   "Run the security regression suite.  Returns T if all tests pass."
