@@ -302,15 +302,6 @@ a full list lives at https://publicsuffix.org/.")
     t))
 
 ;;;; Certificate Chain Verification
-;;;
-;;; Note: Full chain verification requires:
-;;; 1. Building the chain from leaf to root
-;;; 2. Verifying each signature
-;;; 3. Checking basic constraints
-;;; 4. Checking key usage
-;;; 5. Checking against trusted roots
-;;;
-;;; For now, we provide basic building blocks.
 
 (defun verify-certificate-chain (chain trusted-roots &optional (now (get-universal-time)) hostname
                                  &key check-revocation (trust-anchor-mode :replace) purpose)
@@ -323,7 +314,9 @@ a full list lives at https://publicsuffix.org/.")
    NIL; both are positional parameters ahead of the keywords, and a value of
    the wrong type in either slot (such as a misplaced keyword argument)
    signals TLS-CERTIFICATE-ERROR at entry rather than being silently consumed.
-   CHECK-REVOCATION if T, checks certificate revocation via CRL/OCSP (default NIL).
+   CHECK-REVOCATION if T, checks certificate revocation (default NIL): via CRL
+   on the pure Lisp path, or delegated to the OS (which may also use OCSP) on
+   the native Windows/macOS paths.
    TRUST-ANCHOR-MODE controls how trusted-roots interact with system store:
      :replace (default) - Use ONLY trusted-roots, ignore system store
      :extend - Use trusted-roots IN ADDITION TO system store
@@ -333,7 +326,6 @@ a full list lives at https://publicsuffix.org/.")
    but lists neither PURPOSE nor anyExtendedKeyUsage is rejected.  A leaf with
    no EKU extension is treated as unrestricted (RFC 5280 s4.2.1.12).
    CRL fetch timeout is computed from cl-cancel:*current-cancel-context* if set."
-  (declare (ignorable hostname check-revocation trust-anchor-mode))  ; Only used conditionally
 
   ;; NOW and HOSTNAME are optional positional parameters ahead of the keywords, so
   ;; a caller that goes straight to a keyword argument has it consumed as NOW:
@@ -390,7 +382,6 @@ a full list lives at https://publicsuffix.org/.")
   ;; On Windows with CryptoAPI enabled, use Windows verification
   #+windows
   (when *use-windows-certificate-store*
-    ;; Windows CryptoAPI verification
     ;; Hostname verification is optional (nil = no hostname check, useful for mTLS)
     (verify-certificate-chain-native chain hostname
                                      :check-revocation check-revocation
@@ -401,7 +392,6 @@ a full list lives at https://publicsuffix.org/.")
   ;; On macOS with Keychain enabled, use macOS verification
   #+(or darwin macos)
   (when *use-macos-keychain*
-    ;; macOS Security.framework verification
     ;; Hostname verification is optional (nil = no hostname check, useful for mTLS)
     (verify-certificate-chain-native chain hostname
                                      :check-revocation check-revocation
@@ -410,23 +400,17 @@ a full list lives at https://publicsuffix.org/.")
     (return-from verify-certificate-chain t))
 
   ;; Pure Lisp verification - combine roots based on trust-anchor-mode
-  (let ((effective-roots
-          (ecase trust-anchor-mode
-            (:replace
-             ;; Use only the provided trusted-roots
-             trusted-roots)
-            (:extend
-             ;; Combine provided roots with system store
-             (let ((system-store (load-system-trust-store)))
-               (if trusted-roots
-                   (append trusted-roots
-                           (when system-store (trust-store-certificates system-store)))
-                   (when system-store (trust-store-certificates system-store))))))))
-    (unless effective-roots
-      (error 'tls-verification-error
-             :message "No trusted root certificates available for verification"
-             :reason :unknown-ca))
-    (setf trusted-roots effective-roots))
+  (setf trusted-roots
+        (ecase trust-anchor-mode
+          (:replace trusted-roots)
+          (:extend
+           (let ((system-store (load-system-trust-store)))
+             (append trusted-roots
+                     (when system-store (trust-store-certificates system-store)))))))
+  (unless trusted-roots
+    (error 'tls-verification-error
+           :message "No trusted root certificates available for verification"
+           :reason :unknown-ca))
 
   ;; Verify each certificate's dates and check for unknown critical extensions
   (dolist (cert chain)
@@ -439,10 +423,9 @@ a full list lives at https://publicsuffix.org/.")
                                unknown-critical)))))
 
   ;; Verify the chain links (name matching, CA constraints, key usage, signatures)
-  (loop for i from 0 below (1- (length chain))
-        for cert = (nth i chain)
-        for issuer = (nth (1+ i) chain)
-        for certs-below = i  ; Number of certificates below issuer in chain
+  (loop for cert in chain
+        for issuer in (rest chain)
+        for certs-below from 0  ; Number of certificates below issuer in chain
         do
            ;; Check issuer name matches
            (unless (certificate-issued-by-p cert issuer)
@@ -488,14 +471,13 @@ a full list lives at https://publicsuffix.org/.")
   ;; cryptographic signature to prove the chain actually reaches the trust
   ;; anchor.  Servers may send extra certificates beyond the anchor (e.g.
   ;; cross-signed roots), so we check every chain member, not just the last.
-  (let* ((root (first (last chain)))
-         (anchored (loop for cert in chain
-                         thereis (find-if
-                                  (lambda (trusted)
-                                    (or (certificate-equal-p cert trusted)
-                                        (and (certificate-issued-by-p cert trusted)
-                                             (verify-certificate-signature cert trusted))))
-                                  trusted-roots))))
+  (let ((anchored (loop for cert in chain
+                        thereis (find-if
+                                 (lambda (trusted)
+                                   (or (certificate-equal-p cert trusted)
+                                       (and (certificate-issued-by-p cert trusted)
+                                            (verify-certificate-signature cert trusted))))
+                                 trusted-roots))))
     (unless anchored
       (let ((debug (get-environment-variable "OCICL_TLS_DEBUG")))
         (when (and debug (string/= debug ""))
