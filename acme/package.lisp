@@ -41,6 +41,12 @@
    #:client-download-certificate
    #:client-compute-key-authorization
 
+   ;; Renewal information (RFC 9773 ARI)
+   #:client-renewal-info
+   #:certificate-ari-cert-id
+   #:renewal-due-p
+   #:parse-rfc3339-time
+
    ;; Hunchentoot integration
    #:acme-acceptor
    #:make-acme-acceptor

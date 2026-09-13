@@ -14,7 +14,9 @@
 (defpackage #:pure-tls/acme/test
   (:use #:cl #:fiveam)
   (:export #:run-acme-retry-tests
-           #:acme-retry-tests))
+           #:acme-retry-tests
+           #:run-ari-tests
+           #:ari-tests))
 
 (in-package #:pure-tls/acme/test)
 

@@ -373,10 +373,14 @@
                 :message (format nil "Account registration failed: HTTP ~A - ~A: ~A"
                                  status error-type error-detail)))))))
 
-(defun client-new-order (client domains &key (profile *default-profile*))
+(defun client-new-order (client domains &key (profile *default-profile*) replaces)
   "Create new certificate order for domains.
    PROFILE: ACME profile (\"classic\", \"tlsserver\", \"shortlived\").
             Defaults to *default-profile* (tlsserver).
+   REPLACES: RFC 9773 certificate identifier (see CERTIFICATE-ARI-CERT-ID) of
+             the certificate this order renews. Letting the server link the
+             renewal exempts it from rate limits; a server may also reject an
+             invalid value, so callers should be prepared to retry without it.
    Returns (VALUES order-response order-url)."
   (let* ((domain-list (if (listp domains) domains (list domains)))
          (identifiers (coerce (mapcar (lambda (d)
@@ -384,13 +388,14 @@
                                            ("value" . ,d)))
                                        domain-list)
                               'vector)))
-    (client-log client :info "Creating order for ~{~A~^, ~} (profile: ~A)"
-                domain-list profile)
+    (client-log client :info "Creating order for ~{~A~^, ~} (profile: ~A~@[, replaces: ~A~])"
+                domain-list profile replaces)
     (multiple-value-bind (response status location)
         (client-post client
                      (rest (assoc :new-order (acme-client-directory client)))
                      `(("identifiers" . ,identifiers)
-                       ("profile" . ,profile))
+                       ("profile" . ,profile)
+                       ,@(when replaces `(("replaces" . ,replaces))))
                      :use-kid t)
       (if (member status '(200 201))
           (values response location)

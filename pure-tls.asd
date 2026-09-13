@@ -96,6 +96,7 @@
                              (:file "client")
                              (:file "store")
                              (:file "acme-client")
+                             (:file "ari")
                              (:file "challenges")
                              (:file "csr")))))
 
@@ -150,4 +151,5 @@
   :serial t
   :components ((:module "test/acme"
                 :serial t
-                :components ((:file "client-retry-tests")))))
+                :components ((:file "client-retry-tests")
+                             (:file "ari-tests")))))

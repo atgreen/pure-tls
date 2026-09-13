@@ -61,8 +61,11 @@
    (renewal-days
     :initarg :renewal-days
     :accessor acceptor-renewal-days
-    :initform 30
-    :documentation "Renew when certificate expires within this many days.")
+    :initform nil
+    :documentation "When set, renew once the certificate expires within this
+many days. NIL (the default) renews adaptively: at the ACME server's suggested
+renewal window (RFC 9773 ARI) when available, otherwise once a third of the
+certificate's lifetime remains.")
    (production
     :initarg :production
     :accessor acceptor-production-p
@@ -251,9 +254,25 @@
       ;; Register account
       (client-register-account client email)
 
-      ;; Create order
+      ;; Create order. A renewal names the certificate it replaces (RFC 9773)
+      ;; so the server can exempt it from rate limits; the placeholder
+      ;; certificate has no AKI, so REPLACES is NIL on first issuance. A
+      ;; server may reject a stale or already-used identifier, so retry once
+      ;; without it rather than failing the renewal.
       (multiple-value-bind (order order-url)
-          (client-new-order client domains :profile (acceptor-profile acceptor))
+          (let ((replaces (ignore-errors
+                           (certificate-ari-cert-id
+                            (first (store-load-certificate store primary-domain))))))
+            (handler-case
+                (client-new-order client domains
+                                  :profile (acceptor-profile acceptor)
+                                  :replaces replaces)
+              (acme-order-error (e)
+                (unless replaces (error e))
+                (acceptor-log acceptor :warn
+                              "Order with replaces rejected (~A); retrying without" e)
+                (client-new-order client domains
+                                  :profile (acceptor-profile acceptor)))))
 
         ;; Process each authorization
         (let ((auth-urls (rest (assoc :authorizations order))))
@@ -379,14 +398,42 @@
   (loop
     (sleep (acceptor-renewal-interval acceptor))
     (handler-case
-        (let* ((store (acceptor-cert-store acceptor))
-               (primary-domain (first (acceptor-domains acceptor))))
-          (when (store-certificate-expires-soon-p store primary-domain
-                                                   (acceptor-renewal-days acceptor))
-            (acceptor-log acceptor :info "Certificate expiring soon, renewing...")
-            (acceptor-obtain-certificate acceptor)))
+        (when (acceptor-certificate-needs-renewal-p acceptor)
+          (acceptor-log acceptor :info "Certificate due for renewal, renewing...")
+          (acceptor-obtain-certificate acceptor))
       (error (e)
         (acceptor-log acceptor :error "Renewal failed: ~A" e)))))
+
+(defun acceptor-certificate-needs-renewal-p (acceptor)
+  "Decide whether the acceptor's certificate is due for renewal.
+   A fixed RENEWAL-DAYS threshold, when set, is used as-is. Otherwise the
+   ACME server's suggested renewal window (RFC 9773 ARI) decides, falling
+   back to renewal once a third of the certificate's lifetime remains."
+  (let* ((store (acceptor-cert-store acceptor))
+         (domain (first (acceptor-domains acceptor)))
+         (leaf (first (ignore-errors (store-load-certificate store domain)))))
+    (cond
+      ((null leaf) t)
+      ((acceptor-renewal-days acceptor)
+       (store-certificate-expires-soon-p store domain
+                                         (acceptor-renewal-days acceptor)))
+      (t
+       (renewal-due-p (pure-tls:certificate-not-before leaf)
+                      (pure-tls:certificate-not-after leaf)
+                      (get-universal-time)
+                      :window-start (acceptor-renewal-window-start acceptor leaf))))))
+
+(defun acceptor-renewal-window-start (acceptor leaf)
+  "Fetch the start of LEAF's ARI suggested renewal window, initializing the
+   ACME client's directory on first use. Returns NIL when ARI is unavailable
+   (no endpoint, network failure, or a certificate without an AKI, such as
+   the placeholder), leaving the caller on the lifetime-based fallback."
+  (handler-case
+      (let ((client (acceptor-acme-client acceptor)))
+        (unless (acme-client-directory client)
+          (client-init client))
+        (client-renewal-info client (certificate-ari-cert-id leaf)))
+    (error () nil)))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Logging
@@ -405,7 +452,7 @@
                                          (port 443)
                                          (production t)
                                          (profile *default-profile*)
-                                         (renewal-days 30)
+                                         renewal-days
                                          (logger #'default-logger)
                                          store)
   "Create an ACME acceptor with automatic certificate management.
@@ -416,7 +463,10 @@
    PRODUCTION - Use Let's Encrypt production (default T).
    PROFILE - ACME profile: \"classic\", \"tlsserver\", or \"shortlived\"
              (default: *default-profile*, which is \"tlsserver\").
-   RENEWAL-DAYS - Renew when certificate expires within this many days.
+   RENEWAL-DAYS - When set, renew once the certificate expires within this
+             many days. Unset (the default), renewal is adaptive: at the
+             ACME server's suggested window (RFC 9773 ARI) when available,
+             otherwise once a third of the certificate's lifetime remains.
    LOGGER - Logging function (default prints to stdout).
    STORE - Certificate store (creates default if not provided).
 

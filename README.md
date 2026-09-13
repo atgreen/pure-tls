@@ -33,10 +33,10 @@ Use with drakma via cl+ssl compatibility layer (drop-in OpenSSL replacement):
 
 - **Pure Common Lisp** - No foreign libraries or OpenSSL dependency
 - **TLS 1.3 only** - Modern, secure protocol with simplified handshake
-- **Post-quantum ready** - X25519MLKEM768 hybrid key exchange (FIPS 203)
-- **Encrypted Client Hello (ECH)** - Encrypts SNI to protect privacy (RFC 9639)
+- **Post-quantum ready** - X25519MLKEM768 hybrid key exchange (FIPS 203) and ML-DSA-65 signatures (FIPS 204)
+- **Encrypted Client Hello (ECH)** - Encrypts SNI to protect privacy (RFC 9849)
 - **Timeouts & cancellation** - Integrated with [`cl-cancel`](https://github.com/atgreen/cl-cancel) for cooperative cancellation
-- **Automatic certificates** - Built-in ACME client for Let's Encrypt
+- **Automatic certificates** - Built-in ACME client for Let's Encrypt, with ARI-guided renewal (RFC 9773)
 - **Gray streams** - Seamless integration with existing I/O code
 - **cl+ssl compatible** - Drop-in replacement API available
 - **Native trust store** - Uses Windows CryptoAPI and macOS Security.framework
@@ -58,6 +58,7 @@ Use with drakma via cl+ssl compatibility layer (drop-in OpenSSL replacement):
 
 - **Ed25519** - Edwards curve digital signature (fast, compact)
 - **Ed448** - Edwards curve digital signature (higher security, 224-bit)
+- **ML-DSA-65** - Post-quantum lattice signatures (FIPS 204, draft-ietf-tls-mldsa)
 - RSA-PSS (SHA-256, SHA-384, SHA-512)
 - ECDSA with P-256 (SHA-256)
 - ECDSA with P-384 (SHA-384)
@@ -73,7 +74,7 @@ Use with drakma via cl+ssl compatibility layer (drop-in OpenSSL replacement):
 - Optional revocation checking during certificate verification
 
 ```lisp
-;; Enable CRL/OCSP checking during verification
+;; Enable CRL revocation checking during verification
 (pure-tls::verify-certificate-chain chain roots now hostname
                                     :check-revocation t)
 
@@ -306,8 +307,7 @@ The `pure-tls/acme` system provides automatic certificate management using the A
 ```lisp
 (pure-tls/acme:make-acme-acceptor
   '("example.com" "www.example.com" "api.example.com")
-  "admin@example.com"
-  :renewal-days 30)
+  "admin@example.com")
 ```
 
 ### Certificate Profiles
@@ -329,9 +329,17 @@ pure-tls supports [Let's Encrypt certificate profiles](https://letsencrypt.org/d
 
 | Profile | Validity | Auth Reuse | Max Domains | Notes |
 |---------|----------|------------|-------------|-------|
-| `tlsserver` | 90 days | 7 hours | 25 | Default. Smaller certs, removes legacy fields |
+| `tlsserver` | 45 days | 7 hours | 25 | Default. Smaller certs, removes legacy fields |
 | `shortlived` | ~6 days | 7 hours | 25 | No CRL/OCSP needed. Requires reliable automation |
 | `classic` | 90 days | 30 days | 100 | Let's Encrypt default. Larger certs |
+
+Validity periods track Let's Encrypt policy (the `tlsserver` profile moved
+from 90 to 45 days in May 2026, and all profiles shorten further in 2027-2028),
+so treat this table as a snapshot.
+
+Note: Let's Encrypt certificates no longer carry the TLS Client Authentication
+EKU (removed in 2026), so they cannot be used as mTLS *client* certificates;
+verification with `:purpose :client-auth` will correctly reject them.
 
 To change the global default:
 
@@ -393,7 +401,7 @@ Certificates are stored in platform-appropriate locations:
 To use a custom location:
 
 ```lisp
-(pure-tls/acme:make-cert-store :base-path #p"/etc/ssl/acme/")
+(pure-tls/acme:make-cert-store :path #p"/etc/ssl/acme/")
 ```
 
 ### TLS-ALPN-01 Challenge
@@ -415,10 +423,19 @@ pure-tls/acme uses the TLS-ALPN-01 challenge type, which validates domain owners
   :port 443              ; HTTPS port (default 443)
   :production t          ; Use Let's Encrypt production (default T)
   :profile "tlsserver"   ; Certificate profile (default "tlsserver")
-  :renewal-days 30       ; Renew when cert expires within N days
+  :renewal-days 30       ; Optional fixed threshold; see below
   :store store           ; Custom cert-store (optional)
   :logger #'my-logger)   ; Custom logging function (optional)
 ```
+
+Renewal timing is adaptive by default: the client asks the CA for its
+suggested renewal window (ACME Renewal Information, RFC 9773) and renews
+inside it, falling back to renewal once a third of the certificate's
+lifetime remains. This adapts automatically as Let's Encrypt shortens
+certificate lifetimes, and lets the CA request early renewal during
+incidents. Renewal orders also carry the RFC 9773 `replaces` field, which
+exempts them from rate limits. Set `:renewal-days` only to force a fixed
+expires-within-N-days threshold.
 
 ### Transient Error Recovery
 
@@ -734,10 +751,10 @@ Post-quantum key exchange is negotiated automatically when both client and serve
 
 ### Browser Compatibility
 
-Major browsers support X25519MLKEM768:
-- **Chrome 124+** - Enabled by default
-- **Firefox** - Behind flag
-- **Safari** - Not yet supported
+X25519MLKEM768 is enabled by default in all major browsers:
+- **Chrome 124+**
+- **Firefox 132+**
+- **Safari 26+**
 
 ### Testing Post-Quantum with Chrome
 
@@ -781,7 +798,7 @@ sbcl --eval '(asdf:load-system :pure-tls)' \
 
 ## Encrypted Client Hello (ECH)
 
-pure-tls supports **Encrypted Client Hello (ECH)** per RFC 9639, which encrypts the ClientHello message including the SNI (Server Name Indication) to protect user privacy from network observers.
+pure-tls supports **Encrypted Client Hello (ECH)** per RFC 9849, which encrypts the ClientHello message including the SNI (Server Name Indication) to protect user privacy from network observers.
 
 ### How It Works
 
@@ -862,7 +879,7 @@ ECH configs can be provided as:
 ECH is supported by major browsers:
 - **Chrome 117+** - Enabled by default
 - **Firefox 118+** - Enabled by default
-- **Safari** - Not yet supported
+- **Safari** - Not supported as of this writing
 
 ## Debugging with Wireshark
 
@@ -896,10 +913,17 @@ The following secrets are logged (compatible with Wireshark TLS 1.3 dissector):
 
 - [ironclad](https://github.com/sharplispers/ironclad) - Cryptographic primitives
 - [trivial-gray-streams](https://github.com/trivial-gray-streams/trivial-gray-streams) - Gray stream support
-- [flexi-streams](https://github.com/edicl/flexi-streams) - Character encoding (optional)
-- [alexandria](https://github.com/keithj/alexandria) - Utilities
+- [flexi-streams](https://github.com/edicl/flexi-streams) - Character encoding
+- [alexandria](https://gitlab.common-lisp.net/alexandria/alexandria) - Utilities
 - [trivial-features](https://github.com/trivial-features/trivial-features) - Portable platform detection
+- [cl-base64](https://github.com/darabi/cl-base64) - Base64 encoding
+- [idna](https://github.com/antifuchs/idna) - Internationalized domain names for hostname verification
+- [bordeaux-threads](https://github.com/sionescu/bordeaux-threads) - Threading (session cache, CRL cache)
+- [usocket](https://github.com/usocket/usocket) - Sockets for CRL fetching
+- [cl-cancel](https://github.com/atgreen/cl-cancel) - Timeouts and cooperative cancellation
 - [cffi](https://github.com/cffi/cffi) - Windows and macOS only, for native trust store bindings
+
+The ACME systems additionally use drakma, cl-json, and (for `pure-tls/acme+hunchentoot`) hunchentoot.
 
 ## Session Resumption (PSK)
 
@@ -980,7 +1004,7 @@ The test suite validates:
 - **Bundled bad certificates**: Offline tests using certificates from [badssl.com](https://github.com/chromium/badssl.com) (expired, self-signed, known malware CAs)
 - **X.509 validation**: Certificate validation tests from Google's [x509test](https://github.com/google/x509test) project (RFC 5280 compliance, X.690 DER encoding)
 - **OpenSSL test suite**: Live TLS handshake tests adapted from OpenSSL's ssl-tests (basic handshakes, ALPN, SNI, key update, curves, mTLS)
-- **BoringSSL test suite**: Protocol compliance testing via shim binary (65% pass rate; failures are TLS 1.2 tests which pure-tls does not implement)
+- **BoringSSL test suite**: Protocol compliance testing via shim binary (~65% pass rate; failures are mostly TLS 1.0-1.2 tests, which pure-tls deliberately does not implement, plus optional features -- tracked in `test/boringssl-baseline.txt`)
 - **Live validation**: TLS 1.3 connections to major sites (Google, Cloudflare, GitHub, etc.)
 
 ### BoringSSL Test Suite
@@ -1019,7 +1043,6 @@ The shim implements the BoringSSL test protocol, allowing pure-tls to be tested 
 - **0-RTT early data** - Disabled for security (replay attack concerns)
 - **DTLS** - Datagram TLS (UDP-based) is not implemented
 - **Certificate compression** - RFC 8879 is not implemented
-- **Post-quantum signatures** - ML-DSA (FIPS 204) is not yet supported for certificates
 
 ### Limited Support
 
@@ -1028,9 +1051,10 @@ The shim implements the BoringSSL test protocol, allowing pure-tls to be tested 
   - Brainpool curves (brainpoolP256r1, brainpoolP384r1, brainpoolP512r1)
   - Legacy curves (sect233k1, sect283k1, secp224r1, etc.)
 
-- **Signature algorithms** - RSA-PSS, ECDSA-P256, ECDSA-P384, Ed25519, and Ed448 are supported. Not implemented:
+- **Signature algorithms** - RSA-PSS, ECDSA-P256, ECDSA-P384, Ed25519, Ed448, and ML-DSA-65 are supported. Not implemented:
   - DSA
   - RSA-PKCS1 (deprecated in TLS 1.3 but still seen in some certificates)
+  - ML-DSA-44 and ML-DSA-87 (only the -65 parameter set is wired up)
 
 ## Acknowledgments
 
@@ -1062,10 +1086,12 @@ Copyright (c) 2026 Anthony Green <green@moxielogic.com>
 ## See Also
 
 - [RFC 8446](https://tools.ietf.org/html/rfc8446) - TLS 1.3 specification
-- [RFC 9639](https://tools.ietf.org/html/rfc9639) - Encrypted Client Hello (ECH)
+- [RFC 9849](https://tools.ietf.org/html/rfc9849) - Encrypted Client Hello (ECH)
 - [RFC 9180](https://tools.ietf.org/html/rfc9180) - Hybrid Public Key Encryption (HPKE)
 - [FIPS 203](https://csrc.nist.gov/pubs/fips/203/final) - ML-KEM (Module-Lattice-Based Key-Encapsulation Mechanism)
+- [FIPS 204](https://csrc.nist.gov/pubs/fips/204/final) - ML-DSA (Module-Lattice-Based Digital Signature Algorithm)
 - [RFC 8555](https://tools.ietf.org/html/rfc8555) - ACME protocol specification
 - [RFC 8737](https://tools.ietf.org/html/rfc8737) - TLS-ALPN-01 challenge
+- [RFC 9773](https://tools.ietf.org/html/rfc9773) - ACME Renewal Information (ARI)
 - [Let's Encrypt](https://letsencrypt.org/) - Free, automated certificate authority
 - [cl+ssl](https://github.com/cl-plus-ssl/cl-plus-ssl) - OpenSSL-based TLS for Common Lisp
