@@ -352,8 +352,8 @@ Signals an error with details on verification failure."
                       (let ((err (cffi:foreign-slot-value policy-status '(:struct cert-chain-policy-status) 'error)))
                         (unless (zerop err)
                           (error 'tls-certificate-error
-                                 :format-control "Windows certificate verification failed: ~A"
-                                 :format-arguments (list (%decode-cert-error err))))
+                                 :message (format nil "Windows certificate verification failed: ~A"
+                                                  (%decode-cert-error err))))
                         t)))
                ;; When hostname provided, create foreign string; otherwise use null pointer
                (if hostname

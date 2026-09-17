@@ -172,9 +172,15 @@
 
 (defun load-certificate-chain (path)
   "Load a certificate chain from a PEM file.
-   Skips certificates that fail to parse (with a warning)."
+
+   Certificates that fail to parse are skipped with a warning, and a SUMMARY
+   warning naming the count is emitted at the end.  That matters when this is
+   used to build a trust store: a CA bundle containing one certificate this
+   parser rejects yields a silently smaller anchor set, and connections under
+   the dropped root then fail for reasons that look unrelated."
   (let ((bytes (read-file-bytes path))
-        (certs nil))
+        (certs nil)
+        (skipped 0))
     (if (pem-encoded-p bytes)
         ;; Parse all certificate blocks
         (let ((text (octets-to-string bytes))
@@ -190,13 +196,20 @@
                       (let ((der (pem-decode (string-to-octets pem-block) "CERTIFICATE")))
                         (push (parse-certificate der) certs))
                     (error (e)
+                      (incf skipped)
                       (warn "Failed to parse certificate at position ~D: ~A" begin-pos e)))
                   (setf start block-end))))))
         ;; Single DER certificate
         (handler-case
             (push (parse-certificate bytes) certs)
           (error (e)
+            (incf skipped)
             (warn "Failed to parse certificate from ~A: ~A" path e))))
+    (when (plusp skipped)
+      (warn "pure-tls: ~D of ~D certificate(s) in ~A could not be parsed and were ~
+             SKIPPED. If this file is a trust store, those anchors are missing ~
+             and chains under them will fail to verify."
+            skipped (+ skipped (length certs)) path))
     (nreverse certs)))
 
 (defun load-private-key (path)
@@ -335,23 +348,31 @@
         (error 'tls-error :message "Failed to extract EC private key"))
       (ironclad:make-private-key curve :x raw-key))))
 
+(defun %unwrap-curve-private-key (key-bytes raw-length)
+  "Unwrap a CurvePrivateKey OCTET STRING (RFC 8410 S7) if present.
+
+The PKCS#8 privateKey for Ed25519/Ed448 is itself DER: an OCTET STRING
+containing the raw scalar.  Parse it properly rather than assuming a one-byte
+length -- (subseq key-bytes 2) happened to work only because these keys are
+short enough for the short form."
+  (if (and (> (length key-bytes) raw-length)
+           (plusp (length key-bytes))
+           (= (aref key-bytes 0) +asn1-octet-string+))
+      (let ((node (parse-der key-bytes)))
+        (if (and (asn1-node-p node)
+                 (= (asn1-node-class node) +asn1-class-universal+)
+                 (= (asn1-node-tag node) +asn1-octet-string+))
+            (asn1-node-value node)
+            key-bytes))
+      key-bytes))
+
 (defun parse-ed25519-private-key (key-bytes)
   "Parse an Ed25519 private key."
-  ;; Ed25519 private key is 32 bytes, but may be wrapped in OCTET STRING
-  (let ((key (if (and (> (length key-bytes) 32)
-                      (= (aref key-bytes 0) #x04))  ; OCTET STRING tag
-                 (subseq key-bytes 2)  ; Skip tag and length
-                 key-bytes)))
-    (ironclad:make-private-key :ed25519 :x key)))
+  (ironclad:make-private-key :ed25519 :x (%unwrap-curve-private-key key-bytes 32)))
 
 (defun parse-ed448-private-key (key-bytes)
   "Parse an Ed448 private key."
-  ;; Ed448 private key is 57 bytes, but may be wrapped in OCTET STRING
-  (let ((key (if (and (> (length key-bytes) 57)
-                      (= (aref key-bytes 0) #x04))  ; OCTET STRING tag
-                 (subseq key-bytes 2)  ; Skip tag and length
-                 key-bytes)))
-    (ironclad:make-private-key :ed448 :x key)))
+  (ironclad:make-private-key :ed448 :x (%unwrap-curve-private-key key-bytes 57)))
 
 (defun asn1-octet-string-p (node)
   "Check if ASN.1 node is an OCTET STRING."
