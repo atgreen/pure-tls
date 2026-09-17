@@ -9,6 +9,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 SHIM_PATH="$PROJECT_DIR/pure-tls-shim"
+
+# Shared result parsing; handles both runner output formats.
+# shellcheck source=test/boringssl-summary.sh
+. "$SCRIPT_DIR/boringssl-summary.sh"
 TIMEOUT="${TEST_TIMEOUT:-300}"
 BORINGSSL_RUNNER="${BORINGSSL_RUNNER:-}"
 RUNNER_BIN=""
@@ -59,38 +63,40 @@ echo ""
 TMPLOG=$(mktemp)
 trap "rm -f $TMPLOG" EXIT
 
-# Run full test suite with timeout
+# Run full test suite with timeout.  PIPESTATUS[0] is the runner's status, not
+# tee's; the runner exits non-zero merely because tests fail, but timeout's 124
+# means the run was cut short and the results below would be partial.
+RUN_RC=0
 if [ -n "$BORINGSSL_RUNNER" ]; then
     cd "$BORINGSSL_RUNNER"
     timeout "$TIMEOUT" go test -v \
         -shim-path="$SHIM_PATH" \
         -allow-unimplemented \
         2>&1 | tee "$TMPLOG" || true
+    RUN_RC=${PIPESTATUS[0]}
 else
     timeout "$TIMEOUT" "$RUNNER_BIN" \
         -test.v \
         -shim-path="$SHIM_PATH" \
         -allow-unimplemented \
         2>&1 | tee "$TMPLOG" || true
+    RUN_RC=${PIPESTATUS[0]}
+fi
+
+if [ "$RUN_RC" -eq 124 ]; then
+    echo ""
+    echo "ERROR: BoringSSL run exceeded the ${TIMEOUT}s timeout and was killed."
+    echo "       The summary below would be based on partial results."
+    echo "       Raise the limit:  TEST_TIMEOUT=1800 $0"
+    exit 1
 fi
 
 echo ""
 echo "=== Test Results Summary ==="
 
-# Extract final counts (format: failed/unimplemented/done/started/total)
-FINAL_LINE=$(grep -oE "[0-9]+/[0-9]+/[0-9]+/[0-9]+/[0-9]+" "$TMPLOG" | tail -1)
-if [ -n "$FINAL_LINE" ]; then
-    FAILED=$(echo "$FINAL_LINE" | cut -d/ -f1)
-    UNIMPL=$(echo "$FINAL_LINE" | cut -d/ -f2)
-    DONE=$(echo "$FINAL_LINE" | cut -d/ -f3)
-    TOTAL=$(echo "$FINAL_LINE" | cut -d/ -f5)
-    PASSED=$((DONE - FAILED - UNIMPL))
-
-    echo "Overall: $DONE/$TOTAL tests completed"
-    echo "  Passed: $PASSED"
-    echo "  Failed: $FAILED"
-    echo "  Unimplemented: $UNIMPL"
-fi
+# Counts come from the shared parser, which understands both the legacy
+# progress counter and the current PASSED/FAILED/UNIMPLEMENTED markers.
+boringssl_print_summary "$TMPLOG" || true
 
 echo ""
 echo "=== Failure Breakdown (by unique test name) ==="
