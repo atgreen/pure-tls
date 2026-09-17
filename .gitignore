@@ -25,9 +25,15 @@ test-load.lisp
 test-*.lisp
 RCS
 
-# Markdown files in top level (except README.md)
+# Markdown files in top level, except the project docs listed below.
+# Every top-level .md that should be tracked needs an entry here: `git add`
+# SILENTLY SKIPS an ignored path, so a missing exception means the file never
+# gets committed and the omission is easy to miss in a large diff.
 /*.md
 !/README.md
+!/CHANGELOG.md
+!/AGENTS.md
+!/SECURITY.md
 # Explicitly ignore local review artifacts
 C-REVIEW.md
 
