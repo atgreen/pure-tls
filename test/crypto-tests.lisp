@@ -389,6 +389,67 @@
 
 ;;;; Test Runner
 
+;;;; ---------------------------------------------------------------------------
+;;;; Constant-time codegen guards (SBCL/x86-64)
+;;;;
+;;;; Two expressions in the ML-KEM decapsulation path operate on secret-derived
+;;;; data and would be side channels if the compiler emitted the obvious code:
+;;;;
+;;;;   * COMPRESS-COEFF divides by q.  That is the KyberSlash shape -- a
+;;;;     division whose dividend depends on secret data -- and hardware integer
+;;;;     division is variable-time in its operands.
+;;;;   * ML-KEM-DECODE-MESSAGE-BIT compares two magnitudes derived from
+;;;;     w = v - s^T*u and yields a message bit.
+;;;;
+;;;; SBCL strength-reduces the first to MUL+SAR (q is a compile-time constant)
+;;;; and compiles the second to CMOV.  Both are therefore constant-time in
+;;;; practice, but by the compiler's choice rather than by construction, and
+;;;; nothing in the codebase pins the implementation or platform.  These tests
+;;;; make that assumption explicit and noisy if it ever stops holding.
+;;;; ---------------------------------------------------------------------------
+
+#+(and sbcl x86-64)
+(defun %disassembly-of (fn)
+  (with-output-to-string (out)
+    (let ((*standard-output* out))
+      (disassemble fn))))
+
+#+(and sbcl x86-64)
+(test ml-kem-compress-coeff-has-no-hardware-divide
+  "compress-coeff must not compile to a variable-time hardware divide."
+  (let ((text (%disassembly-of 'pure-tls::compress-coeff)))
+    (is (not (search " DIV " text))
+        "compress-coeff emitted an unsigned DIV: the division by q is no longer ~
+         strength-reduced, so it is variable-time on secret-derived input")
+    (is (not (search " IDIV " text))
+        "compress-coeff emitted a signed IDIV")
+    (is (or (search " MUL " text) (search " IMUL " text))
+        "expected the division by q to be strength-reduced to a multiply")))
+
+#+(and sbcl x86-64)
+(test ml-kem-message-bit-decode-is-branch-free
+  "The secret-dependent message-bit decode must compile without a branch."
+  (let* ((text (%disassembly-of 'pure-tls::ml-kem-decode-message-bit))
+         (lines (let ((acc nil) (start 0))
+                  (loop for nl = (position #\Newline text :start start)
+                        do (push (subseq text start (or nl (length text))) acc)
+                           (if nl (setf start (1+ nl)) (return)))
+                  (nreverse acc)))
+         ;; Conditional jumps only; JMP (unconditional) is fine.
+         (cond-jumps (remove-if-not
+                      (lambda (line)
+                        (some (lambda (mn) (search mn line))
+                              '(" JE " " JNE " " JL " " JLE " " JG " " JGE "
+                                " JB " " JBE " " JA " " JAE " " JS " " JNS ")))
+                      lines)))
+    (is (null cond-jumps)
+        "ml-kem-decode-message-bit compiled with conditional jump(s) ~S -- the ~
+         message-bit decode now branches on secret-derived data"
+        cond-jumps)
+    (is (search "CMOV" text)
+        "expected the comparison to be compiled to a conditional move")))
+
+
 (defun run-crypto-tests ()
   "Run all cryptographic tests."
   (run! 'crypto-tests))

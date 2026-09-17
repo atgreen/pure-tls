@@ -31,6 +31,17 @@
 (defconstant +asn1-utc-time+ 23)
 (defconstant +asn1-generalized-time+ 24)
 
+;;;; Structural Limits
+
+(defconstant +asn1-max-depth+ 64
+  "Maximum nesting depth accepted when parsing DER.
+PARSE-DER-NODE and PARSE-DER-CONTENTS are mutually recursive, so without a
+bound a peer-supplied certificate consisting of nested constructed types
+recurses once per level and exhausts the control stack.  On SBCL that abort is
+fatal and uncatchable - it kills the image, not the connection - so the bound
+has to be enforced here rather than handled by a caller.  RFC 5280 structures
+nest well under 20 levels; 64 leaves generous headroom.")
+
 ;;;; ASN.1 Node Structure
 
 (defstruct asn1-node
@@ -50,8 +61,15 @@
   (let ((buf (make-tls-buffer data)))
     (parse-der-node buf)))
 
-(defun parse-der-node (buf)
-  "Parse a single DER node from the buffer."
+(defun parse-der-node (buf &optional (depth 0))
+  "Parse a single DER node from the buffer.
+DEPTH is the current nesting level; parsing is refused beyond
++ASN1-MAX-DEPTH+ so that a deeply nested peer-supplied structure cannot
+exhaust the control stack."
+  (when (> depth +asn1-max-depth+)
+    (error 'tls-decode-error
+           :message (format nil ":DECODE_ERROR: DER nesting deeper than ~D levels"
+                            +asn1-max-depth+)))
   (when (zerop (buffer-remaining buf))
     (return-from parse-der-node nil))
   (let* ((start-pos (tls-buffer-position buf))
@@ -74,7 +92,7 @@
       (let* ((value-start (tls-buffer-position buf))
              (value (if constructed
                         ;; Parse contained elements
-                        (parse-der-contents buf length)
+                        (parse-der-contents buf length depth)
                         ;; Primitive: read raw bytes
                         (buffer-read-octets buf length)))
              (end-pos (tls-buffer-position buf))
@@ -105,12 +123,20 @@
            (setf length (logior (ash length 8) (buffer-read-octet buf))))
          length)))))
 
-(defun parse-der-contents (buf length)
-  "Parse the contents of a constructed type."
+(defun parse-der-contents (buf length &optional (depth 0))
+  "Parse the contents of a constructed type.
+DEPTH is the nesting level of the enclosing node; children are parsed one
+level deeper (see +ASN1-MAX-DEPTH+)."
   (let ((end-pos (+ (tls-buffer-position buf) length))
         (nodes nil))
     (loop while (< (tls-buffer-position buf) end-pos)
-          do (push (parse-der-node buf) nodes))
+          do (push (parse-der-node buf (1+ depth)) nodes))
+    ;; A child may not run past its parent's declared length.  Nothing checked
+    ;; this before, so a nested node could overlap whatever followed the parent
+    ;; while still being inside the buffer.
+    (unless (= (tls-buffer-position buf) end-pos)
+      (error 'tls-decode-error
+             :message ":DECODE_ERROR: DER element overruns its parent's declared length"))
     (nreverse nodes)))
 
 (defun decode-primitive-value (class tag raw-bytes)
@@ -182,23 +208,43 @@ Per DER (X.690): integers must be minimally encoded."
 ;;;; OID Decoding
 
 (defun decode-der-oid (bytes)
-  "Decode a DER-encoded Object Identifier."
+  "Decode a DER-encoded Object Identifier.
+
+Each subidentifier is base-128, high bit set on all but the last byte.  Two
+details the previous version got wrong:
+
+  * The FIRST subidentifier may itself be multi-byte (any OID whose second arc
+    is >= 48 under arc 2, e.g. 2.999).  Reading only BYTES[0] mis-decoded those.
+  * A leading 0x80 continuation byte is a non-minimal encoding, which X.690
+    forbids.  Accepting it let distinct byte sequences decode to the same OID,
+    so one OID had many encodings."
   (when (zerop (length bytes))
     (return-from decode-der-oid nil))
-  (let ((components nil)
-        (first-byte (aref bytes 0)))
-    ;; First byte encodes first two components
-    (push (floor first-byte 40) components)
-    (push (mod first-byte 40) components)
-    ;; Remaining bytes encode subsequent components
-    (let ((value 0))
-      (loop for i from 1 below (length bytes)
-            for byte = (aref bytes i)
-            do (setf value (logior (ash value 7) (logand byte #x7f)))
-            when (not (logbitp 7 byte))
-              do (push value components)
-                 (setf value 0)))
-    (nreverse components)))
+  (let ((subids nil)
+        (value 0)
+        (start-of-subid t))
+    (loop for i from 0 below (length bytes)
+          for byte = (aref bytes i)
+          do (when (and start-of-subid (= byte #x80))
+               (error 'tls-decode-error
+                      :message "OBJECT IDENTIFIER has a non-minimal subidentifier"))
+             (setf start-of-subid nil)
+             (setf value (logior (ash value 7) (logand byte #x7f)))
+             (when (not (logbitp 7 byte))
+               (push value subids)
+               (setf value 0)
+               (setf start-of-subid t)))
+    ;; A trailing continuation byte means the last subidentifier never ended.
+    (unless start-of-subid
+      (error 'tls-decode-error
+             :message "OBJECT IDENTIFIER ends mid-subidentifier"))
+    (setf subids (nreverse subids))
+    ;; The first subidentifier encodes the first two arcs as 40*X + Y, where
+    ;; X is capped at 2 and Y is unbounded when X = 2.
+    (let* ((first-subid (first subids))
+           (x (min 2 (floor first-subid 40)))
+           (y (- first-subid (* 40 x))))
+      (list* x y (rest subids)))))
 
 (defun oid-to-string (oid)
   "Convert an OID list to dotted string notation."
@@ -334,6 +380,15 @@ Per DER (X.690): integers must be minimally encoded."
     ((1 3 101 113) . :ed448)
     ;; RSA-PSS (RFC 4055)
     ((1 2 840 113549 1 1 10) . :rsassa-pss)
+    ;; Bare digest algorithms (NIST CSOR / RFC 3874).  These appear as the
+    ;; hashAlgorithm inside RSASSA-PSS-params; without them PARSE-RSA-PSS-PARAMS
+    ;; could not resolve the hash and every RSA-PSS certificate failed with
+    ;; "not a supported digest".
+    ((1 3 14 3 2 26) . :sha1)
+    ((2 16 840 1 101 3 4 2 1) . :sha256)
+    ((2 16 840 1 101 3 4 2 2) . :sha384)
+    ((2 16 840 1 101 3 4 2 3) . :sha512)
+    ((2 16 840 1 101 3 4 2 4) . :sha224)
     ;; ML-DSA (FIPS 204 Post-Quantum Signatures)
     ((2 16 840 1 101 3 4 3 17) . :mldsa44)
     ((2 16 840 1 101 3 4 3 18) . :mldsa65)

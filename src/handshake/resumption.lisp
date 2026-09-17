@@ -46,33 +46,44 @@
 (defvar *session-ticket-cache* (make-hash-table :test 'equal)
   "Cache of session tickets keyed by hostname.")
 
-(defvar *session-ticket-cache-lock* nil
-  "Lock for thread-safe access to ticket cache (if available).")
+(defvar *session-ticket-cache-lock* (bt:make-lock "session-ticket-cache")
+  "Lock guarding *SESSION-TICKET-CACHE*.
+
+Every accessor below holds it.  The cache is written from
+PROCESS-NEW-SESSION-TICKET, which runs whenever a peer sends a
+NewSessionTicket, so an application making concurrent connections to the same
+host has concurrent writers to a shared hash table.  An explicit lock rather
+than :synchronized T because SESSION-TICKET-CACHE-GET does a read-then-REMHASH
+that has to be atomic as a unit.")
 
 (defun session-ticket-cache-get (hostname)
-  "Get a valid session ticket for HOSTNAME, or NIL if none available."
-  (let ((ticket (gethash hostname *session-ticket-cache*)))
-    (when ticket
-      ;; Check if ticket is still valid
-      (let* ((now (get-internal-real-time))
-             (age-ms (/ (* 1000 (- now (session-ticket-received-at ticket)))
-                        internal-time-units-per-second)))
-        (cond ((< age-ms (* 1000 (session-ticket-lifetime ticket))) ticket)
-      (t
-              (remhash hostname *session-ticket-cache*)
-              nil))))))
+  "Get a valid session ticket for HOSTNAME, or NIL if none available.
+Expiry eviction is atomic with the lookup."
+  (bt:with-lock-held (*session-ticket-cache-lock*)
+    (let ((ticket (gethash hostname *session-ticket-cache*)))
+      (when ticket
+        ;; Check if ticket is still valid
+        (let* ((now (get-internal-real-time))
+               (age-ms (/ (* 1000 (- now (session-ticket-received-at ticket)))
+                          internal-time-units-per-second)))
+          (cond ((< age-ms (* 1000 (session-ticket-lifetime ticket))) ticket)
+                (t
+                 (remhash hostname *session-ticket-cache*)
+                 nil)))))))
 
 (defun session-ticket-cache-put (hostname ticket)
   "Store a session ticket for HOSTNAME."
   (setf (session-ticket-hostname ticket) hostname)
   (setf (session-ticket-received-at ticket) (get-internal-real-time))
-  (setf (gethash hostname *session-ticket-cache*) ticket))
+  (bt:with-lock-held (*session-ticket-cache-lock*)
+    (setf (gethash hostname *session-ticket-cache*) ticket)))
 
 (defun session-ticket-cache-clear (&optional hostname)
   "Clear session tickets. If HOSTNAME is provided, only clear that one."
-  (if hostname
-      (remhash hostname *session-ticket-cache*)
-      (clrhash *session-ticket-cache*)))
+  (bt:with-lock-held (*session-ticket-cache-lock*)
+    (if hostname
+        (remhash hostname *session-ticket-cache*)
+        (clrhash *session-ticket-cache*))))
 
 ;;;; PSK Derivation
 ;;;

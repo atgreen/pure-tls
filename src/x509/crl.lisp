@@ -196,14 +196,17 @@
           ((member algorithm '(:rsa-pss :rsassa-pss))
            ;; For CRLs, we don't have parsed params like certs, use defaults
            (let* ((hash-algo :sha256)
-                  (salt-length 32)
                   (public-key (parse-rsa-public-key public-key-bytes)))
              (when public-key
-               (ironclad:verify-signature public-key
-                                          (ironclad:digest-sequence hash-algo tbs)
-                                          signature
-                                          :pss hash-algo
-                                          :salt-length salt-length))))
+               ;; Ironclad's PSS-VERIFY hashes its MESSAGE argument itself (see
+               ;; pkcs1.lisp: m-hash = (digest-sequence digest-name message)), so
+               ;; TBS is passed raw.  Pre-hashing here verified against H(H(tbs))
+               ;; and no legitimate RSA-PSS signature could ever match.  The
+               ;; CertificateVerify path in handshake/client.lisp always got this
+               ;; right; these two certificate/CRL sites did not.  Ironclad
+               ;; infers the salt length, so SALT-LENGTH is not passed.
+               (ironclad:verify-signature public-key tbs signature
+                                          :pss hash-algo))))
           ;; ECDSA signatures
           ((member algorithm '(:ecdsa-with-sha256
                                :ecdsa-with-SHA256
@@ -317,9 +320,19 @@ Distinct from MAKE-ECDSA-PUBLIC-KEY in handshake/client.lisp, which takes a curv
           (when (crl-valid-p crl)
             crl))))))
 
+(defparameter *crl-cache-max-entries* 256
+  "Maximum number of CRLs held in *CRL-CACHE*.
+
+   Cache keys are CRL Distribution Point URIs, which come from peer-supplied
+   certificates, so an unbounded cache is attacker-growable memory.  When the
+   cap is reached the cache is cleared rather than evicted one entry at a time:
+   CRLs are re-fetchable and a precise LRU is not worth the bookkeeping here.")
+
 (defun cache-crl (uri crl)
-  "Store a CRL in the cache."
+  "Store a CRL in the cache, bounded by *CRL-CACHE-MAX-ENTRIES*."
   (bt:with-lock-held (*crl-cache-lock*)
+    (when (>= (hash-table-count *crl-cache*) *crl-cache-max-entries*)
+      (clrhash *crl-cache*))
     (setf (gethash uri *crl-cache*)
           (cons crl (get-universal-time)))))
 
@@ -618,6 +631,13 @@ Distinct from MAKE-ECDSA-PUBLIC-KEY in handshake/client.lisp, which takes a curv
       (when (alexandria:starts-with-subseq "http://" uri)
         (let ((crl (fetch-crl uri)))
           (when crl
+            ;; A stale CRL must not be used.  GET-CACHED-CRL applied
+            ;; CRL-VALID-P but a freshly fetched one was never checked, so a
+            ;; MITM on the plaintext HTTP fetch could replay an old but validly
+            ;; signed CRL that predates a revocation and get :VALID back.
+            (unless (crl-valid-p crl)
+              (warn "CRL from ~A is outside its validity window; ignoring" uri)
+              (return-from check-certificate-revocation :unknown))
             ;; Check if CRL issuer matches certificate issuer
             (when (crl-issuer-matches-p crl certificate)
               ;; Verify CRL signature if issuer cert provided

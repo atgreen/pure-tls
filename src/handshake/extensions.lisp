@@ -60,6 +60,20 @@
                          +extension-renegotiation-info+        ; 65281
                          +extension-next-protocol-negotiation+)))
 
+(defun decode-uint16-list (data what)
+  "Decode DATA as a list of big-endian uint16 values.
+
+Signals TLS-DECODE-ERROR on an odd length.  The previous loops stepped BY 2 to
+(length data) and let AREF run off the end, which raised a raw
+SB-INT:INVALID-ARRAY-INDEX-ERROR rather than a TLS condition -- so a malformed
+peer extension escaped the handshake's TLS-* handlers and no alert was sent."
+  (unless (evenp (length data))
+    (error 'tls-decode-error
+           :message (format nil ":DECODE_ERROR: ~A list has odd length ~D"
+                            what (length data))))
+  (loop for i from 0 below (length data) by 2
+        collect (decode-uint16 data i)))
+
 (defun parse-extensions (data &key validate-tls13 (context :client-hello))
   "Parse a list of extensions from bytes.
    If VALIDATE-TLS13 is true, reject TLS 1.2-only extensions with an error.
@@ -167,11 +181,9 @@
         (make-supported-versions-ext
          :selected-version (buffer-read-uint16 buf))
         ;; ClientHello format: list of versions
-        (let ((versions-data (buffer-read-vector8 buf))
-              (versions nil))
-          (loop for i from 0 below (length versions-data) by 2
-                do (push (decode-uint16 versions-data i) versions))
-          (make-supported-versions-ext :versions (nreverse versions))))))
+        (let ((versions-data (buffer-read-vector8 buf)))
+          (make-supported-versions-ext
+           :versions (decode-uint16-list versions-data "supported_versions"))))))
 
 (defun serialize-supported-versions-extension (ext)
   "Serialize supported_versions extension for ClientHello."
@@ -271,12 +283,9 @@
 
 (defun parse-supported-groups-extension (data)
   "Parse supported_groups extension."
-  (let ((buf (make-tls-buffer data))
-        (groups nil))
-    (let ((groups-data (buffer-read-vector16 buf)))
-      (loop for i from 0 below (length groups-data) by 2
-            do (push (decode-uint16 groups-data i) groups)))
-    (make-supported-groups-ext :groups (nreverse groups))))
+  (let ((buf (make-tls-buffer data)))
+    (make-supported-groups-ext
+     :groups (decode-uint16-list (buffer-read-vector16 buf) "supported_groups"))))
 
 (defun serialize-supported-groups-extension (ext)
   "Serialize supported_groups extension."
@@ -295,12 +304,9 @@
 
 (defun parse-signature-algorithms-extension (data)
   "Parse signature_algorithms extension."
-  (let ((buf (make-tls-buffer data))
-        (algs nil))
-    (let ((algs-data (buffer-read-vector16 buf)))
-      (loop for i from 0 below (length algs-data) by 2
-            do (push (decode-uint16 algs-data i) algs)))
-    (make-signature-algorithms-ext :algorithms (nreverse algs))))
+  (let ((buf (make-tls-buffer data)))
+    (make-signature-algorithms-ext
+     :algorithms (decode-uint16-list (buffer-read-vector16 buf) "signature_algorithms"))))
 
 (defun serialize-signature-algorithms-extension (ext)
   "Serialize signature_algorithms extension."

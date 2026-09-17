@@ -78,11 +78,31 @@
                           private-key-file
                           private-key-password
                           private-key-file-type)
-  "Create a new SSL context (wraps pure-tls:make-tls-context)."
+  "Create a new SSL context (wraps pure-tls:make-tls-context).
+
+   Options accepted for source compatibility and genuinely meaningless for a
+   TLS-1.3-only stack are ignored silently: METHOD, DISABLED-PROTOCOLS,
+   OPTIONS, MIN-PROTO-VERSION, SESSION-CACHE-MODE, CIPHER-LIST.
+
+   VERIFY-CALLBACK is NOT ignored silently.  In cl+ssl it is how an application
+   implements certificate pinning or custom chain policy, so quietly discarding
+   it would downgrade such a caller to the default trust-store policy with no
+   indication.  pure-tls has no equivalent hook
+   yet, so supplying one is an error rather than a no-op.  Likewise the
+   private-key password options, which would otherwise silently fail to decrypt."
   (declare (ignore method disabled-protocols options min-proto-version
-                   session-cache-mode verify-callback cipher-list
-                   pem-password-callback private-key-password
-                   private-key-file-type))
+                   session-cache-mode cipher-list private-key-file-type))
+  ;; Refuse security-relevant options we cannot honour, rather than no-op them.
+  (when verify-callback
+    (error 'ssl-error
+           :message "cl+ssl compatibility: :VERIFY-CALLBACK is not supported by pure-tls. ~
+A callback passed here would be silently ignored, leaving verification at the ~
+default trust-store policy; that would weaken a caller relying on it for ~
+pinning or custom chain checks, so it is refused instead."))
+  (when (or pem-password-callback private-key-password)
+    (error 'ssl-error
+           :message "cl+ssl compatibility: encrypted private keys are not supported by ~
+pure-tls (:PEM-PASSWORD-CALLBACK / :PRIVATE-KEY-PASSWORD)."))
   (let* ((tls-verify-mode (cond
                             ((zerop verify-mode) pure-tls:+verify-none+)
                             ((logtest verify-mode +ssl-verify-fail-if-no-peer-cert+)
@@ -173,9 +193,22 @@ wrap it in a stream. Otherwise return it as-is."
                                         (buffer-size *default-buffer-size*)
                                         (input-buffer-size buffer-size)
                                         (output-buffer-size buffer-size))
-  "Create an SSL client stream (wraps pure-tls:make-tls-client-stream)."
-  (declare (ignore unwrap-stream-p certificate key password cipher-list method
+  "Create an SSL client stream (wraps pure-tls:make-tls-client-stream).
+
+   CERTIFICATE / KEY (client-certificate authentication) are NOT ignored
+   silently: discarding them produced a connection that simply failed client
+   auth with no explanation.  Use pure-tls:make-tls-client-stream's
+   :client-certificate / :client-key directly for mTLS."
+  (declare (ignore unwrap-stream-p cipher-list method
                    input-buffer-size output-buffer-size))
+  (when (or certificate key)
+    (error 'ssl-error
+           :message "cl+ssl compatibility: client-certificate authentication via ~
+:CERTIFICATE / :KEY is not wired through this layer. Call ~
+PURE-TLS:MAKE-TLS-CLIENT-STREAM with :CLIENT-CERTIFICATE and :CLIENT-KEY instead."))
+  (when password
+    (error 'ssl-error
+           :message "cl+ssl compatibility: encrypted private keys are not supported by pure-tls."))
   (let ((tls-verify-mode (cond
                            ((null verify) pure-tls:+verify-none+)
                            ((eql verify :optional) pure-tls:+verify-peer+)

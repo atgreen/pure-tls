@@ -22,6 +22,10 @@
   ;; Called with (hostname) after ClientHello, should return
   ;; (values certificate-chain private-key) or NIL to use defaults
   (sni-callback nil)
+  ;; T when the certificate-provider supplied a chain during THIS ClientHello.
+  ;; Distinct from "certificate-chain is non-NIL", which is also true for a
+  ;; default certificate set at construction.
+  (provider-supplied-certificate nil :type boolean)
   ;; Certificate provider for dynamic cert selection (e.g., ACME TLS-ALPN-01)
   ;; Called with (hostname alpn-list) before certificate selection
   ;; Should return (values certificate-chain private-key alpn-protocol) or NIL
@@ -93,7 +97,9 @@
   "Try to accept a PSK from the client's pre_shared_key extension.
    Returns (VALUES psk selected-index) if a valid PSK is found, NIL otherwise.
    RAW-CLIENT-HELLO must be the complete ClientHello message bytes."
-  (declare (ignore hs))  ; HS reserved for future use (e.g., custom ticket decryption)
+  ;; HS is used below, to recover the binder transcript prefix after a
+  ;; HelloRetryRequest.  It previously carried a contradictory
+  ;; (declare (ignore hs)).
   (let* ((identities (pre-shared-key-ext-identities psk-ext))
          (binders (pre-shared-key-ext-binders psk-ext)))
     (hs-log "~&[HS] try-accept-psk: ~D identities, cipher-suite=~D~%"
@@ -185,6 +191,7 @@
       (hs-log "~&[HS] process-client-hello: ALPN=~A~%" client-alpn-list)
       ;; Call certificate provider if available (for ACME TLS-ALPN-01, etc.)
       ;; Certificate provider can override certificate AND ALPN selection
+      (setf (server-handshake-provider-supplied-certificate hs) nil)
       (when (server-handshake-certificate-provider hs)
         (hs-log "~&[HS] process-client-hello: calling cert provider~%")
         (multiple-value-bind (cert-chain priv-key selected-alpn)
@@ -195,16 +202,23 @@
                   (and cert-chain t) (and priv-key t) selected-alpn)
           (when cert-chain
             (setf (server-handshake-certificate-chain hs) cert-chain)
+            (setf (server-handshake-provider-supplied-certificate hs) t)
             (when priv-key
               (setf (server-handshake-private-key hs) priv-key))
             (when selected-alpn
               ;; Provider selected ALPN - skip normal ALPN negotiation later
               (setf (server-handshake-selected-alpn hs) selected-alpn))))))
-    ;; Call SNI callback if provided (for virtual hosting)
-    ;; Only if certificate-provider didn't already set a certificate
+    ;; Call SNI callback if provided (for virtual hosting).
+    ;; Skip it only when the certificate-provider already answered for THIS
+    ;; handshake.  The test used to be (null certificate-chain), but that slot
+    ;; is populated at construction from the :certificate argument, so any
+    ;; server configured with both a default certificate and an sni-callback --
+    ;; the ordinary virtual-hosting setup -- never called the callback at all
+    ;; and served the default certificate to every vhost.  The callback's
+    ;; :reject path never fired either.
     (when (and (server-handshake-sni-callback hs)
                (server-handshake-client-hostname hs)
-               (null (server-handshake-certificate-chain hs)))
+               (not (server-handshake-provider-supplied-certificate hs)))
       (multiple-value-bind (cert-chain priv-key)
           (funcall (server-handshake-sni-callback hs)
                    (server-handshake-client-hostname hs))
@@ -283,7 +297,7 @@
           (record-layer-write-alert (server-handshake-record-layer hs)
                                     +alert-level-fatal+ +alert-handshake-failure+)
           (error 'tls-handshake-error
-                 :message ":HANDSHAKE_FAILURE_ON_CLIENT_HELLO: No common cipher suite"
+                 :message ":NO_SHARED_CIPHER: No cipher suite in common with the client"
                  :state :wait-client-hello))
         (hs-log "~&[HS] process-client-hello: selected cipher=~A~%" selected)
         (setf (server-handshake-selected-cipher-suite hs) selected)))
@@ -314,9 +328,19 @@
             (hs-log "~&[HS] process-client-hello: try-accept-psk result: ~:[REJECTED~;ACCEPTED index=~D~]~%"
                     accepted-psk selected-psk-index)
             (when accepted-psk
-              (setf (server-handshake-psk-accepted hs) t)
               (setf (server-handshake-accepted-psk hs) accepted-psk)
               (setf (server-handshake-selected-psk-index hs) selected-psk-index)))))
+      ;; Set UNCONDITIONALLY from this ClientHello's result.  Previously these
+      ;; slots were only ever set, never cleared, so after a HelloRetryRequest a
+      ;; CH2 that dropped its PSK (or whose binder failed) left CH1's values in
+      ;; place: key-schedule-init correctly used the local ACCEPTED-PSK (no PSK),
+      ;; but generate-server-hello read the stale slot and advertised
+      ;; pre_shared_key anyway -- a ServerHello claiming an acceptance the key
+      ;; schedule never made.
+      (setf (server-handshake-psk-accepted hs) (and accepted-psk t))
+      (unless accepted-psk
+        (setf (server-handshake-accepted-psk hs) nil)
+        (setf (server-handshake-selected-psk-index hs) nil))
       ;; Process key_share extension (may trigger HelloRetryRequest)
       (hs-log "~&[HS] process-client-hello: processing key_share~%")
       (let* ((ks-ext (find-extension extensions +extension-key-share+))
@@ -333,6 +357,21 @@
         (cond
           ;; Happy path: client offered a key share we can use
           (selected-share
+           ;; RFC 8446 S4.1.4: after a HelloRetryRequest the client MUST send a
+           ;; key_share for the group we named; anything else is
+           ;; illegal_parameter.  Previously any group in OUR-GROUPS was taken
+           ;; on the retry.
+           (when (and (server-handshake-hello-retry-sent hs)
+                      (server-handshake-hrr-selected-group hs)
+                      (/= (key-share-entry-group selected-share)
+                          (server-handshake-hrr-selected-group hs)))
+             (record-layer-write-alert (server-handshake-record-layer hs)
+                                       +alert-level-fatal+ +alert-illegal-parameter+)
+             (error 'tls-handshake-error
+                    :message (format nil ":WRONG_CURVE: Second ClientHello key_share is for ~A, not the requested ~A"
+                                     (named-group-name (key-share-entry-group selected-share))
+                                     (named-group-name (server-handshake-hrr-selected-group hs)))
+                    :state :wait-client-hello))
            (let* ((group (key-share-entry-group selected-share))
                   (client-public (key-share-entry-key-exchange selected-share))
                   (expected-len (key-exchange-public-key-length group)))
@@ -797,16 +836,27 @@
     ;; +verify-peer+ with no trust store = just verify signature (proof of key possession)
     ;; +verify-required+ with no trust store = FAIL with unknown_ca (cannot verify without CA)
     ;; +verify-peer+ or +verify-required+ with trust store = verify signature AND chain
+    ;; An EMPTY trust store is a misconfiguration, not a request for defaults.
+    ;; Checking only (unless trust-store ...) let an empty-but-non-NIL store
+    ;; through to verify-certificate-chain with NIL roots, and on macOS/Windows
+    ;; the native dispatch treats NIL roots as "use the OS trust store" -- so a
+    ;; server that meant to accept clients under one private CA would instead
+    ;; accept any client certificate chaining to any publicly-trusted root.
+    ;; make-trust-store-from-directory returns an empty store without
+    ;; complaint (it only WARNs on unreadable files), so this is reachable by
+    ;; ordinary misconfiguration rather than by contrivance.
     (when (= verify-mode +verify-required+)
-      (unless trust-store
-        ;; Cannot verify client certificate without a trust store
+      (unless (and trust-store (trust-store-certificates trust-store))
         (record-layer-write-alert (server-handshake-record-layer hs)
                                   +alert-level-fatal+ +alert-unknown-ca+)
         (error 'tls-verification-error
-               :message "Cannot verify client certificate: no trusted CA configured"
+               :message (if trust-store
+                            "Cannot verify client certificate: trust store contains no certificates"
+                            "Cannot verify client certificate: no trusted CA configured")
                :reason :unknown-ca)))
     (when (and (member verify-mode (list +verify-peer+ +verify-required+))
-               trust-store)
+               trust-store
+               (trust-store-certificates trust-store))
       ;; Full chain verification when trust store is available
       ;; Map verification failures to appropriate TLS alerts
       (handler-case

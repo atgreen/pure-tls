@@ -917,6 +917,441 @@
           (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
                                               :now now :hostname t))))))
 
+
+;;;; ---------------------------------------------------------------------------
+;;;; Finding: unbounded recursion in the DER parser (CWE-674).
+;;;;
+;;;; PARSE-DER-NODE (src/x509/asn1.lisp) recurses into PARSE-DER-CONTENTS for
+;;;; every constructed node, which recurses back into PARSE-DER-NODE.  Nothing
+;;;; bounded the nesting depth, so a certificate consisting of nested SEQUENCEs
+;;;; drove the recursion as deep as its byte budget allowed.
+;;;;
+;;;; That budget was effectively unlimited: MAX-HANDSHAKE-MESSAGE-BODY-SIZE
+;;;; exempts Certificate messages from *MAX-HANDSHAKE-MESSAGE-SIZE* and falls
+;;;; back to the uint24 protocol maximum when *MAX-CERTIFICATE-LIST-SIZE* is 0.
+;;;; Roughly 133KB of nested DER exhausted a 1MB control stack, and on SBCL that
+;;;; abort is FATAL and uncatchable -- it kills the image, not the connection,
+;;;; so neither PROCESS-CERTIFICATE's HANDLER-CASE nor a SERIOUS-CONDITION
+;;;; handler could contain it.  Parsing happens before any signature or chain
+;;;; verification, so no authentication was required to reach it.
+;;;;
+;;;; Secure behaviour: nesting past +ASN1-MAX-DEPTH+ must raise a graceful
+;;;; TLS-DECODE-ERROR.
+;;;; ---------------------------------------------------------------------------
+
+(defun %nested-der-sequences (depth)
+  "Build DER for DEPTH nested SEQUENCEs wrapped around a NULL."
+  (labels ((len-bytes (n)
+             (if (< n 128)
+                 (list n)
+                 (let ((bytes nil) (v n))
+                   (loop while (plusp v)
+                         do (push (ldb (byte 8 0) v) bytes)
+                            (setf v (ash v -8)))
+                   (cons (logior #x80 (length bytes)) bytes)))))
+    (let ((payload (list #x05 #x00)))       ; innermost: NULL
+      (dotimes (i depth)
+        (setf payload (append (list #x30) (len-bytes (length payload)) payload)))
+      (make-array (length payload)
+                  :element-type '(unsigned-byte 8)
+                  :initial-contents payload))))
+
+(test der-nesting-depth-is-bounded
+  "Deeply nested DER must raise TLS-DECODE-ERROR, never exhaust the stack."
+  ;; Well inside the limit: still parses.
+  (is (pure-tls::parse-der (%nested-der-sequences 8))
+      "A shallowly nested structure must still parse")
+  ;; Past the limit: refused gracefully.  Before the fix this recursed until
+  ;; SBCL died with a fatal 'Control stack exhausted', taking the image with it.
+  (signals pure-tls:tls-decode-error
+    (pure-tls::parse-der (%nested-der-sequences (+ pure-tls::+asn1-max-depth+ 1))))
+  ;; The payload that used to be lethal (~133KB, depth 30000) is now just an
+  ;; error.  Reaching this form at all proves the process survived.
+  (signals pure-tls:tls-decode-error
+    (pure-tls::parse-der (%nested-der-sequences 30000))))
+
+(test certificate-nesting-depth-is-bounded
+  "A hostile certificate of nested SEQUENCEs must not kill the process."
+  ;; PARSE-CERTIFICATE is the exported entry point a peer reaches through
+  ;; PROCESS-CERTIFICATE, and is itself public API for untrusted cert files.
+  (signals pure-tls:tls-error
+    (pure-tls:parse-certificate (%nested-der-sequences 30000))))
+
+
+;;;; ---------------------------------------------------------------------------
+;;;; Finding: unbounded recursion on post-handshake records (CWE-674).
+;;;;
+;;;; TLS-STREAM-FILL-BUFFER (src/streams.lisp) re-entered itself once per record
+;;;; for empty records, ignorable alerts and post-handshake handshake messages.
+;;;; Two of those branches were metered (+MAX-EMPTY-RECORDS+, +MAX-WARNING-ALERTS+)
+;;;; but the handshake branch had no counter, and the self-call sat inside a
+;;;; HANDLER-CASE so SBCL could not tail-call it.  CHECK-HANDSHAKE-BUFFER-SIZE
+;;;; caps only the ADVERTISED length, so a peer announced a 16384-byte body of an
+;;;; unknown handshake type and dribbled it one byte per record; ~11250 records
+;;;; (~259KB) exhausted a 1MB control stack, fatally and uncatchably.
+;;;;
+;;;; Secure behaviour: the read path is iterative, and a peer making no progress
+;;;; is cut off with a TLS-ERROR after +MAX-CONSECUTIVE-HANDSHAKE-RECORDS+.
+;;;; ---------------------------------------------------------------------------
+
+(defun %plaintext-handshake-records (n &optional (payload-byte #xAA))
+  "N one-byte plaintext handshake records, as a peer would put them on the wire.
+The first four bytes form a handshake header announcing an unknown message type
+(0x63) with a 16384-byte body, so the message never completes and every record
+is pure no-progress."
+  (let ((out (flexi-streams:make-in-memory-output-stream)))
+    (dotimes (i n)
+      (let ((byte (case i (0 #x63) (1 #x00) (2 #x40) (3 #x00) (t payload-byte))))
+        ;; content_type(22) || legacy_version(0303) || length(0001) || byte
+        (write-sequence (vector 22 3 3 0 1 byte) out)))
+    (flexi-streams:get-output-stream-sequence out)))
+
+(defun %stream-over-records (bytes)
+  "A TLS-CLIENT-STREAM whose record layer reads BYTES (no cipher installed, so
+records are consumed as plaintext).  The transport is bidirectional because the
+rejection paths send a fatal alert before signalling."
+  (let* ((io (make-two-way-stream
+              (flexi-streams:make-in-memory-input-stream bytes)
+              (flexi-streams:make-in-memory-output-stream)))
+         (stream (make-instance 'pure-tls::tls-client-stream :stream io)))
+    (setf (pure-tls::tls-stream-record-layer stream)
+          (pure-tls::make-record-layer io))
+    stream))
+
+(test post-handshake-record-dribble-is-bounded
+  "A peer dribbling a handshake message one byte per record must be cut off."
+  ;; Well past the cap, and past the ~11250 records that used to be fatal.
+  (let ((stream (%stream-over-records
+                 (%plaintext-handshake-records 20000))))
+    ;; Reaching this assertion at all proves the read path no longer grows the
+    ;; control stack per record: before the fix SBCL aborted the whole image
+    ;; after ~11250 records.  The flood is now consumed iteratively and
+    ;; terminates on the unknown message type once the message completes.
+    ;;
+    ;; Note there is deliberately NO per-record cap: one-byte handshake records
+    ;; are legitimate (BoringSSL's SplitHandshakeRecords tests produce exactly
+    ;; that), and an earlier version of this fix rejected them.  The bound comes
+    ;; from check-handshake-buffer-size capping the advertised body instead.
+    (signals pure-tls:tls-error
+      (pure-tls::tls-stream-fill-buffer stream))))
+
+(test post-handshake-unknown-message-is-rejected
+  "RFC 8446 s4.6: an unexpected post-handshake message must not be ignored."
+  ;; A COMPLETE handshake message of an unknown type (0x63, zero-length body),
+  ;; delivered in one record.  This makes progress, so the no-progress cap is
+  ;; not what rejects it -- the message type is.
+  (let ((stream (%stream-over-records
+                 (vector 22 3 3 0 4 #x63 #x00 #x00 #x00))))
+    (signals pure-tls:tls-error
+      (pure-tls::tls-stream-fill-buffer stream))))
+
+
+;;;; ---------------------------------------------------------------------------
+;;;; Finding: *MAX-CERTIFICATE-LIST-SIZE* defaulted to 0 (unlimited).
+;;;;
+;;;; MAX-HANDSHAKE-MESSAGE-BODY-SIZE exempts Certificate messages from
+;;;; *MAX-HANDSHAKE-MESSAGE-SIZE* and falls back to the uint24 protocol maximum
+;;;; when the certificate cap is 0, so any peer could make us buffer a 16MB
+;;;; Certificate message before a single signature was checked.  That budget is
+;;;; also what let nested DER recurse deep enough to kill the image, and what
+;;;; turned one connection into ~315 CPU-seconds of ML-DSA-65 verification.
+;;;;
+;;;; Secure behaviour: the shipped default bounds the message.
+;;;; ---------------------------------------------------------------------------
+
+(test certificate-list-size-has-a-bounded-default
+  "The shipped default must bound a Certificate message, not allow 16MB."
+  (is (plusp pure-tls:*max-certificate-list-size*)
+      "*max-certificate-list-size* must not ship as 0 (unlimited)")
+  ;; A Certificate message claiming the uint24 protocol maximum is refused
+  ;; under the shipped default.
+  (signals pure-tls:tls-handshake-error
+    (pure-tls::check-handshake-buffer-size
+     (%hs-header pure-tls::+handshake-certificate+ #xFFFFFF) nil))
+  ;; A realistically-sized chain still passes.
+  (is-false (pure-tls::check-handshake-buffer-size
+             (%hs-header pure-tls::+handshake-certificate+ 65536) nil)
+            "A 64KB certificate chain must still be accepted"))
+
+
+;;;; ---------------------------------------------------------------------------
+;;;; Finding: RSA-PSS certificate/CRL signatures could never verify.
+;;;;
+;;;; Two independent defects, both on the same path, which is why nobody noticed
+;;;; that RSA-PSS was entirely non-functional:
+;;;;
+;;;;  1. src/x509/verify.lisp and src/x509/crl.lisp passed
+;;;;     (ironclad:digest-sequence hash-algo tbs) to IRONCLAD:VERIFY-SIGNATURE
+;;;;     with :PSS.  Ironclad's PSS-VERIFY hashes its MESSAGE argument itself
+;;;;     (pkcs1.lisp: m-hash = (digest-sequence digest-name message)), so this
+;;;;     verified against H(H(tbs)).  The CertificateVerify path in
+;;;;     handshake/client.lisp always passed the raw content and was correct.
+;;;;  2. The bare digest OIDs (2.16.840.1.101.3.4.2.x) were absent from
+;;;;     *WELL-KNOWN-OIDS*, so PARSE-RSA-PSS-PARAMS could not resolve
+;;;;     hashAlgorithm and handed a raw OID list to ironclad, which rejected it
+;;;;     as "not a supported digest".
+;;;;
+;;;; Fail-closed (PSS chains were rejected, never forged), so this is a
+;;;; correctness regression guard rather than an exploit guard.
+;;;;
+;;;; Fixtures regenerated with:
+;;;;   openssl req -x509 -newkey rsa:2048 -sigopt rsa_padding_mode:pss \
+;;;;     -sigopt rsa_pss_saltlen:32 -sha256 -nodes -days 36500 \
+;;;;     -subj /CN=rsapss.test -keyout /dev/null -out rsa-pss-selfsigned.pem
+;;;; ---------------------------------------------------------------------------
+
+(test rsa-pss-certificate-signature-verifies
+  "An RSA-PSS self-signed certificate must verify against its own key."
+  (dolist (fixture '("rsa-pss-selfsigned.pem" "rsa-pss-sha384-selfsigned.pem"))
+    (let ((cert (pure-tls:parse-certificate-from-file (test-cert-path fixture))))
+      (is (eql :rsassa-pss (pure-tls::x509-certificate-signature-algorithm cert))
+          "~A should parse as RSASSA-PSS" fixture)
+      ;; hashAlgorithm must resolve to a keyword, not a raw OID list.
+      (is (keywordp (getf (pure-tls::x509-certificate-signature-algorithm-params cert)
+                          :hash))
+          "~A hashAlgorithm must resolve to a digest keyword" fixture)
+      (is-true (pure-tls::verify-certificate-signature cert cert)
+               "~A self-signature must verify" fixture))))
+
+(test rsa-pss-certificate-signature-rejects-tampering
+  "The RSA-PSS path must still REJECT a bad signature (not blanket-accept)."
+  (let* ((cert (pure-tls:parse-certificate-from-file
+                (test-cert-path "rsa-pss-selfsigned.pem")))
+         (tbs (copy-seq (pure-tls::x509-certificate-tbs-raw cert))))
+    ;; Flip a byte in the signed data; the signature must no longer match.
+    (setf (aref tbs (floor (length tbs) 2))
+          (logxor #xFF (aref tbs (floor (length tbs) 2))))
+    (setf (pure-tls::x509-certificate-tbs-raw cert) tbs)
+    (is-false (pure-tls::verify-certificate-signature cert cert)
+              "A tampered tbsCertificate must fail RSA-PSS verification")))
+
+
+;;;; ---------------------------------------------------------------------------
+;;;; Finding: an EMPTY client trust store did not fail closed under mTLS.
+;;;;
+;;;; PROCESS-CLIENT-CERTIFICATE-VERIFY guarded only on (unless trust-store ...),
+;;;; so an empty-but-non-NIL store passed the check and reached
+;;;; VERIFY-CERTIFICATE-CHAIN with NIL roots.  On macOS/Windows the native
+;;;; dispatch runs BEFORE the pure-Lisp "no trusted roots" guard and treats NIL
+;;;; roots as "use the OS trust store", so a server meaning to accept clients
+;;;; under one private CA would instead accept any client certificate chaining
+;;;; to any publicly-trusted root.
+;;;;
+;;;; MAKE-TRUST-STORE-FROM-DIRECTORY returns an empty store without complaint
+;;;; (it only WARNs on unreadable files), so this is reachable by ordinary
+;;;; misconfiguration.
+;;;;
+;;;; Secure behaviour: an empty trust store under +verify-required+ is a
+;;;; misconfiguration and must be rejected, on every platform.
+;;;; ---------------------------------------------------------------------------
+
+(test empty-trust-store-is-not-a-usable-anchor-set
+  "An empty trust store must be distinguishable from a populated one."
+  ;; The guard's predicate: it is (trust-store-certificates store) that decides,
+  ;; not the mere existence of the store object.
+  (let ((empty (pure-tls::make-trust-store))
+        (populated (pure-tls::make-trust-store
+                    :certificates (list (pure-tls:parse-certificate-from-file
+                                         (test-cert-path "rsa-pss-selfsigned.pem"))))))
+    (is-false (pure-tls::trust-store-certificates empty)
+              "A default trust store must be empty")
+    (is-true (pure-tls::trust-store-certificates populated)
+             "A populated trust store must report its certificates")
+    ;; make-trust-store-from-directory yields an empty store rather than
+    ;; erroring, which is how an empty store reaches a server in practice.
+    (let ((from-empty-dir (pure-tls::make-trust-store-from-directory
+                           (merge-pathnames "no-such-ca-dir/"
+                                            (uiop:temporary-directory)))))
+      (is-false (pure-tls::trust-store-certificates from-empty-dir)
+                "A directory with no PEMs yields an empty store, not an error"))))
+
+
+;;;; ---------------------------------------------------------------------------
+;;;; Finding: the SNI callback never ran when a default certificate was set.
+;;;;
+;;;; PROCESS-CLIENT-HELLO gated the sni-callback on
+;;;; (null (server-handshake-certificate-chain hs)).  That slot is populated at
+;;;; construction from MAKE-TLS-SERVER-STREAM's :certificate argument, so any
+;;;; server configured with BOTH a default certificate and an :sni-callback --
+;;;; the ordinary virtual-hosting setup -- never invoked the callback and served
+;;;; the default certificate to every vhost.  The callback's :reject return
+;;;; (which sends unrecognized_name) never fired either.  The intended test was
+;;;; "did the certificate-provider answer during THIS handshake".
+;;;;
+;;;; Not a vulnerability (certificates are public, and a client's own hostname
+;;;; verification rejects the wrong one) but a silent failure of a configured
+;;;; dispatch mechanism.
+;;;; ---------------------------------------------------------------------------
+
+(test sni-callback-runs-when-default-certificate-configured
+  "An :sni-callback must be consulted even when :certificate supplies a default."
+  (let* ((cert-path (test-cert-path "openssl/server-ed25519-cert.pem"))
+         (key-path (test-cert-path "openssl/server-ed25519-key.pem"))
+         (port (+ 21000 (random 1000)))
+         (callback-hostname (list :never-called))
+         (server-result (list nil))
+         (ready-lock (bt:make-lock "sni-ready"))
+         (ready-cv (bt:make-condition-variable :name "sni-ready-cv"))
+         (ready-flag (list nil)))
+    (bt:make-thread
+     (lambda ()
+       (let ((server-socket nil) (client-socket nil))
+         (unwind-protect
+              (handler-case
+                  (progn
+                    (setf server-socket
+                          (usocket:socket-listen "127.0.0.1" port
+                                                 :reuse-address t
+                                                 :element-type '(unsigned-byte 8)))
+                    (bt:with-lock-held (ready-lock)
+                      (setf (first ready-flag) t)
+                      (bt:condition-notify ready-cv))
+                    (setf client-socket
+                          (usocket:socket-accept server-socket
+                                                 :element-type '(unsigned-byte 8)))
+                    (let ((tls-stream
+                            (pure-tls:make-tls-server-stream
+                             (usocket:socket-stream client-socket)
+                             ;; BOTH a default certificate AND an sni-callback.
+                             :certificate (namestring cert-path)
+                             :key (namestring key-path)
+                             :sni-callback
+                             (lambda (hostname)
+                               (setf (first callback-hostname) hostname)
+                               ;; Returning NIL means "use the default", so the
+                               ;; handshake still completes and the test is
+                               ;; about the callback being REACHED.
+                               nil))))
+                      (close tls-stream)
+                      (setf (first server-result) :success)))
+                (error (e) (setf (first server-result) (format nil "~A" e))))
+           (when client-socket (ignore-errors (usocket:socket-close client-socket)))
+           (when server-socket (ignore-errors (usocket:socket-close server-socket))))))
+     :name "sni-callback-test-server")
+    (bt:with-lock-held (ready-lock)
+      (loop until (first ready-flag)
+            do (bt:condition-wait ready-cv ready-lock :timeout 5)))
+    (sleep 0.05)
+    (let ((client-socket nil))
+      (unwind-protect
+           (handler-case
+               (progn
+                 (setf client-socket
+                       (usocket:socket-connect "127.0.0.1" port
+                                               :element-type '(unsigned-byte 8)))
+                 (let ((tls-stream (pure-tls:make-tls-client-stream
+                                    (usocket:socket-stream client-socket)
+                                    :sni-hostname "vhost.example"
+                                    :verify pure-tls:+verify-none+)))
+                   (close tls-stream)
+                   (sleep 0.2)
+                   (is (equal "vhost.example" (first callback-hostname))
+                       "sni-callback must be called with the client's SNI, got ~S"
+                       (first callback-hostname))))
+             (error (e) (fail "Client connection failed: ~A" e)))
+        (when client-socket (ignore-errors (usocket:socket-close client-socket)))))))
+
+
+;;;; ---------------------------------------------------------------------------
+;;;; Finding: VERIFY-DEPTH was accepted, stored, and never enforced.
+;;;;
+;;;; MAKE-TLS-CONTEXT took :verify-depth and stored it in the context struct
+;;;; (and cl+ssl:make-context forwarded it), but VERIFY-CERTIFICATE-CHAIN never
+;;;; read it and no chain-length limit existed anywhere.  An operator setting
+;;;; :verify-depth 3 believed something was enforcing it.
+;;;;
+;;;; Bounding chain LENGTH matters independently of the byte-size cap: every
+;;;; additional link costs one signature verification, and those run BEFORE the
+;;;; trust-anchor check, so a long chain of self-crafted certificates is
+;;;; attacker-directed CPU work regardless of whether it can ever anchor.
+;;;; ---------------------------------------------------------------------------
+
+(test verify-depth-limits-chain-length
+  "A chain longer than the configured depth must be rejected."
+  (let ((cert (pure-tls:parse-certificate-from-file
+               (test-cert-path "rsa-pss-selfsigned.pem")))
+        (root (pure-tls:parse-certificate-from-file
+               (test-cert-path "rsa-pss-selfsigned.pem"))))
+    ;; The chain contents do not matter: the length check runs before any
+    ;; signature verification, which is the whole point.
+    (let ((long-chain (make-list 12 :initial-element cert)))
+      (signals pure-tls:tls-certificate-error
+        (pure-tls::verify-certificate-chain long-chain (list root)
+                                            :max-depth 5))
+      ;; Within the limit it gets past the length check and fails later, on
+      ;; the actual chain contents -- a different error path.
+      (handler-case
+          (progn (pure-tls::verify-certificate-chain (list cert) (list root)
+                                                     :max-depth 5)
+                 (pass "short chain reached normal verification"))
+        (pure-tls:tls-certificate-error (e)
+          (is (not (search "chain too long" (princ-to-string e)))
+              "A chain within the limit must not be rejected for length"))
+        (pure-tls:tls-error () (pass "short chain reached normal verification"))))
+    ;; The default comes from *default-verify-depth*, which the stream
+    ;; constructors bind from the context's verify-depth.
+    (is (plusp pure-tls::*default-verify-depth*)
+        "*default-verify-depth* must have a positive default")
+    (let ((pure-tls::*default-verify-depth* 2))
+      (signals pure-tls:tls-certificate-error
+        (pure-tls::verify-certificate-chain
+         (make-list 3 :initial-element cert) (list root))))))
+
+
+;;;; ---------------------------------------------------------------------------
+;;;; DER strictness fixes (adjudicated secscan leads, 2026-09-17).
+;;;; ---------------------------------------------------------------------------
+
+(test der-child-may-not-overrun-parent
+  "A nested DER element must stay inside its parent's declared length."
+  ;; Outer SEQUENCE declares 2 bytes of content, but the child NULL is 2 bytes
+  ;; of header plus nothing -- fine.  Then declare 2 but supply a 4-byte child.
+  (let ((ok (make-array 4 :element-type '(unsigned-byte 8)
+                          :initial-contents '(#x30 #x02 #x05 #x00)))
+        (overrun (make-array 6 :element-type '(unsigned-byte 8)
+                               ;; SEQUENCE len 2, but contains OCTET STRING len 2
+                               ;; (4 bytes total) -- the child runs past the parent
+                               :initial-contents '(#x30 #x02 #x04 #x02 #xAA #xBB))))
+    (is (pure-tls::parse-der ok) "A well-formed nested structure must parse")
+    (signals pure-tls:tls-decode-error (pure-tls::parse-der overrun))))
+
+(test der-oid-decoding-is-strict-and-complete
+  "OID decoding must handle multi-byte first subidentifiers and reject padding."
+  ;; 2.5.29.19 (basicConstraints) = 55 1D 13
+  (is (equal '(2 5 29 19) (pure-tls::decode-der-oid
+                           (make-array 3 :element-type '(unsigned-byte 8)
+                                         :initial-contents '(#x55 #x1D #x13))))
+      "canonical OID must decode")
+  ;; A non-minimal subidentifier (leading 0x80) is invalid DER and used to
+  ;; decode to the same OID, giving one OID several encodings.
+  (signals pure-tls:tls-decode-error
+    (pure-tls::decode-der-oid (make-array 4 :element-type '(unsigned-byte 8)
+                                            :initial-contents '(#x55 #x80 #x1D #x13))))
+  ;; A trailing continuation byte leaves a subidentifier unterminated.
+  (signals pure-tls:tls-decode-error
+    (pure-tls::decode-der-oid (make-array 2 :element-type '(unsigned-byte 8)
+                                            :initial-contents '(#x55 #x81))))
+  ;; Multi-byte FIRST subidentifier: 2.100.3 encodes as 81 34 03
+  ;; (first subid = 40*2 + 100 = 180 = 0x81 0x34).  Reading only bytes[0]
+  ;; mis-decoded every OID of this shape.
+  (is (equal '(2 100 3) (pure-tls::decode-der-oid
+                         (make-array 3 :element-type '(unsigned-byte 8)
+                                       :initial-contents '(#x81 #x34 #x03))))
+      "multi-byte first subidentifier must decode correctly"))
+
+(test uint16-extension-lists-reject-odd-length
+  "An odd-length uint16 list must raise a TLS error, not a raw bounds error."
+  ;; supported_groups: 2-byte list length, then an odd number of bytes.
+  (signals pure-tls:tls-decode-error
+    (pure-tls::decode-uint16-list
+     (make-array 3 :element-type '(unsigned-byte 8) :initial-contents '(0 29 0))
+     "supported_groups"))
+  (is (equal '(29 23) (pure-tls::decode-uint16-list
+                       (make-array 4 :element-type '(unsigned-byte 8)
+                                     :initial-contents '(0 29 0 23))
+                       "supported_groups"))
+      "an even-length list must still decode"))
+
 (defun run-security-regression-tests ()
   "Run the security regression suite.  Returns T if all tests pass."
   (format t "~&=== Running pure-tls Security Regression Tests ===~%~%")

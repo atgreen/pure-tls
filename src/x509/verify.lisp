@@ -305,7 +305,8 @@ a full list lives at https://publicsuffix.org/.")
 
 (defun verify-certificate-chain (chain trusted-roots
                                  &key (now (get-universal-time)) hostname
-                                      check-revocation (trust-anchor-mode :replace) purpose)
+                                      check-revocation (trust-anchor-mode :replace) purpose
+                                      (max-depth *default-verify-depth*))
   "Verify a certificate chain against trusted roots.
    CHAIN is a list of certificates, leaf first.
    TRUSTED-ROOTS is a list of trusted CA certificates. When NIL on Windows/macOS,
@@ -313,7 +314,10 @@ a full list lives at https://publicsuffix.org/.")
    HOSTNAME is optional; if provided, enables hostname verification on native platforms.
    NOW must be a universal time (a non-negative real) and HOSTNAME a string or
    NIL; a value of the wrong type in either argument signals
-   TLS-CERTIFICATE-ERROR at entry.
+   TLS-CERTIFICATE-ERROR at entry.  NOTE: NOW is honoured only on the pure-Lisp
+   path.  The Windows and macOS native backends do their own validity checking
+   against the system clock and have no API to override it, so passing NOW for
+   testing has no effect there.
    CHECK-REVOCATION if T, checks certificate revocation (default NIL): via CRL
    on the pure Lisp path, or delegated to the OS (which may also use OCSP) on
    the native Windows/macOS paths.
@@ -361,6 +365,16 @@ a full list lives at https://publicsuffix.org/.")
   (when (null chain)
     (error 'tls-certificate-error :message "Empty certificate chain"))
 
+  ;; Bound the chain length.  Each link costs a signature verification, and
+  ;; those run BEFORE the trust-anchor check at the end, so an unanchorable
+  ;; chain of N self-crafted certificates still costs N-1 verifications.  This
+  ;; is the enforcement point for the context's VERIFY-DEPTH, which was
+  ;; previously accepted and stored but never read by anything.
+  (when (and max-depth (plusp max-depth) (> (length chain) max-depth))
+    (error 'tls-certificate-error
+           :message (format nil "Certificate chain too long: ~D certificates (limit ~D)"
+                            (length chain) max-depth)))
+
   ;; RFC 5280 s4.2.1.12: enforce ExtendedKeyUsage on the leaf when a purpose
   ;; is requested.  This prevents a certificate constrained away from the
   ;; requested purpose (e.g. a clientAuth-only certificate) from being accepted
@@ -371,6 +385,26 @@ a full list lives at https://publicsuffix.org/.")
              :message (format nil "Leaf certificate not valid for ~A (ExtendedKeyUsage: ~A)"
                               purpose
                               (certificate-extended-key-usages (first chain))))))
+
+  ;; NOTE on trust anchors and the native dispatches below.
+  ;;
+  ;; On macOS/Windows the native verifier is reached BEFORE the pure-Lisp
+  ;; "(unless trusted-roots ...)" guard further down, and both native backends
+  ;; treat a NIL TRUSTED-ROOTS as "use the OS trust store".  That is deliberate:
+  ;; *USE-WINDOWS-CERTIFICATE-STORE* / *USE-MACOS-KEYCHAIN* default to T
+  ;; precisely so the OS decides, and on a Windows host with no Git-for-Windows
+  ;; CA bundle LOAD-SYSTEM-TRUST-STORE legitimately yields an empty store.
+  ;;
+  ;; The hazard is a caller who supplies an EMPTY anchor set meaning to
+  ;; restrict trust, and silently gets the whole OS store instead.  That is
+  ;; caught at the two places where the distinction is unambiguous rather than
+  ;; here, where NIL is genuinely overloaded:
+  ;;   * MAKE-TLS-CONTEXT errors when :ca-file / :ca-directory yield zero
+  ;;     certificates (context.lisp), covering every client path.
+  ;;   * PROCESS-CLIENT-CERTIFICATE-VERIFY rejects an empty trust store under
+  ;;     +verify-required+ (handshake/server.lisp), covering mTLS.
+  ;; Any new caller passing an explicitly-restricted anchor set must make the
+  ;; same check; do not assume this function fails closed on empty roots.
 
   ;; On Windows with CryptoAPI enabled, use Windows verification
   #+windows
@@ -608,19 +642,21 @@ a full list lives at https://publicsuffix.org/.")
           ;; RSA-PSS - use parameters from certificate
           ((member algorithm '(:rsa-pss :rsassa-pss))
            (let* ((params (x509-certificate-signature-algorithm-params cert))
-                  (hash-algo (or (getf params :hash) :sha256))
-                  (salt-length (or (getf params :salt-length) 32)))
+                  (hash-algo (or (getf params :hash) :sha256)))
              ;; Reject SHA-1 for RSA-PSS (cryptographically broken)
              (when (eql hash-algo :sha1)
                (error 'tls-certificate-error
                       :message "SHA-1 is not supported for RSA-PSS signatures (cryptographically broken)"))
              (let ((public-key (parse-rsa-public-key public-key-bytes)))
-               ;; Ironclad's PSS verification uses hash algorithm and salt length
-               (ironclad:verify-signature public-key
-                                          (ironclad:digest-sequence hash-algo tbs)
-                                          signature
-                                          :pss hash-algo
-                                          :salt-length salt-length))))
+               ;; Ironclad's PSS-VERIFY hashes its MESSAGE argument itself (see
+               ;; pkcs1.lisp: m-hash = (digest-sequence digest-name message)), so
+               ;; TBS is passed raw.  Pre-hashing here verified against H(H(tbs))
+               ;; and no legitimate RSA-PSS signature could ever match.  The
+               ;; CertificateVerify path in handshake/client.lisp always got this
+               ;; right; these two certificate/CRL sites did not.  Ironclad
+               ;; infers the salt length, so SALT-LENGTH is not passed.
+               (ironclad:verify-signature public-key tbs signature
+                                          :pss hash-algo))))
           ;; ECDSA signatures
           ((member algorithm '(:ecdsa-with-sha256
                                :ecdsa-with-SHA256
@@ -766,8 +802,16 @@ or signals an error on verification failure.
 CHECK-REVOCATION if T, enables OCSP/CRL revocation checking on supported platforms.
 TRUSTED-ROOTS if provided, is a list of x509-certificate objects to use as trust anchors.
 TRUST-ANCHOR-MODE controls how trusted-roots interact with system store:
-  :replace - Use ONLY trusted-roots (not supported on Windows, will error)
-  :extend - Use trusted-roots IN ADDITION TO system store"
+  :replace - Use ONLY trusted-roots.  Implemented on both platforms: Windows
+             builds a custom chain engine with hExclusiveRoot, macOS calls
+             SecTrustSetAnchorCertificatesOnly.
+  :extend  - Use trusted-roots IN ADDITION TO the system store.  NOTE: on
+             Windows this is believed NOT to work as documented -- the roots
+             are added to a memory store passed as hAdditionalStore, which
+             Windows treats as chain-BUILDING material rather than as trust
+             anchors, so a chain under a caller-supplied private root is
+             likely rejected.  Fails closed.  Unverified: see the tracking
+             issue; needs a Windows host with a private-CA chain to confirm."
   (declare (ignorable chain hostname check-revocation trusted-roots trust-anchor-mode))
   (let ((trusted-roots-der (when trusted-roots
                              (mapcar #'x509-certificate-raw-der trusted-roots))))
@@ -813,45 +857,17 @@ TRUST-ANCHOR-MODE controls how trusted-roots interact with system store:
           (warn "Failed to load certificate ~A: ~A" file e))))
     (make-trust-store :certificates (nreverse certs))))
 
-(defun trust-store-find-issuer (store cert)
-  "Find a certificate in STORE that could have issued CERT."
-  (find-if (lambda (ca)
-             (certificate-issued-by-p cert ca))
-           (trust-store-certificates store)))
-
 ;;;; Full Verification Function
-
-(defun verify-peer-certificate (cert hostname &key
-                                               verify-mode
-                                               trust-store
-                                               (check-dates t)
-                                               (hostname-policy *general-hostname-policy*))
-  "Perform full verification of a peer certificate.
-
-   CERT - The certificate to verify.
-   HOSTNAME - The hostname to verify against.
-   VERIFY-MODE - One of +VERIFY-NONE+, +VERIFY-PEER+, or +VERIFY-REQUIRED+.
-   TRUST-STORE - Trust store for chain verification (optional).
-   CHECK-DATES - Whether to check validity dates (default T).
-   HOSTNAME-POLICY - HOSTNAME-POLICY value governing the RFC 6125 identity
-     decision; defaults to *GENERAL-HOSTNAME-POLICY* (the general profile).
-
-   Returns T on success, signals appropriate error on failure."
-  ;; Skip if verification disabled
-  (when (= verify-mode +verify-none+)
-    (return-from verify-peer-certificate t))
-  ;; Check dates if requested
-  (when check-dates
-    (verify-certificate-dates cert))
-  ;; Verify hostname
-  (when hostname
-    (verify-hostname cert hostname :policy hostname-policy))
-  ;; Chain verification (if trust store provided)
-  (when trust-store
-    (let ((issuer (trust-store-find-issuer trust-store cert)))
-      (unless issuer
-        (when (= verify-mode +verify-required+)
-          (error 'tls-verification-error
-                 :message "Cannot verify certificate chain"
-                 :reason :unknown-ca)))))
-  t)
+;;;;
+;;;; VERIFY-PEER-CERTIFICATE and TRUST-STORE-FIND-ISSUER were removed here.
+;;;; The former claimed to "perform full verification of a peer certificate"
+;;;; but its chain step called TRUST-STORE-FIND-ISSUER, which matched only the
+;;;; issuer Distinguished Name and never verified a signature -- so any
+;;;; self-signed certificate copying a trusted root's subject DN would have
+;;;; passed.  Neither was exported and neither had a caller: every live path
+;;;; uses VERIFY-CERTIFICATE-CHAIN, which does verify signatures (see
+;;;; streams.lisp, handshake/client.lisp and handshake/server.lisp).  Dead
+;;;; code, but dead code shaped like the function a caller would reach for.
+;;;;
+;;;; Anything needing peer verification must call VERIFY-CERTIFICATE-CHAIN,
+;;;; plus VERIFY-HOSTNAME for identity.

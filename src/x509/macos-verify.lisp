@@ -67,7 +67,7 @@
   (data :pointer))
 
 (cffi:defcfun ("SecPolicyCreateSSL" %sec-policy-create-ssl) :pointer
-  (server :boolean)
+  (server (:boolean :uint8))
   (hostname :pointer))
 
 (cffi:defcfun ("SecPolicyCreateRevocation" %sec-policy-create-revocation) :pointer
@@ -84,9 +84,14 @@
 
 (cffi:defcfun ("SecTrustSetAnchorCertificatesOnly" %sec-trust-set-anchors-only) :int32
   (trust :pointer)
-  (anchors-only :boolean))
+  (anchors-only (:boolean :uint8)))
 
-(cffi:defcfun ("SecTrustEvaluateWithError" %sec-trust-evaluate) :boolean
+;; Boolean is "typedef unsigned char Boolean" -- ONE byte.  CFFI's bare
+;; :boolean reads its default base type :int (four bytes), so any garbage in
+;; the upper 24 bits of the return register would read as true.  This return
+;; value is the sole success/failure signal for the entire chain verification
+;; on macOS, so the failure mode would be "every certificate verifies".
+(cffi:defcfun ("SecTrustEvaluateWithError" %sec-trust-evaluate) (:boolean :uint8)
   (trust :pointer)
   (error :pointer))
 
@@ -113,7 +118,7 @@
   (string :pointer)
   (encoding :uint32))
 
-(cffi:defcfun ("CFStringGetCString" %cf-string-get-cstring) :boolean
+(cffi:defcfun ("CFStringGetCString" %cf-string-get-cstring) (:boolean :uint8)
   (string :pointer)
   (buffer :pointer)
   (buffer-size :long)
@@ -298,8 +303,8 @@ Signals an error with details on verification failure."
              (let ((status (%sec-trust-create cert-array policy-array trust-ptr)))
                (unless (zerop status)
                  (error 'tls-certificate-error
-                        :format-control "Failed to create SecTrust: ~A"
-                        :format-arguments (list (%get-security-error-message status))))
+                        :message (format nil "Failed to create SecTrust: ~A"
+                                         (%get-security-error-message status))))
                (setf trust (cffi:mem-aref trust-ptr :pointer))))
 
            ;; Configure trust anchors based on trust-anchor-mode
@@ -310,8 +315,8 @@ Signals an error with details on verification failure."
                  (let ((status (%sec-trust-set-anchors trust anchor-array)))
                    (unless (zerop status)
                      (error 'tls-certificate-error
-                            :format-control "Failed to set anchor certificates: ~A"
-                            :format-arguments (list (%get-security-error-message status)))))
+                            :message (format nil "Failed to set anchor certificates: ~A"
+                                             (%get-security-error-message status)))))
                  ;; Control whether to use ONLY custom anchors or extend system roots
                  (ecase trust-anchor-mode
                    (:replace (%sec-trust-set-anchors-only trust t))   ; Custom only
@@ -330,8 +335,8 @@ Signals an error with details on verification failure."
                                       (prog1 (%get-cf-error-description cf-error)
                                         (%cf-release cf-error)))))
                    (error 'tls-certificate-error
-                          :format-control "macOS certificate verification failed: ~A"
-                          :format-arguments (list (or error-desc "unknown error")))))))
+                          :message (format nil "macOS certificate verification failed: ~A"
+                                           (or error-desc "unknown error")))))))
 
            ;; Success
            t)

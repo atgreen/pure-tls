@@ -62,8 +62,13 @@
   "Check if a certificate extension OID is known (has a symbolic name).
 Per RFC 5280 s4.2, unknown critical extensions must cause rejection.
 Note: distinct from KNOWN-EXTENSION-P in handshake/extensions.lisp, which
-checks TLS extension type codes."
-  (symbolp oid))
+checks TLS extension type codes.
+
+OID here is the result of OID-NAME: a keyword when recognised, otherwise the
+raw integer list.  The NIL guard matters -- (SYMBOLP NIL) is T, so a critical
+extension carrying a zero-length OID (which DECODE-DER-OID returns as NIL) used
+to be treated as known and accepted."
+  (and oid (symbolp oid)))
 
 (defun validate-implicit-bit-string (raw-bytes)
   "Validate BIT STRING encoding for IMPLICIT BIT STRING fields.

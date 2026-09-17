@@ -13,6 +13,10 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BASELINE_FILE="$PROJECT_DIR/test/boringssl-baseline.txt"
+
+# Shared result parsing; handles both runner output formats.
+# shellcheck source=test/boringssl-summary.sh
+. "$SCRIPT_DIR/boringssl-summary.sh"
 SHIM_PATH="$PROJECT_DIR/pure-tls-shim"
 TIMEOUT="${TEST_TIMEOUT:-300}"
 
@@ -50,22 +54,37 @@ run_tests() {
 
     echo "Running BoringSSL tests..." >&2
 
-    # Run tests and capture output directly to file
+    # Run tests and capture output directly to file.  The runner exits
+    # non-zero simply because tests fail, so its status is not an error here --
+    # but timeout's 124 specifically means the run was CUT SHORT, which must
+    # never be mistaken for a completed run (see below).
+    local rc=0
     if [ -n "$BORINGSSL_RUNNER" ]; then
         cd "$BORINGSSL_RUNNER"
         timeout "$TIMEOUT" go test -v \
             -shim-path="$SHIM_PATH" \
             -allow-unimplemented \
-            > "$tmplog" 2>&1 || true
+            > "$tmplog" 2>&1 || rc=$?
     else
         timeout "$TIMEOUT" "$RUNNER_BIN" \
             -test.v \
             -shim-path="$SHIM_PATH" \
             -allow-unimplemented \
-            > "$tmplog" 2>&1 || true
+            > "$tmplog" 2>&1 || rc=$?
     fi
-    # Display final test progress
-    grep -oE "[0-9]+/[0-9]+/[0-9]+/[0-9]+/[0-9]+" "$tmplog" | tail -1 || true
+
+    # A truncated run silently yields a SHORT failure list.  Saved as a
+    # baseline that makes every un-run failing test look like a regression on
+    # the next compare; used for a comparison it hides real ones.  The current
+    # runner prints no completion marker, so this exit status is the only
+    # reliable signal.
+    if [ "$rc" -eq 124 ]; then
+        echo "" >&2
+        echo "ERROR: BoringSSL run exceeded the ${TIMEOUT}s timeout and was killed." >&2
+        echo "       Results are incomplete and will not be used. Raise the limit:" >&2
+        echo "         TEST_TIMEOUT=1800 $0 <same args>" >&2
+        exit 1
+    fi
 
     # Extract test results
     # Format: PASS or FAIL followed by test name
@@ -81,31 +100,14 @@ run_tests() {
         grep -oE "UNIMPLEMENTED \([^)]+\)" "$tmplog" | sed 's/UNIMPLEMENTED (\(.*\))/SKIP \1/' || true
     } | sort -k2 > "$output_file"
 
-    # Count results
-    local failed=0
-    local skipped=0
-    if [ -s "$output_file" ]; then
-        failed=$(grep -c "^FAIL " "$output_file" 2>/dev/null || echo 0)
-        skipped=$(grep -c "^SKIP " "$output_file" 2>/dev/null || echo 0)
-    fi
-
-    # Get total from the progress line
-    local progress_line
-    progress_line=$(grep -oE "[0-9]+/[0-9]+/[0-9]+/[0-9]+/[0-9]+" "$tmplog" | tail -1 | tr -d '\n\r') || true
-    if [ -n "$progress_line" ]; then
-        local total done_count passed
-        total=$(echo "$progress_line" | cut -d/ -f5 | tr -d '[:space:]')
-        done_count=$(echo "$progress_line" | cut -d/ -f3 | tr -d '[:space:]')
-        failed=$(echo "$failed" | tr -d '[:space:]')
-        skipped=$(echo "$skipped" | tr -d '[:space:]')
-        passed=$((done_count - failed - skipped))
-        echo "" >&2
-        echo "=== Summary ===" >&2
-        echo "Total: $done_count / $total" >&2
-        echo "Passed: $passed" >&2
-        echo "Failed: $failed" >&2
-        echo "Skipped: $skipped" >&2
-    fi
+    # Summary comes from the runner log, not from $output_file.  The legacy
+    # format emits no UNIMPLEMENTED text at all -- its unimplemented count
+    # exists only inside the progress counter -- so counting SKIP lines there
+    # yields zero and overstates "passed" by the entire unimplemented
+    # population (5699 rather than 605 on the pinned ref).
+    echo "" >&2
+    echo "=== Summary ===" >&2
+    boringssl_print_summary "$tmplog" >&2 || true
 }
 
 save_baseline() {
