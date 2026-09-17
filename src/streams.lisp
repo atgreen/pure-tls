@@ -535,6 +535,7 @@ flat no matter how many records arrive."
                                         (context (ensure-default-context))
                                         (verify (tls-context-verify-mode context))
                                         alpn-protocols
+                                        cipher-suites
                                         client-certificate
                                         client-key
                                         ech-configs
@@ -626,6 +627,8 @@ flat no matter how many records arrive."
                   :client-certificate-chain chain-certs
                   :ech-configs parsed-ech-configs
                   :ech-enabled ech-enabled
+                  :cipher-suites (or cipher-suites
+                                     (tls-context-cipher-suites context))
                   :hostname-policy (tls-context-hostname-policy context))))
         (setf (tls-stream-handshake stream) hs)
         ;; Verify certificate chain and hostname if verification enabled
@@ -668,6 +671,7 @@ flat no matter how many records arrive."
                                         alpn-protocols
                                         sni-callback
                                         certificate-provider
+                                        cipher-suites
                                         close-callback
                                         external-format
                                         (buffer-size *default-buffer-size*)
@@ -747,7 +751,12 @@ flat no matter how many records arrive."
                :verify-mode verify
                :trust-store client-trust-store
                :sni-callback sni-callback
-               :certificate-provider certificate-provider)))
+               :certificate-provider certificate-provider
+               ;; Previously never passed, so the context's CIPHER-SUITES slot
+               ;; had no effect at all on a server -- perform-server-handshake
+               ;; always fell back to its own hardcoded default list.
+               :cipher-suites (or cipher-suites
+                                  (tls-context-cipher-suites context)))))
       (setf (tls-stream-handshake stream) hs))
     ;; Wrap with flexi-stream if external-format specified
     (if external-format

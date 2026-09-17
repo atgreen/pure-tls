@@ -22,8 +22,16 @@
   ;; Trusted CA certificates
   (trust-store nil)
   ;; Supported cipher suites
-  (cipher-suites (list +tls-aes-128-gcm-sha256+
-                       +tls-chacha20-poly1305-sha256+)
+  ;; Cipher suites in preference order.  Must match the handshake defaults in
+  ;; handshake/server.lisp and handshake/client.lisp: ChaCha20-Poly1305 first
+  ;; for side-channel resistance, then AES-256-GCM, then AES-128-GCM.  This slot
+  ;; used to list only two suites in the opposite order, which went unnoticed
+  ;; because nothing ever read it -- neither stream constructor passed it to the
+  ;; handshake, so the handshake's own default always won.  Now that it is
+  ;; plumbed through, a narrower list here silently narrows every connection.
+  (cipher-suites (list +tls-chacha20-poly1305-sha256+
+                       +tls-aes-256-gcm-sha384+
+                       +tls-aes-128-gcm-sha256+)
                  :type list)
   ;; ALPN protocols
   (alpn-protocols nil :type list)

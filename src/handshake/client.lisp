@@ -1920,6 +1920,7 @@
                                                    client-certificate-chain
                                                    ech-configs
                                                    (ech-enabled t)
+                                                   cipher-suites
                                                    (hostname-policy *general-hostname-policy*))
   "Perform the TLS 1.3 client handshake.
    Returns a CLIENT-HANDSHAKE structure on success.
@@ -1942,6 +1943,8 @@
              :ech-configs ech-configs
              :ech-enabled (and ech-enabled (not (null ech-configs)))  ; Only enable if configs provided
              :record-layer record-layer)))
+    (when cipher-suites
+      (setf (client-handshake-cipher-suites hs) cipher-suites))
     ;; Send ClientHello
     (send-client-hello hs)
     ;; Process server messages

@@ -75,7 +75,22 @@
   (max-cert-list 0 :type fixnum)  ; Max certificate list size (0 = default)
   ;; Compliance policy flags (not implemented - will skip tests)
   (fips-202205 nil :type boolean)
-  (wpa-202304 nil :type boolean))
+  (wpa-202304 nil :type boolean)
+  ;; Newer compliance policies (same treatment as the two above: recognised so
+  ;; the test is SKIPPED rather than silently run under the wrong config).
+  (compliance-policy nil :type (or null string))
+  ;; TLS 1.3 cipher suites the runner wants this shim configured with.
+  (tls13-ciphers nil :type (or null list))
+  ;; Equal-preference groups within -tls13-ciphers. pure-tls selects strictly by
+  ;; server preference order and does not model preference GROUPS, so a test
+  ;; using this is skipped rather than answered with the wrong suite.
+  (tls13-cipher-flags nil :type boolean)
+  ;; Certificate-callback failure injection; pure-tls exposes no such hook.
+  (fail-cert-callback nil :type boolean)
+  ;; Client-side ECH configuration injection.
+  (ech-config-list nil :type boolean)
+  ;; Trust-anchor negotiation (draft); not implemented.
+  (trust-anchors nil :type boolean))
 
 ;;;; Argument Parsing
 (defun parse-args (args)
@@ -224,16 +239,20 @@
                 nil)
 
                ;; Curves (colon-separated list of curve IDs)
+               ;; The runner emits curve IDs with flagInts, which REPEATS the
+               ;; flag once per value ("-curves 23 -curves 29") rather than
+               ;; joining them with colons.  This previously parsed a
+               ;; colon-separated list and replaced the slot each time, so only
+               ;; the LAST curve survived -- which made
+               ;; CHECK-UNIMPLEMENTED-FEATURES skip tests whose supported curve
+               ;; was not the final one in the list.
                ((string= arg "-curves")
                 (incf i)
                 (when (< i (length args))
-                  (let ((curves-str (elt args i)))
-                    ;; Parse colon-separated curve IDs
-                    (setf (shim-config-curves config)
-                          (loop for start = 0 then (1+ pos)
-                                for pos = (position #\: curves-str :start start)
-                                collect (parse-integer curves-str :start start :end pos)
-                                while pos)))))
+                  (let ((value (ignore-errors (parse-integer (elt args i)))))
+                    (when value
+                      (setf (shim-config-curves config)
+                            (append (shim-config-curves config) (list value)))))))
 
                ;; Certificate compression
                ((string= arg "-install-cert-compression-algs")
@@ -274,6 +293,65 @@
                 (when (< i (length args))
                   (setf (shim-config-max-cert-list config)
                         (parse-integer (elt args i)))))
+
+               ;; TLS 1.3 cipher suite configuration.  The runner's flagInts
+               ;; helper REPEATS the flag once per value --
+               ;;   -tls13-ciphers 4866 -tls13-ciphers 4865
+               ;; -- rather than joining them, so each occurrence APPENDS.
+               ;; Replacing instead of appending leaves only the last suite
+               ;; configured, which then shares nothing with the peer.
+               ((string= arg "-tls13-ciphers")
+                (incf i)
+                (when (< i (length args))
+                  (let ((value (ignore-errors (parse-integer (elt args i)))))
+                    (when value
+                      (setf (shim-config-tls13-ciphers config)
+                            (append (shim-config-tls13-ciphers config)
+                                    (list value)))))))
+
+               ;; Equal-preference groups -- recognised only so the test is
+               ;; skipped; answering it under plain preference order would
+               ;; report a wrong-cipher failure that says nothing useful.
+               ((string= arg "-tls13-ciphers-flags")
+                (setf (shim-config-tls13-cipher-flags config) t)
+                (incf i))
+
+               ;; Certificate-callback failure injection (no pure-tls hook).
+               ((or (string= arg "-fail-cert-callback")
+                    (string= arg "-fail-early-callback"))
+                (setf (shim-config-fail-cert-callback config) t))
+               ((string= arg "-fail-cert-callback-alert")
+                (setf (shim-config-fail-cert-callback config) t)
+                (incf i))
+
+               ;; Client-side ECH config injection / unusable-config policy.
+               ((or (string= arg "-ech-config-list")
+                    (string= arg "-reject-unusable-ech-config"))
+                (setf (shim-config-ech-config-list config) t)
+                (when (string= arg "-ech-config-list") (incf i)))
+
+               ;; Trust-anchor negotiation (draft-ietf-tls-trust-anchor-ids).
+               ;; -must-match-issuer rides on a CREDENTIAL rather than being a
+               ;; top-level flag, which is why the TrustAnchorGroups-Match*
+               ;; tests were not caught by the names below.
+               ((or (string= arg "-available-trust-anchors")
+                    (string= arg "-requested-trust-anchors")
+                    (string= arg "-expect-peer-available-trust-anchors")
+                    (string= arg "-expect-peer-match-trust-anchor")
+                    (string= arg "-expect-no-peer-match-trust-anchor")
+                    (string= arg "-must-match-issuer"))
+                (setf (shim-config-trust-anchors config) t)
+                ;; Only the first three carry a value.
+                (when (or (string= arg "-available-trust-anchors")
+                          (string= arg "-requested-trust-anchors")
+                          (string= arg "-expect-peer-available-trust-anchors"))
+                  (incf i)))
+
+               ;; Newer compliance policies, same class as -fips-202205.
+               ((or (string= arg "-fips-202609")
+                    (string= arg "-cnsa1-202603")
+                    (string= arg "-cnsa2-202603"))
+                (setf (shim-config-compliance-policy config) arg))
 
                ;; FIPS compliance mode (not implemented)
                ((string= arg "-fips-202205")
@@ -336,6 +414,27 @@
                           (= curve-id 29)))  ; X25519
                     curves))))
      :unsupported-curves)
+
+    ;; Compliance policies (FIPS / CNSA): pure-tls implements no policy modes.
+    ((shim-config-compliance-policy config)
+     :compliance-policy-not-supported)
+
+    ;; Equal-preference cipher groups: pure-tls selects strictly by server
+    ;; preference order and has no notion of a preference GROUP.
+    ((shim-config-tls13-cipher-flags config)
+     :cipher-preference-groups-not-supported)
+
+    ;; Certificate-callback failure injection: no equivalent hook exists.
+    ((shim-config-fail-cert-callback config)
+     :cert-callback-not-supported)
+
+    ;; Client-side ECH configuration injection is not wired into the shim.
+    ((shim-config-ech-config-list config)
+     :ech-not-supported)
+
+    ;; Trust-anchor negotiation is not implemented.
+    ((shim-config-trust-anchors config)
+     :trust-anchors-not-supported)
 
     ;; Certificate compression not supported
     ((shim-config-cert-compression config)
@@ -441,6 +540,7 @@
               ;; Pass client certificate/key for mTLS
               :client-certificate (first client-cert-chain)
               :client-key client-private-key
+              :cipher-suites (shim-config-tls13-ciphers config)
               :max-send-fragment max-frag)))
       (declare (ignore trust-store))
       ;; Check ALPN result if expected
@@ -525,6 +625,7 @@
               :verify verify-mode
               :trust-store trust-store
               :sni-callback sni-callback
+              :cipher-suites (shim-config-tls13-ciphers config)
               :max-send-fragment max-frag)))
 
       ;; Exchange test data (skip if shim-shuts-down is set)

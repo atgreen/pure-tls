@@ -297,7 +297,7 @@
           (record-layer-write-alert (server-handshake-record-layer hs)
                                     +alert-level-fatal+ +alert-handshake-failure+)
           (error 'tls-handshake-error
-                 :message ":HANDSHAKE_FAILURE_ON_CLIENT_HELLO: No common cipher suite"
+                 :message ":NO_SHARED_CIPHER: No cipher suite in common with the client"
                  :state :wait-client-hello))
         (hs-log "~&[HS] process-client-hello: selected cipher=~A~%" selected)
         (setf (server-handshake-selected-cipher-suite hs) selected)))
