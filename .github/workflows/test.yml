@@ -172,7 +172,16 @@ jobs:
           # reports new upstream tests as spurious "regressions". To refresh: bump
           # this ref, re-run the suite, and regenerate the baseline with
           # `BORINGSSL_DIR=~/boringssl ./test/track-regressions.sh --save-baseline`.
-          BORINGSSL_REF=606d3a344dae49672ea567f6719e1fc092a4ae6a  # 2026-06-18
+          #
+          # Before bumping, check what the new ref changes: a flag the shim does
+          # not parse is silently ignored (test/boringssl-shim.lisp ends its
+          # argument loop with "Skip unknown flags but continue"), so a new test
+          # family can appear as a spurious failure rather than being skipped.
+          # Those belong in check-unimplemented-features, not in the baseline.
+          #
+          # The full SHA is required -- googlesource will not resolve an
+          # abbreviated one for fetch-by-SHA.
+          BORINGSSL_REF=8626998e7fdd6d779f37b7ba0b726631bbb76266  # 2026-09-17
           mkdir -p ~/boringssl
           cd ~/boringssl
           git init -q
@@ -199,4 +208,9 @@ jobs:
       - name: Check for regressions
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          BORINGSSL_DIR=~/boringssl ./test/track-regressions.sh --compare
+          # TEST_TIMEOUT is set explicitly rather than left at the 300s default.
+          # A full run is ~750s of CPU spread across cores; on a hosted runner
+          # with few cores that can exceed 300s, and a truncated run is now a
+          # HARD FAILURE (it used to silently yield partial results, which as a
+          # baseline makes every un-run failing test look like a regression).
+          TEST_TIMEOUT=1800 BORINGSSL_DIR=~/boringssl ./test/track-regressions.sh --compare

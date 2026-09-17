@@ -727,7 +727,6 @@ FAIL ClientCertificateType-Server-RPKVerifyFail-TLS11
 FAIL ClientCertificateType-Server-RPKVerifyFail-TLS12
 FAIL ClientCertificateType-Server-RPKVerifyFail-TLS13
 FAIL ClientCertificateType-Server-RPKWithoutCertificateVerify-TLS13
-FAIL ClientHelloPadding
 FAIL ClientHelloVersionTooHigh
 FAIL Client-InvalidSignature-ECDSA_P256_SHA256-TLS12
 FAIL Client-InvalidSignature-ECDSA_P384_SHA384-TLS12
@@ -836,7 +835,6 @@ FAIL ClientOCSPCallback-Pass-TLS1-TLS-Sync-ImplicitHandshake
 FAIL ClientOCSPCallback-Pass-TLS1-TLS-Sync-PackHandshake
 FAIL ClientOCSPCallback-Pass-TLS1-TLS-Sync-SplitHandshakeRecords
 FAIL Client-RejectJDK11DowngradeRandom
-FAIL ClientShouldNotAllowInTLS12-Kyber
 FAIL ClientShouldNotAllowInTLS12-MLKEM1024
 FAIL ClientShouldNotAllowInTLS12-X25519MLKEM768
 FAIL Client-SignDefault-ECDSA_P256_SHA256-TLS12
@@ -1271,7 +1269,6 @@ FAIL PointFormat-ServerHello-TLS12
 FAIL PointFormat-Server-Missing
 FAIL PointFormat-Server-MissingUncompressed
 FAIL PointFormat-Server-Tolerance
-FAIL PostQuantumNotEnabledByDefaultInClients
 FAIL PSK-Client-AcceptFirst-TLS
 FAIL PSK-Client-AcceptSecond-TLS
 FAIL PSK-Client-NoKeyShare-TLS
