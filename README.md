@@ -98,6 +98,8 @@ Or add to your ASDF system:
 :depends-on (#:pure-tls)
 ```
 
+Release history and notable changes are in [CHANGELOG.md](CHANGELOG.md).
+
 ## Usage
 
 ### HTTPS Client

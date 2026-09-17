@@ -81,30 +81,49 @@ make unit-tests
 
 If any tests fail, stop and report the failure. Do NOT continue.
 
-## 4. Generate release notes
+## 4. Update CHANGELOG.md
 
-Create `docs/release-notes/RELEASE-NOTES-VERSION.md`.
+Release notes live in `CHANGELOG.md` at the repo root, in
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. There are no
+per-release files; `docs/release-notes/` was consolidated into this file.
 
-To decide what goes in the notes, diff against the most recent tag:
+Ordinarily the work is already described under `## [Unreleased]`, and releasing
+is just a matter of promoting that section:
+
+1. Change the `## [Unreleased]` heading to `## [VERSION] - YYYY-MM-DD` using
+   today's date.
+2. Add a fresh, empty `## [Unreleased]` heading above it.
+3. Update the link references at the bottom of the file:
+   - point `[Unreleased]` at `compare/vVERSION...HEAD`
+   - add `[VERSION]: .../compare/vPREVIOUS...vVERSION`
+
+If `[Unreleased]` is thin or empty, fill it in first. To decide what belongs,
+diff against the most recent tag:
 
 ```bash
 git log $(git describe --tags --abbrev=0)..HEAD --oneline
 ```
 
-Include ONLY user-facing changes:
+Include ONLY user-facing changes, under the standard headings — `Added`,
+`Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`:
 - Security fixes (reference CL-SEC advisory IDs if applicable, link to https://cl-sec.github.io/cl-sec-advisories/)
 - Bug fixes
 - New features
-- Breaking changes (if any)
+- Breaking changes (if any) — under `Changed`, led with **BREAKING**
 
 Do NOT include internal changes (refactors, lint fixes, doc updates, CI changes, directory reorganization). Those are visible in the git log for anyone who needs them.
 
-Match the voice and format of previous release notes in `docs/release-notes/`.
+Match the voice of the existing entries: prose that explains what was wrong and
+why it mattered, not bare one-liners.
+
+The release workflow extracts this version's section from `CHANGELOG.md` for
+the GitHub release body, and FAILS the release if no `## [VERSION]` section
+exists — so the heading must be in place before the tag is pushed.
 
 ## 5. Commit
 
 ```bash
-git add pure-tls.asd docs/release-notes/RELEASE-NOTES-VERSION.md
+git add pure-tls.asd CHANGELOG.md
 git commit -m "Bump version to VERSION"
 ```
 
