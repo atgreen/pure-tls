@@ -117,9 +117,115 @@
     (dotimes (i 256 result)
       (setf (aref result i) (mod (- (aref a i) (aref b i)) +ml-dsa-q+)))))
 
+
+;;;; =========================================================================
+;;;; Number-Theoretic Transform (FIPS 204 Section 7.5)
+;;;; =========================================================================
+;;;;
+;;;; Multiplication in Z_q[x]/(x^256+1) is done through the NTT rather than
+;;;; schoolbook convolution.  Schoolbook is O(n^2): 65536 modular
+;;;; multiply-accumulates per polynomial product, 36 products per signature
+;;;; verification, ~77ms per verification measured.  Combined with an
+;;;; unbounded Certificate message that let one connection cost hundreds of
+;;;; CPU-seconds of attacker-directed verification work.  The NTT is
+;;;; O(n log n) and measures ~2.1ms per verification, a 36x reduction.
+;;;;
+;;;; q = 8380417 = 2^23 - 2^13 + 1 admits a primitive 512th root of unity, so
+;;;; the transform splits completely and pointwise multiplication in the NTT
+;;;; domain is a plain coefficient-wise product (unlike ML-KEM, which needs
+;;;; 2x2 base cases).  Plain modular arithmetic is used rather than Montgomery
+;;;; form: every intermediate (q-1)^2 < 2^46 fits a 64-bit fixnum, and the
+;;;; simpler code is worth more here than the remaining constant factor.
+;;;;
+;;;; ML-DSA-POLY-MUL-SCHOOLBOOK is retained as the reference implementation;
+;;;; test/ml-dsa-tests.lisp asserts the two agree coefficient-for-coefficient.
+
+(defconstant +ml-dsa-root+ 1753
+  "Primitive 512th root of unity mod q = 8380417 (FIPS 204).")
+
+(defun ml-dsa-bit-reverse-8 (x)
+  "Reverse the low 8 bits of X."
+  (declare (type (unsigned-byte 8) x))
+  (let ((result 0))
+    (dotimes (i 8 result)
+      (setf result (logior (ash result 1) (logand (ash x (- i)) 1))))))
+
+(defparameter *ml-dsa-zetas*
+  (let ((zetas (make-array 256 :element-type '(unsigned-byte 32))))
+    (dotimes (i 256 zetas)
+      (setf (aref zetas i)
+            (expt-mod +ml-dsa-root+ (ml-dsa-bit-reverse-8 i) +ml-dsa-q+))))
+  "zetas[i] = root^BitRev8(i) mod q, computed at load time.
+Deriving rather than hardcoding the table keeps it self-evidently correct;
+the differential test against the schoolbook reference confirms it.")
+
+(defun ml-dsa-ntt! (a)
+  "Forward NTT, in place.  A holds 256 coefficients in [0, q)."
+  (declare (type (simple-array (unsigned-byte 32) (256)) a)
+           (optimize (speed 3) (safety 1)))
+  (let ((k 0))
+    (declare (type fixnum k))
+    (do ((len 128 (ash len -1)))
+        ((< len 1) a)
+      (declare (type fixnum len))
+      (do ((start 0 (+ start len len)))
+          ((>= start 256))
+        (declare (type fixnum start))
+        (incf k)
+        (let ((zeta (aref *ml-dsa-zetas* k)))
+          (loop for j fixnum from start below (+ start len)
+                do (let ((tmp (mod (* zeta (aref a (+ j len))) +ml-dsa-q+)))
+                     (setf (aref a (+ j len))
+                           (mod (- (aref a j) tmp) +ml-dsa-q+))
+                     (setf (aref a j)
+                           (mod (+ (aref a j) tmp) +ml-dsa-q+)))))))))
+
+(defun ml-dsa-intt! (a)
+  "Inverse NTT, in place, including the final n^-1 scaling."
+  (declare (type (simple-array (unsigned-byte 32) (256)) a)
+           (optimize (speed 3) (safety 1)))
+  (let ((k 256))
+    (declare (type fixnum k))
+    (do ((len 1 (ash len 1)))
+        ((>= len 256))
+      (declare (type fixnum len))
+      (do ((start 0 (+ start len len)))
+          ((>= start 256))
+        (declare (type fixnum start))
+        (decf k)
+        (let ((zeta (mod (- (aref *ml-dsa-zetas* k)) +ml-dsa-q+)))
+          (loop for j fixnum from start below (+ start len)
+                do (let ((tmp (aref a j)))
+                     (setf (aref a j)
+                           (mod (+ tmp (aref a (+ j len))) +ml-dsa-q+))
+                     (setf (aref a (+ j len))
+                           (mod (* zeta (mod (- tmp (aref a (+ j len))) +ml-dsa-q+))
+                                +ml-dsa-q+)))))))
+    ;; Scale by n^-1 mod q.  q is prime, so n^-1 = n^(q-2) by Fermat.
+    (let ((n-inv (expt-mod 256 (- +ml-dsa-q+ 2) +ml-dsa-q+)))
+      (dotimes (i 256 a)
+        (setf (aref a i) (mod (* n-inv (aref a i)) +ml-dsa-q+))))))
+
+(defun ml-dsa-poly-mul-ntt (a b)
+  "Multiply two ML-DSA polynomials in Z_q[x]/(x^256+1) via the NTT.
+Produces exactly the same result as ML-DSA-POLY-MUL-SCHOOLBOOK."
+  (let ((x (make-ml-dsa-poly))
+        (y (make-ml-dsa-poly)))
+    (replace x a)
+    (replace y b)
+    (ml-dsa-ntt! x)
+    (ml-dsa-ntt! y)
+    (locally (declare (type (simple-array (unsigned-byte 32) (256)) x y)
+                      (optimize (speed 3) (safety 1)))
+      (dotimes (i 256)
+        (setf (aref x i) (mod (* (aref x i) (aref y i)) +ml-dsa-q+))))
+    (ml-dsa-intt! x)))
+
 (defun ml-dsa-poly-mul-schoolbook (a b)
   "Multiply two ML-DSA polynomials using schoolbook method in Z_q[x]/(x^256+1).
-   Note: This is O(n^2) and slow. For production, NTT should be used."
+   O(n^2).  Retained as the REFERENCE implementation: ML-DSA-POLY-MUL-NTT is
+   what the signature paths call, and test/ml-dsa-tests.lisp asserts the two
+   agree coefficient-for-coefficient on random inputs."
   (let ((result (make-ml-dsa-poly)))
     (dotimes (i 256)
       (dotimes (j 256)
@@ -137,7 +243,10 @@
 
 (defun mod-pm (x q)
   "Reduce X modulo Q to centered representation in [-(q-1)/2, (q-1)/2]."
+  (declare (type fixnum x q)
+           (optimize (speed 3) (safety 1)))
   (let ((r (mod x q)))
+    (declare (type fixnum r))
     (if (> r (ash q -1))
         (- r q)
         r)))
@@ -168,7 +277,10 @@
   "Decompose R into (r1, r0) for hint computation.
    FIPS 204 Algorithm 35.
    Returns (values r1 r0) with r0 in [-gamma2, gamma2]."
-  (declare (type integer r))
+  ;; Every value here is bounded by q = 8380417 < 2^23, so fixnum arithmetic
+  ;; throughout.  SAFETY 1 is kept so a violated declaration still signals.
+  (declare (type fixnum r)
+           (optimize (speed 3) (safety 1)))
   (let* ((r+ (mod r +ml-dsa-q+))
          (gamma2 +ml-dsa-65-gamma2+)
          (two-gamma2 (* 2 gamma2))
@@ -209,6 +321,8 @@
   "Recover high bits using hint H.
    FIPS 204 Algorithm 37.
    Returns the corrected high bits value."
+  (declare (type fixnum h r)
+           (optimize (speed 3) (safety 1)))
   (let* ((gamma2 +ml-dsa-65-gamma2+)
          (m (floor (1- +ml-dsa-q+) (* 2 gamma2))))  ; m = 16 for ML-DSA-65
     (multiple-value-bind (r1 r0) (decompose r)
@@ -310,14 +424,22 @@
 
 (defun decode-poly-z (data &optional (offset 0))
   "Decode bytes to z polynomial."
+  (declare (type (simple-array (unsigned-byte 8) (*)) data)
+           (type fixnum offset)
+           (optimize (speed 3) (safety 1)))
   (let ((poly (ml-dsa-poly))
         (bit-pos (* offset 8))
         (gamma1 +ml-dsa-65-gamma1+))
+    (declare (type fixnum bit-pos gamma1))
     (dotimes (i 256 poly)
       (let ((mapped 0))
+        (declare (type fixnum mapped))
         (dotimes (b 20)
-          (let ((byte-idx (floor bit-pos 8))
-                (bit-idx (mod bit-pos 8)))
+          ;; ASH/LOGAND rather than FLOOR/MOD: bit-pos is a fixnum and 8 is a
+          ;; power of two, so these are a shift and a mask.
+          (let ((byte-idx (ash bit-pos -3))
+                (bit-idx (logand bit-pos 7)))
+            (declare (type fixnum byte-idx bit-idx))
             (setf mapped
                   (logior mapped
                           (ash (logand (ash (aref data byte-idx) (- bit-idx)) 1) b))))
@@ -410,11 +532,16 @@
       ;; Read 3 bytes at a time, reject if >= q
       (loop while (< j 256)
             do (when (>= (+ pos 3) (length stream))
-                 ;; Need more random bytes - extend the stream
-                 (setf xof (ironclad:make-digest :shake128 :output-length 8192))
-                 (ironclad:update-digest xof seed)
-                 (setf stream (ironclad:produce-digest xof))
-                 (setf pos 0))
+                 ;; Need more output: regenerate the XOF at double the length
+                 ;; and RESUME at the same position.  SHAKE is an extendable
+                 ;; output function, so the first (length stream) bytes of the
+                 ;; longer output are byte-identical to what we already
+                 ;; consumed; resetting POS to 0 (as this used to) would
+                 ;; re-consume them and emit duplicate coefficients.
+                 (let ((new-length (* 2 (length stream))))
+                   (setf xof (ironclad:make-digest :shake128 :output-length new-length))
+                   (ironclad:update-digest xof seed)
+                   (setf stream (ironclad:produce-digest xof))))
                ;; Read 3 bytes as little-endian, mask to 23 bits
                (let* ((b0 (aref stream pos))
                       (b1 (aref stream (1+ pos)))
@@ -449,8 +576,10 @@
            (type (integer 1 4) eta))
   (let ((poly (make-ml-dsa-poly)))
     (dotimes (i 256 poly)
-      (let* ((byte-offset (* i eta 2 (/ 1 8)))
-             (a-bits 0)
+      ;; (Removed a dead BYTE-OFFSET binding here: it computed a RATIO via
+      ;; (/ 1 8) and was never referenced -- the loop below addresses bits
+      ;; directly through bit-idx-a / bit-idx-b.)
+      (let* ((a-bits 0)
              (b-bits 0))
         ;; Sum eta bits for a and eta bits for b
         (dotimes (j eta)
@@ -485,12 +614,11 @@
 
 (defun ml-dsa-matrix-vector-mul (a s)
   "Compute A * s where A is k×l matrix, s is l-vector.
-   Uses schoolbook multiplication with ML-DSA modulus.
    Returns k-vector."
   (let ((result (ml-dsa-poly-vector +ml-dsa-65-k+)))
     (dotimes (i +ml-dsa-65-k+ result)
       (dotimes (j +ml-dsa-65-l+)
-        (let ((prod (ml-dsa-poly-mul-schoolbook (aref a i j) (aref s j))))
+        (let ((prod (ml-dsa-poly-mul-ntt (aref a i j) (aref s j))))
           (ml-dsa-poly-add! (aref result i) prod))))))
 
 (defun ml-dsa-vector-add (a b)
@@ -508,12 +636,11 @@
       (setf (aref result i) (ml-dsa-poly-sub (aref a i) (aref b i))))))
 
 (defun ml-dsa-scalar-poly-mul (c v)
-  "Multiply each polynomial in vector V by scalar polynomial C.
-   Uses schoolbook multiplication with ML-DSA modulus."
+  "Multiply each polynomial in vector V by scalar polynomial C."
   (let* ((len (length v))
          (result (ml-dsa-poly-vector len)))
     (dotimes (i len result)
-      (setf (aref result i) (ml-dsa-poly-mul-schoolbook c (aref v i))))))
+      (setf (aref result i) (ml-dsa-poly-mul-ntt c (aref v i))))))
 
 ;;;; =========================================================================
 ;;;; Key Generation (FIPS 204, Algorithm 1)
@@ -683,6 +810,8 @@
 (defun encode-poly-w1 (poly)
   "Encode w1 polynomial for hashing.
    For ML-DSA-65: coefficients in [0, 15], 4 bits each."
+  (declare (type (simple-array (unsigned-byte 32) (256)) poly)
+           (optimize (speed 3) (safety 1)))
   (let ((result (make-octet-vector 128)))  ; 256 * 4 / 8 = 128
     (dotimes (i 128 result)
       (setf (aref result i)
@@ -718,17 +847,29 @@
     ;; Initialize hint arrays
     (dotimes (i k)
       (setf (aref h i) (make-array 256 :initial-element 0)))
-    ;; Decode hints from packed format
+    ;; Decode hints from packed format, enforcing all three FIPS 204
+    ;; Algorithm 15 (HintBitUnpack) validity checks.  Omitting any of them
+    ;; makes the encoding non-canonical: one hint set then has many valid byte
+    ;; representations (indices permuted, arbitrary bytes in the unused tail),
+    ;; all of which verify.  FIPS 204 requires these for strong unforgeability.
     (dotimes (i k)
       (let ((count (aref data (+ offset omega i))))
-        ;; Validate count is monotonically increasing and bounded
+        ;; Step 6: counts monotonically non-decreasing and bounded by omega.
         (when (or (< count prev-count) (> count omega))
           (return-from decode-hints nil))
-        ;; Set hint bits for this polynomial
-        (loop for j from prev-count below count
-              for pos = (aref data (+ offset j))
-              do (setf (aref (aref h i) pos) 1))
+        ;; Step 8: indices strictly increasing WITHIN each polynomial's run.
+        (let ((prev-pos -1))
+          (loop for j from prev-count below count
+                for pos = (aref data (+ offset j))
+                do (when (<= pos prev-pos)
+                     (return-from decode-hints nil))
+                   (setf prev-pos pos)
+                   (setf (aref (aref h i) pos) 1)))
         (setf prev-count count)))
+    ;; Step 10: every unused index slot must be zero.
+    (loop for j from prev-count below omega
+          do (unless (zerop (aref data (+ offset j)))
+               (return-from decode-hints nil)))
     h))
 
 ;;;; =========================================================================

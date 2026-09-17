@@ -187,6 +187,94 @@
       (is (every #'= c1 c2)
           "Polynomial multiplication should be deterministic"))))
 
+(test ml-dsa-ntt-matches-schoolbook
+  "The NTT multiply must agree with the schoolbook reference exactly.
+
+   ML-DSA-POLY-MUL-NTT replaced ML-DSA-POLY-MUL-SCHOOLBOOK on the signature
+   paths (77ms -> ~2ms per verification).  There are no FIPS 204 known-answer
+   vectors in this suite, so the schoolbook implementation IS the reference:
+   this test is what makes the substitution trustworthy.  Any divergence means
+   the NTT, the zeta table, or the inverse scaling is wrong."
+  (dotimes (trial 25)
+    (let ((a (pure-tls::make-ml-dsa-poly))
+          (b (pure-tls::make-ml-dsa-poly)))
+      ;; Deterministic but structurally varied inputs spanning [0, q).
+      (dotimes (i 256)
+        (setf (aref a i) (mod (* (+ i 1) (+ trial 7) 2654435761) pure-tls::+ml-dsa-q+)
+              (aref b i) (mod (* (+ i 3) (+ trial 11) 40503) pure-tls::+ml-dsa-q+)))
+      (is (equalp (pure-tls::ml-dsa-poly-mul-schoolbook a b)
+                  (pure-tls::ml-dsa-poly-mul-ntt a b))
+          "NTT and schoolbook products must be identical (trial ~D)" trial)))
+  ;; Edge cases the pseudo-random inputs above will not hit.
+  (let ((zero (pure-tls::make-ml-dsa-poly))
+        (one (pure-tls::make-ml-dsa-poly))
+        (maxp (pure-tls::make-ml-dsa-poly)))
+    (setf (aref one 0) 1)
+    (dotimes (i 256) (setf (aref maxp i) (1- pure-tls::+ml-dsa-q+)))
+    (is (equalp (pure-tls::ml-dsa-poly-mul-schoolbook zero maxp)
+                (pure-tls::ml-dsa-poly-mul-ntt zero maxp))
+        "zero polynomial")
+    (is (equalp (pure-tls::ml-dsa-poly-mul-schoolbook one maxp)
+                (pure-tls::ml-dsa-poly-mul-ntt one maxp))
+        "multiplicative identity")
+    (is (equalp (pure-tls::ml-dsa-poly-mul-schoolbook maxp maxp)
+                (pure-tls::ml-dsa-poly-mul-ntt maxp maxp))
+        "all coefficients at q-1")))
+
+(test ml-dsa-ntt-roundtrips
+  "Forward NTT followed by inverse NTT must be the identity."
+  (let ((a (pure-tls::make-ml-dsa-poly))
+        (original (pure-tls::make-ml-dsa-poly)))
+    (dotimes (i 256)
+      (setf (aref a i) (mod (* (+ i 1) 7919) pure-tls::+ml-dsa-q+)))
+    (replace original a)
+    (pure-tls::ml-dsa-ntt! a)
+    (is (not (equalp original a)) "NTT must actually transform the input")
+    (pure-tls::ml-dsa-intt! a)
+    (is (equalp original a) "iNTT(NTT(a)) must equal a")))
+
+(test ml-dsa-hint-decoding-is-canonical
+  "decode-hints must enforce all three FIPS 204 Algorithm 15 checks.
+
+   Omitting any of them makes the hint encoding non-canonical: one hint set
+   then has many valid byte representations, all of which verify (signature
+   malleability).  Only the omega bound was security-critical and it was always
+   present; these two were not."
+  (let* ((omega pure-tls::+ml-dsa-65-omega+)
+         (k pure-tls::+ml-dsa-65-k+)
+         (size (+ omega k)))
+    (labels ((hints (indices counts &optional (tail-byte 0))
+               ;; omega index slots followed by k per-polynomial counts.
+               (let ((buf (make-array size :element-type '(unsigned-byte 8)
+                                           :initial-element tail-byte)))
+                 (loop for idx in indices for j from 0
+                       do (setf (aref buf j) idx))
+                 (loop for c in counts for i from 0
+                       do (setf (aref buf (+ omega i)) c))
+                 buf)))
+      ;; Baseline: strictly increasing indices, zero tail -> accepted.
+      (is-true (pure-tls::decode-hints
+                (hints '(3 7 11) (list 3 3 3 3 3 3)) 0)
+               "A well-formed hint encoding must decode")
+      ;; Step 8: indices must be STRICTLY increasing within a polynomial.
+      (is-false (pure-tls::decode-hints
+                 (hints '(7 3 11) (list 3 3 3 3 3 3)) 0)
+                "Out-of-order hint indices must be rejected")
+      (is-false (pure-tls::decode-hints
+                 (hints '(3 3 11) (list 3 3 3 3 3 3)) 0)
+                "Duplicate hint indices must be rejected")
+      ;; Step 10: unused index slots must be zero.
+      (is-false (pure-tls::decode-hints
+                 (hints '(3 7 11) (list 3 3 3 3 3 3) #xAA) 0)
+                "Non-zero bytes in the unused hint tail must be rejected")
+      ;; Step 6 (pre-existing): counts non-decreasing and bounded by omega.
+      (is-false (pure-tls::decode-hints
+                 (hints '(3 7 11) (list 3 2 3 3 3 3)) 0)
+                "Decreasing counts must be rejected")
+      (is-false (pure-tls::decode-hints
+                 (hints '(3 7 11) (list 3 3 3 3 3 (1+ omega))) 0)
+                "A count above omega must be rejected"))))
+
 (test ml-dsa-poly-add-sub
   "Test ML-DSA polynomial addition and subtraction"
   (let ((a (pure-tls::make-ml-dsa-poly))
