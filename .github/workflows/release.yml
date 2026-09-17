@@ -7,7 +7,10 @@ on:
 
 jobs:
   release:
-    permissions: write-all
+    # Least privilege: creating a release needs contents:write and nothing
+    # else.  write-all handed every GITHUB_TOKEN scope to a third-party action.
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -17,10 +20,19 @@ jobs:
         id: get_version
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          # The version is interpolated into bodyFile below, so a tag
+          # containing ../ would read an arbitrary repo file into the release
+          # body. Require a plain semantic version.
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Refusing tag '${GITHUB_REF_NAME}': version must be vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Create GitHub release
-        uses: ncipollo/release-action@v1
+        # Pinned to a commit SHA, not the mutable v1 tag: a compromised or
+        # moved tag would otherwise execute with this job's token.
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd  # v1.21.0
         with:
           tag: ${{ github.ref_name }}
           name: pure-tls ${{ github.ref_name }}

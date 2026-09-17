@@ -23,7 +23,13 @@
       (ironclad:generate-key-pair :secp256r1)
     (let* ((not-before (get-universal-time))
            (not-after (+ not-before (* 1 24 60 60)))  ; 1 day validity
-           (serial (random (expt 2 64)))
+           (serial (let ((b (ironclad:random-data 8)))
+                   ;; CSPRNG, not CL:RANDOM -- the global *random-state* is also
+                   ;; not thread-safe in SBCL, so concurrent validation-cert
+                   ;; generation could repeat a serial.
+                   (loop for i from 0 below 8
+                         for acc = (aref b 0) then (logior (ash acc 8) (aref b i))
+                         finally (return acc))))
            (subject (encode-subject domain))
            (san-ext (encode-critical-extension
                      *oid-subject-alt-name*
@@ -65,7 +71,13 @@
          (not-before (get-universal-time))
          (not-after (+ not-before (* 7 24 60 60)))
          ;; Random serial number
-         (serial (random (expt 2 64)))
+         (serial (let ((b (ironclad:random-data 8)))
+                   ;; CSPRNG, not CL:RANDOM -- the global *random-state* is also
+                   ;; not thread-safe in SBCL, so concurrent validation-cert
+                   ;; generation could repeat a serial.
+                   (loop for i from 0 below 8
+                         for acc = (aref b 0) then (logior (ash acc 8) (aref b i))
+                         finally (return acc))))
          ;; Subject/Issuer: CN=domain (self-signed)
          (subject (encode-subject domain))
          ;; Subject Alternative Name extension with dNSName
@@ -112,30 +124,60 @@
 
       (values cert-pem key-pem private-key))))
 
+(defun %unpredictable-temp-name (prefix suffix)
+  "A temp filename with 128 bits of CSPRNG-derived entropy in it.
+A fixed name in a shared temp directory lets a local attacker pre-place a
+symlink at the path we are about to write."
+  (format nil "~A-~(~{~2,'0X~}~)~A" prefix
+          (coerce (ironclad:random-data 16) 'list) suffix))
+
+(defun %write-private-temp-file (path content)
+  "Create PATH with mode 0600 and O_EXCL, then write CONTENT.
+
+The mode is applied AT CREATION, not by a chmod afterwards: the previous code
+created the file at the process umask (typically world-readable) and only
+narrowed it after writing, leaving a window in which a local attacker could
+read the private key.  O_EXCL additionally refuses to follow a pre-placed
+symlink."
+  #+sbcl
+  (let ((fd (sb-posix:open (namestring path)
+                           (logior sb-posix:o-wronly sb-posix:o-creat sb-posix:o-excl)
+                           #o600)))
+    (let ((stream (sb-sys:make-fd-stream fd :output t :element-type 'character
+                                            :external-format :utf-8
+                                            :auto-close t)))
+      (unwind-protect (write-string content stream)
+        (close stream))))
+  #-sbcl
+  (progn
+    (with-open-file (out path :direction :output :if-exists :error)
+      (write-string content out))
+    (warn "ACME: cannot set 0600 at creation on this implementation; ~
+private key at ~A may be briefly world-readable." path)))
+
 (defun save-temp-validation-files (cert-pem key-pem)
   "Save validation certificate and key to temporary files.
    Returns (VALUES cert-path key-path)."
-  (let ((cert-path (merge-pathnames "acme-validation-cert.pem" (uiop:temporary-directory)))
-        (key-path (merge-pathnames "acme-validation-key.pem" (uiop:temporary-directory))))
+  (let ((cert-path (merge-pathnames (%unpredictable-temp-name "acme-validation-cert" ".pem")
+                                    (uiop:temporary-directory)))
+        (key-path (merge-pathnames (%unpredictable-temp-name "acme-validation-key" ".pem")
+                                   (uiop:temporary-directory))))
     (ensure-directories-exist cert-path)
     (with-open-file (out cert-path :direction :output
                                    :if-exists :supersede)
       (write-string cert-pem out))
-    (with-open-file (out key-path :direction :output
-                                  :if-exists :supersede)
-      (write-string key-pem out))
-    #+sbcl (sb-posix:chmod (namestring key-path) #o600)
+    ;; Private key: 0600 at creation, O_EXCL, unpredictable name.
+    (%write-private-temp-file key-path key-pem)
     ;; Save debug copies only when debugging enabled
     (when *acme-debug*
-      (let ((debug-cert-path (merge-pathnames "acme-validation-cert-DEBUG.pem" (uiop:temporary-directory)))
-            (debug-key-path (merge-pathnames "acme-validation-key-DEBUG.pem" (uiop:temporary-directory))))
+      (let ((debug-cert-path (merge-pathnames (%unpredictable-temp-name "acme-validation-cert-DEBUG" ".pem")
+                                              (uiop:temporary-directory)))
+            (debug-key-path (merge-pathnames (%unpredictable-temp-name "acme-validation-key-DEBUG" ".pem")
+                                             (uiop:temporary-directory))))
         (with-open-file (out debug-cert-path :direction :output
                                              :if-exists :supersede)
           (write-string cert-pem out))
-        (with-open-file (out debug-key-path :direction :output
-                                            :if-exists :supersede)
-          (write-string key-pem out))
-        #+sbcl (sb-posix:chmod (namestring debug-key-path) #o600)
+        (%write-private-temp-file debug-key-path key-pem)
         (acme-log "~&[ACME] Debug cert saved to ~A~%" debug-cert-path)))
     (values cert-path key-path)))
 

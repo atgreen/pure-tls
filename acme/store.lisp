@@ -91,6 +91,7 @@
   "Ensure directory exists with specified mode (Unix only).
    PATH can be either a file path (ensures parent dir) or directory path (ensures that dir)."
   ;; Get the directory path string - works for both file and directory pathnames
+  (declare (ignorable mode))
   (let* ((dir-namestring (directory-namestring path))
          ;; Create a file pathname within that directory to force creation
          (file-path (merge-pathnames "x" (pathname dir-namestring))))
@@ -99,9 +100,7 @@
     #+sbcl
     ;; Remove trailing slash for chmod if present (sb-posix:chmod doesn't always need it)
     (let ((dir-path (string-right-trim "/" dir-namestring)))
-      (sb-posix:chmod dir-path mode))
-    #-sbcl
-    (declare (ignore mode))))
+      (sb-posix:chmod dir-path mode))))
 
 (defun write-key-file (path content)
   "Write a key file with restrictive permissions (0600)."
