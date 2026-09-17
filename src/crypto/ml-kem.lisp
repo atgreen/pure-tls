@@ -646,6 +646,24 @@ Returns ciphertext as byte vector."
             (replace ct compressed :start1 pos))
           ct)))))
 
+(defun ml-kem-decode-message-bit (coeff)
+  "Round COEFF to the nearer of 0 or q/2, returning that message bit.
+
+Extracted into its own function so its CODEGEN can be asserted on: COEFF is a
+coefficient of w = v - s^T*u, which is derived from the secret key, and inside
+decapsulation this runs 256 times per candidate message.  A data-dependent
+BRANCH here would be a timing signal on secret material.
+
+SBCL compiles both this comparison and CENTERED-MOD's inner IF to CMOV with no
+conditional jumps on x86-64, so it is branch-free in practice -- but that is
+the compiler's choice, not the code's construction.  See the codegen guard in
+test/crypto-tests.lisp, which fails if a conditional jump ever appears."
+  (declare (type (unsigned-byte 16) coeff)
+           (optimize (speed 3) (safety 0)))
+  (if (< (abs (- coeff (ash +ml-kem-q+ -1)))
+         (abs (centered-mod coeff)))
+      1 0))
+
 (defun k-pke-decrypt (sk ct)
   "K-PKE decryption of ciphertext CT using secret key SK.
 Returns 32-byte message."
@@ -678,11 +696,7 @@ Returns 32-byte message."
         ;; Decode message bits
         (let ((m (make-array 32 :element-type '(unsigned-byte 8) :initial-element 0)))
           (dotimes (i 256)
-            (let* ((coeff (aref w i))
-                   ;; Round to nearest 0 or q/2
-                   (bit (if (< (abs (- coeff (ash +ml-kem-q+ -1)))
-                               (abs (centered-mod coeff)))
-                            1 0)))
+            (let ((bit (ml-kem-decode-message-bit (aref w i))))
               (setf (aref m (floor i 8))
                     (logior (aref m (floor i 8))
                             (ash bit (mod i 8))))))
@@ -718,9 +732,31 @@ Returns (values encapsulation-key decapsulation-key)."
         (replace dk z :start1 pos))
       (values ek dk))))
 
+(defun ml-kem-check-encapsulation-key (ek)
+  "Validate a peer-supplied ML-KEM encapsulation key.
+
+FIPS 203 S7.2 requires the length check plus the modulus check
+ByteEncode12(ByteDecode12(ek_pke)) == ek_pke, i.e. every 12-bit coefficient
+must be < q.  Signals TLS-CRYPTO-ERROR on a malformed key."
+  (unless (= (length ek) +ml-kem-768-ek-size+)
+    (error 'tls-crypto-error
+           :operation "ML-KEM encapsulation"
+           :message (format nil ":BAD_ECPOINT: Invalid ML-KEM encapsulation key length: ~D (expected ~D)"
+                            (length ek) +ml-kem-768-ek-size+)))
+  ;; Modulus check: the first 384*k bytes are k polynomials of 256 twelve-bit
+  ;; coefficients; each must be in [0, q).
+  (dotimes (i +ml-kem-768-k+ t)
+    (let ((poly (bytes-to-poly ek (* i 384))))
+      (dotimes (j 256)
+        (unless (< (aref poly j) +ml-kem-q+)
+          (error 'tls-crypto-error
+                 :operation "ML-KEM encapsulation"
+                 :message ":BAD_ECPOINT: ML-KEM encapsulation key is not reduced mod q (FIPS 203 S7.2)"))))))
+
 (defun ml-kem-768-encaps (ek)
   "Encapsulate a shared secret using encapsulation key EK.
 Returns (values shared-secret ciphertext)."
+  (ml-kem-check-encapsulation-key ek)
   (let ((m (ironclad:random-data 32)))
     (ml-kem-768-encaps-internal ek m)))
 
@@ -744,6 +780,17 @@ Returns (values shared-secret ciphertext)."
 Returns 32-byte shared secret.  Per FIPS 203 S7.3, uses constant-time
 selection between the real shared secret and implicit rejection value
 to prevent side-channel distinguishability."
+  ;; Do not rely on the TLS layer's key_share length check: validate here too,
+  ;; so these entry points are safe wherever they are called from.
+  (unless (= (length c) +ml-kem-768-ct-size+)
+    (error 'tls-crypto-error
+           :operation "ML-KEM decapsulation"
+           :message (format nil ":BAD_ECPOINT: Invalid ML-KEM ciphertext length: ~D (expected ~D)"
+                            (length c) +ml-kem-768-ct-size+)))
+  (unless (= (length dk) +ml-kem-768-dk-size+)
+    (error 'tls-crypto-error
+           :operation "ML-KEM decapsulation"
+           :message "Invalid ML-KEM decapsulation key length"))
   (let* ((k +ml-kem-768-k+)
          ;; Parse dk = dk_pke || ek || H(ek) || z
          (dk-pke-len (* 384 k))
@@ -802,6 +849,11 @@ Per X25519MLKEM768 spec, ML-KEM comes first."
   "Compute hybrid shared secret from server's key share.
 SERVER-SHARE is ML-KEM ciphertext (1088 bytes) || X25519 public key (32 bytes).
 Returns 64-byte shared secret (ML-KEM ss || X25519 ss)."
+  (unless (= (length server-share) (+ +ml-kem-768-ct-size+ 32))
+    (error 'tls-crypto-error
+           :operation "X25519MLKEM768 key exchange"
+           :message (format nil ":BAD_ECPOINT: Invalid hybrid server share length: ~D (expected ~D)"
+                            (length server-share) (+ +ml-kem-768-ct-size+ 32))))
   (let* ((ml-kem-ct (subseq server-share 0 1088))
          (x25519-pk (subseq server-share 1088))
          (ml-kem-ss (ml-kem-768-decaps
@@ -816,6 +868,11 @@ Returns 64-byte shared secret (ML-KEM ss || X25519 ss)."
   "Server-side hybrid encapsulation.
 CLIENT-SHARE is ML-KEM ek (1184 bytes) || X25519 public key (32 bytes).
 Returns (values shared-secret server-share)."
+  (unless (= (length client-share) (+ +ml-kem-768-ek-size+ 32))
+    (error 'tls-crypto-error
+           :operation "X25519MLKEM768 key exchange"
+           :message (format nil ":BAD_ECPOINT: Invalid hybrid client share length: ~D (expected ~D)"
+                            (length client-share) (+ +ml-kem-768-ek-size+ 32))))
   (let* ((ml-kem-ek (subseq client-share 0 1184))
          (x25519-client-pk (subseq client-share 1184))
          ;; X25519 key exchange

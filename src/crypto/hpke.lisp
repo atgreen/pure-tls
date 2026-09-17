@@ -90,10 +90,32 @@
     (hpke-labeled-expand eae-prk "shared_secret" kem-context
                          +hpke-x25519-nsecret+ suite-id)))
 
+(defun hpke-check-x25519-key (bytes what)
+  "Validate an X25519 public key or encapsulated key for DHKEM.
+RFC 7748 S5 fixes the length at 32 bytes."
+  (unless (= (length bytes) +hpke-x25519-npk+)
+    (error 'tls-crypto-error
+           :operation "HPKE DHKEM(X25519)"
+           :message (format nil ":BAD_ECPOINT: Invalid ~A length: ~D (expected ~D)"
+                            what (length bytes) +hpke-x25519-npk+))))
+
+(defun hpke-check-dh-secret (dh)
+  "Reject an all-zero DHKEM shared secret.
+RFC 9180 S7.1.4 and RFC 7748 S6.1: a low-order peer key drives the X25519
+result to zero, which would make the derived HPKE key a function of public
+data alone.  X25519-COMPUTE-SHARED-SECRET in crypto/key-exchange.lisp makes
+the same check on the TLS key-exchange path; HPKE needs its own."
+  (when (every #'zerop dh)
+    (error 'tls-crypto-error
+           :operation "HPKE DHKEM(X25519)"
+           :message ":BAD_ECPOINT: Invalid shared secret (all zeros) - possible small-subgroup attack"))
+  dh)
+
 (defun hpke-x25519-encap (pk-r)
   "DHKEM(X25519) Encap - encapsulate to recipient's public key.
    pk-r should be 32 bytes (X25519 public key).
    Returns (values shared-secret enc) where enc is the ephemeral public key."
+  (hpke-check-x25519-key pk-r "recipient public key")
   (let ((suite-id (hpke-kem-suite-id +hpke-kem-x25519-sha256+)))
     ;; Generate ephemeral key pair
     (multiple-value-bind (sk-e pk-e-key)
@@ -101,7 +123,7 @@
       (let* ((pk-e (ironclad:curve25519-key-y pk-e-key))
              ;; Compute DH shared secret
              (pk-r-key (ironclad:make-public-key :curve25519 :y pk-r))
-             (dh (ironclad:diffie-hellman sk-e pk-r-key))
+             (dh (hpke-check-dh-secret (ironclad:diffie-hellman sk-e pk-r-key)))
              ;; kem_context = enc || pkR
              (kem-context (concat-octet-vectors pk-e pk-r))
              ;; Extract shared secret
@@ -113,13 +135,14 @@
    enc is the sender's ephemeral public key (32 bytes).
    sk-r is the recipient's private key (Ironclad private key object).
    Returns the shared secret."
+  (hpke-check-x25519-key enc "encapsulated key")
   (let ((suite-id (hpke-kem-suite-id +hpke-kem-x25519-sha256+)))
     ;; Get recipient's public key from private key
     ;; Ironclad stores the public key Y in both private and public key objects
     (let* ((pk-r-bytes (ironclad:curve25519-key-y sk-r))
            ;; Compute DH shared secret
            (pk-e (ironclad:make-public-key :curve25519 :y enc))
-           (dh (ironclad:diffie-hellman sk-r pk-e))
+           (dh (hpke-check-dh-secret (ironclad:diffie-hellman sk-r pk-e)))
            ;; kem_context = enc || pkR
            (kem-context (concat-octet-vectors enc pk-r-bytes))
            ;; Extract shared secret
@@ -241,7 +264,10 @@
 
 (defun hpke-increment-seq (ctx)
   "Increment sequence number. Returns NIL if overflow would occur."
-  (let ((max-seq (1- (ash 1 (* 8 (length (hpke-context-base-nonce ctx)))))))
+  ;; The SEQ slot is (unsigned-byte 64), so 2^(8*Nn) - 1 (2^96-1 for a 12-byte
+  ;; nonce) could never be reached: the struct type check would fire first.
+  ;; Bound by whichever is smaller so the check is the one that actually runs.
+  (let ((max-seq (1- (ash 1 (min 64 (* 8 (length (hpke-context-base-nonce ctx))))))))
     (when (>= (hpke-context-seq ctx) max-seq)
       (error 'tls-crypto-error
              :operation "HPKE"
