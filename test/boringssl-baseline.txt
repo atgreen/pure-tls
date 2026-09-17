@@ -41,7 +41,6 @@ FAIL ALPS-UnsupportedProtocol-Client-Old-TLS-TLS13
 FAIL AlternateEmptyRecordsAndTooManyWarningAlerts
 FAIL AlternateEmptyRecordsAndWarningAlerts
 FAIL AlternateTooManyEmptyRecordsAndWarningAlerts
-FAIL AlwaysSelectPSKIdentity-TLS13
 FAIL AppDataAfterChangeCipherSpec
 FAIL AppDataAfterChangeCipherSpec-Empty
 FAIL AppDataBeforeHandshake
@@ -1487,7 +1486,6 @@ FAIL Renegotiate-Client-Packed
 FAIL Renegotiate-Client-SwitchCiphers
 FAIL Renegotiate-Client-SwitchCiphers2
 FAIL Renegotiate-Client-SwitchVersion
-FAIL Renegotiate-Client-TLS13
 FAIL Renegotiate-Client-TLS-Async
 FAIL Renegotiate-Client-TLS-Async-ImplicitHandshake
 FAIL Renegotiate-Client-TLS-Async-PackHandshake
