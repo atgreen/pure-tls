@@ -13,15 +13,35 @@ known limitations, references, and acknowledgements.
 
 ## [Unreleased]
 
-Security triage of the TLS stack and remediation of everything it found, plus
-repair of the BoringSSL test harness. No version has been cut for this work yet.
+## [1.15.0] - 2026-09-17
+
+Security release, from a triage of the TLS stack.
+
+Two remote denial-of-service flaws are fixed, both of which killed the whole
+Lisp image rather than the connection: unbounded recursion in the DER parser,
+reachable from a peer certificate before any signature is checked, and
+unbounded recursion in the post-handshake record loop. A third flaw let a peer
+spend hundreds of CPU-seconds of a server's time on ML-DSA certificate chain
+verification. Separately, the cl+ssl compatibility layer was silently
+discarding `:verify-callback` — the hook applications use for certificate
+pinning — and an empty client trust store did not fail closed under mTLS.
+
+**Upgrade note.** Several options and inputs that were previously accepted and
+quietly ignored now signal or are rejected. If you use the cl+ssl compatibility
+layer with `:verify-callback`, `:pem-password-callback`,
+`:private-key-password`, or `:certificate` / `:key` on
+`make-ssl-client-stream`, those calls now raise an error instead of silently
+doing nothing — the silence is what made them dangerous. Certificate chains are
+now bounded by size (`*max-certificate-list-size*`, previously unlimited) and by
+length (`verify-depth`, previously never enforced), so an unusually large or
+deep chain that used to be accepted may now be rejected.
 
 ### Security
 
 - **Two remote denial-of-service flaws, both fatal to the whole Lisp image
   rather than the connection.** Each was reproduced before being fixed.
 
-  Unbounded recursion in the DER parser: `parse-der-node` and
+  Unbounded recursion in the DER parser ([CL-SEC-2026-0216]): `parse-der-node` and
   `parse-der-contents` are mutually recursive with no depth bound, so a
   certificate of nested `SEQUENCE`s recursed once per level. Roughly 133KB
   exhausted a 1MB control stack, and on SBCL that abort is fatal and
@@ -30,20 +50,21 @@ repair of the BoringSSL test harness. No version has been cut for this work yet.
   signature or chain verification, so no authentication was required to reach
   it. Nesting is now capped at `+asn1-max-depth+`.
 
-  Unbounded recursion in the post-handshake record loop:
+  Unbounded recursion in the post-handshake record loop ([CL-SEC-2026-0217]):
   `tls-stream-fill-buffer` re-entered itself once per record, inside a
   `handler-case` that prevented a tail call. A peer dribbling handshake records
   one byte at a time exhausted the stack after roughly 259KB. The read path is
   now iterative.
 
-- **CPU exhaustion via ML-DSA-65 certificate chains.** Signature verification
+- **CPU exhaustion via ML-DSA-65 certificate chains** ([CL-SEC-2026-0218]). Signature verification
   measured 77ms because polynomial multiplication was schoolbook O(n²). Every
   chain link is verified before the trust anchor is checked, so an unbounded
   `Certificate` message let one connection cost roughly 315 CPU-seconds.
   Replacing the multiply with an NTT and bounding the message brings that to
   about 0.12 CPU-seconds.
 
-- **The cl+ssl compatibility layer silently discarded `:verify-callback`.** In
+- **The cl+ssl compatibility layer silently discarded `:verify-callback`**
+  ([CL-SEC-2026-0219]). In
   cl+ssl that callback is how an application implements certificate pinning or
   custom chain policy, so an application that pinned a CA through it and
   migrated here degraded to accepting any certificate from any CA in the system
@@ -53,7 +74,8 @@ repair of the BoringSSL test harness. No version has been cut for this work yet.
   for a TLS-1.3-only stack still no-op silently, and that distinction is
   documented.
 
-- **An empty client trust store did not fail closed under mTLS.**
+- **An empty client trust store did not fail closed under mTLS**
+  ([CL-SEC-2026-0220]).
   `process-client-certificate-verify` checked only that a trust store was
   present, so an empty-but-non-`NIL` store reached `verify-certificate-chain`
   with no roots — and on macOS/Windows the native dispatch treats that as "use
@@ -62,7 +84,8 @@ repair of the BoringSSL test harness. No version has been cut for this work yet.
   root. `make-trust-store-from-directory` returns an empty store without
   complaint, so this was reachable by ordinary misconfiguration.
 
-- **The ACME TLS-ALPN-01 validation private key was written insecurely.** It
+- **The ACME TLS-ALPN-01 validation private key was written insecurely**
+  ([CL-SEC-2026-0221]). It
   went to a constant filename in the shared temp directory, created at the
   process umask and only narrowed to `0600` after writing — a window in which a
   local user could read it, and a predictable path at which one could pre-place
@@ -1523,7 +1546,14 @@ Initial release of pure-tls, a pure Common Lisp implementation of TLS 1.3 (RFC 8
 - No 0-RTT early data support
 - TLS 1.3 only (no fallback to TLS 1.2)
 
-[Unreleased]: https://github.com/atgreen/pure-tls/compare/v1.14.0...HEAD
+[CL-SEC-2026-0216]: https://cl-sec.github.io/cl-sec-advisories/#CL-SEC-2026-0216
+[CL-SEC-2026-0217]: https://cl-sec.github.io/cl-sec-advisories/#CL-SEC-2026-0217
+[CL-SEC-2026-0218]: https://cl-sec.github.io/cl-sec-advisories/#CL-SEC-2026-0218
+[CL-SEC-2026-0219]: https://cl-sec.github.io/cl-sec-advisories/#CL-SEC-2026-0219
+[CL-SEC-2026-0220]: https://cl-sec.github.io/cl-sec-advisories/#CL-SEC-2026-0220
+[CL-SEC-2026-0221]: https://cl-sec.github.io/cl-sec-advisories/#CL-SEC-2026-0221
+[Unreleased]: https://github.com/atgreen/pure-tls/compare/v1.15.0...HEAD
+[1.15.0]: https://github.com/atgreen/pure-tls/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/atgreen/pure-tls/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/atgreen/pure-tls/compare/v1.12.0...v1.13.0
 [1.12.1]: https://github.com/atgreen/pure-tls/commit/974eb5d8d1b07967f04814d28acfa3557303721e
