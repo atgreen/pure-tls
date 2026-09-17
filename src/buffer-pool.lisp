@@ -64,18 +64,25 @@
            (type (simple-array (unsigned-byte 8) (*)) buf))
   (let ((len (length buf)))
     (bt:with-lock-held ((buffer-pool-lock pool))
+      ;; Wipe EVERY tier before it re-enters the shared pool, not just the
+      ;; large one.  Small (64B) and medium (1KB) buffers hold decrypted record
+      ;; data too, and the pool is process-global: a buffer released by one
+      ;; connection is handed to another.  Current callers all bound their
+      ;; reads by the actual data length, so no leak was reachable, but that is
+      ;; a property of every caller rather than of the pool.
       (cond
         ((= len +pool-small-size+)
          (when (< (buffer-pool-small-count pool) +pool-max-per-size+)
+           (fill buf 0)
            (push buf (buffer-pool-small pool))
            (incf (buffer-pool-small-count pool))))
         ((= len +pool-medium-size+)
          (when (< (buffer-pool-medium-count pool) +pool-max-per-size+)
+           (fill buf 0)
            (push buf (buffer-pool-medium pool))
            (incf (buffer-pool-medium-count pool))))
         ((= len +pool-large-size+)
          (when (< (buffer-pool-large-count pool) +pool-max-per-size+)
-           ;; Zero before returning to pool (security)
            (fill buf 0)
            (push buf (buffer-pool-large pool))
            (incf (buffer-pool-large-count pool))))))))

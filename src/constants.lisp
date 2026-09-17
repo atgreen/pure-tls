@@ -243,13 +243,37 @@
   "Maximum number of consecutive empty records before closing connection.
    This prevents denial-of-service via excessive empty record flooding.")
 
+
 (defparameter *default-verify-mode* +verify-required+
   "Default certificate verification mode")
 
-(defparameter *max-certificate-list-size* 0
-  "Maximum size in bytes for certificate list in Certificate message.
-   0 means no limit. Set to a positive value to enforce a limit.
-   Used to prevent DoS via excessively large certificate chains.")
+(defparameter *default-verify-depth* 100
+  "Maximum number of certificates accepted in a peer-supplied chain.
+
+   VERIFY-CERTIFICATE-CHAIN enforces this unless given an explicit :MAX-DEPTH.
+   MAKE-TLS-CLIENT-STREAM / MAKE-TLS-SERVER-STREAM bind it to the context's
+   VERIFY-DEPTH for the duration of the handshake, which is what makes that
+   context slot (and cl+ssl's :verify-depth) actually do something -- it was
+   previously accepted, stored, and never read.
+
+   Bounding chain LENGTH matters independently of chain size: every additional
+   link costs one signature verification before the trust anchor is checked, so
+   a long chain of self-crafted certificates is attacker-directed CPU.")
+
+(defparameter *max-certificate-list-size* 102400
+  "Maximum size in bytes for the certificate list in a Certificate message.
+   0 means no limit; any positive value is enforced as soon as the peer's
+   advertised uint24 length is visible, before further fragments are buffered.
+
+   The default matches OpenSSL's long-standing SSL_CTX_set_max_cert_list
+   default of 100KB, which comfortably fits real chains (a Let's Encrypt chain
+   is ~3KB; a 10-certificate ML-DSA-65 chain is ~60KB) while denying a peer the
+   16MB the uint24 protocol maximum would otherwise allow.
+
+   This bound matters for more than memory: an unbounded Certificate message
+   also sets the work budget for per-link signature verification and for DER
+   parsing depth, so leaving it at 0 turned one connection into hundreds of
+   CPU-seconds of ML-DSA verification.")
 
 (defconstant +max-handshake-message-length+ (1- (expt 2 24))
   "Protocol maximum for a handshake message body: the uint24 length field

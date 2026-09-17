@@ -227,83 +227,113 @@
                                  :write key iv cipher-suite))))
 
 (defun tls-stream-fill-buffer (stream)
-  "Read more data from the record layer into the input buffer."
+  "Read records until application data lands in the input buffer.
+
+Deliberately ITERATIVE.  Empty records, ignorable warning alerts and
+post-handshake messages all continue the loop rather than re-entering this
+function.  The previous recursive form added two stack frames per record and
+sat inside the HANDLER-CASE below, so SBCL could not tail-call it: a peer that
+dribbled handshake records one byte at a time grew the control stack without
+bound and killed the image with a fatal, uncatchable \"Control stack
+exhausted\" after roughly 259KB of traffic.  Iterating keeps the frame count
+flat no matter how many records arrive."
   (handler-case
-      (multiple-value-bind (content-type data)
-          (record-layer-read (tls-stream-record-layer stream))
-        (case content-type
-          (#.+content-type-application-data+
-           ;; Check for empty records (DoS prevention)
-           (cond ((zerop (length data)) 
-                 (incf (tls-stream-empty-record-count stream))
-                 (when (> (tls-stream-empty-record-count stream) +max-empty-records+)
-                   (error 'tls-error :message ":TOO_MANY_EMPTY_FRAGMENTS:"))
-                 ;; Recursively try for more data
-                 (tls-stream-fill-buffer stream))
-      (t 
-                 ;; Reset counters on non-empty application data
-                 (setf (tls-stream-warning-alert-count stream) 0)
-                 (setf (tls-stream-empty-record-count stream) 0)
-                 (setf (tls-stream-input-buffer stream) data)
-                 (setf (tls-stream-input-position stream) 0))))
-          (#.+content-type-alert+
-           ;; process-alert will error on most alerts, but returns nil for
-           ;; user_canceled warnings which should be ignored
-           (process-alert data (tls-stream-record-layer stream))
-           ;; If we get here, the alert was ignored (user_canceled)
-           ;; Track consecutive warning alerts to prevent DoS
-           (incf (tls-stream-warning-alert-count stream))
-           (when (> (tls-stream-warning-alert-count stream) +max-warning-alerts+)
+      (loop
+        (multiple-value-bind (content-type data)
+            (record-layer-read (tls-stream-record-layer stream))
+          (case content-type
+            (#.+content-type-application-data+
+             (cond
+               ;; Empty record: no progress.  Bounded (DoS prevention).
+               ((zerop (length data))
+                (incf (tls-stream-empty-record-count stream))
+                (when (> (tls-stream-empty-record-count stream) +max-empty-records+)
+                  (error 'tls-error :message ":TOO_MANY_EMPTY_FRAGMENTS:")))
+               (t
+                ;; Real data: reset the no-progress counters and hand it back.
+                (setf (tls-stream-warning-alert-count stream) 0)
+                (setf (tls-stream-empty-record-count stream) 0)
+                (setf (tls-stream-input-buffer stream) data)
+                (setf (tls-stream-input-position stream) 0)
+                (return))))
+            (#.+content-type-alert+
+             ;; process-alert errors on most alerts, but returns NIL for
+             ;; user_canceled warnings, which are ignored.
+             (process-alert data (tls-stream-record-layer stream))
+             (incf (tls-stream-warning-alert-count stream))
+             (when (> (tls-stream-warning-alert-count stream) +max-warning-alerts+)
+               (record-layer-write-alert (tls-stream-record-layer stream)
+                                         +alert-level-fatal+
+                                         +alert-unexpected-message+)
+               (error 'tls-error :message ":TOO_MANY_WARNING_ALERTS:")))
+            (#.+content-type-handshake+
+             ;; Post-handshake messages (NewSessionTicket, KeyUpdate).  TLS 1.3
+             ;; allows a handshake message to span records or several messages
+             ;; to share one, so reassembly is required.
+             (when (zerop (length data))
+               (record-layer-write-alert (tls-stream-record-layer stream)
+                                         +alert-level-fatal+
+                                         +alert-decode-error+)
+               (error 'tls-decode-error
+                      :message ":DECODE_ERROR: Zero-length handshake record"))
+             ;; No per-record counter here, deliberately.  One-byte handshake
+             ;; records are LEGITIMATE -- BoringSSL's SplitHandshakeRecords
+             ;; tests fragment every handshake message that way, and an early
+             ;; version of this fix rejected them.  The dribble is already
+             ;; bounded without a counter: every record contributes at least one
+             ;; byte (zero-length handshake records are rejected above), and
+             ;; check-handshake-buffer-size caps the advertised body at
+             ;; *max-handshake-message-size*, so at most that many records can
+             ;; arrive before a message completes or the size check fires.
+             ;; What made the old code dangerous was the RECURSION, not the
+             ;; record count; the enclosing LOOP is the fix.
+             (setf (tls-stream-handshake-message-buffer stream)
+                   (handshake-buffer-append
+                    (tls-stream-handshake-message-buffer stream) data))
+             ;; Reject an over-large advertised length before buffering more.
+             ;; Certificate messages are never legitimate here, so the plain
+             ;; cap applies to all message types.
+             (check-handshake-buffer-size
+              (tls-stream-handshake-message-buffer stream)
+              (tls-stream-record-layer stream)
+              :max-body-size *max-handshake-message-size*)
+             ;; Process every complete handshake message in the buffer.
+             (loop while (handshake-buffer-has-complete-message-p
+                          (tls-stream-handshake-message-buffer stream))
+                   do (multiple-value-bind (message-bytes remaining)
+                          (handshake-buffer-extract-message
+                           (tls-stream-handshake-message-buffer stream))
+                        (setf (tls-stream-handshake-message-buffer stream) remaining)
+                        (let ((msg (parse-handshake-message message-bytes)))
+                          (case (handshake-message-type msg)
+                            (#.+handshake-key-update+
+                             (tls-stream-process-key-update
+                              stream (handshake-message-body msg)))
+                            (#.+handshake-new-session-ticket+
+                             (tls-stream-process-new-session-ticket
+                              stream (handshake-message-body msg)))
+                            (otherwise
+                             ;; RFC 8446 Section 4.6 permits only
+                             ;; NewSessionTicket, KeyUpdate and post-handshake
+                             ;; CertificateRequest after the handshake.  Anything
+                             ;; else MUST terminate the connection; silently
+                             ;; ignoring it also gave an attacker an unbounded
+                             ;; supply of no-op messages.
+                             (record-layer-write-alert
+                              (tls-stream-record-layer stream)
+                              +alert-level-fatal+
+                              +alert-unexpected-message+)
+                             (error 'tls-error
+                                    :message (format nil ":UNEXPECTED_MESSAGE: ~A not allowed after handshake"
+                                                     (handshake-message-name
+                                                      (handshake-message-type msg))))))))))
+            (otherwise
              (record-layer-write-alert (tls-stream-record-layer stream)
                                        +alert-level-fatal+
                                        +alert-unexpected-message+)
-             (error 'tls-error :message ":TOO_MANY_WARNING_ALERTS:"))
-           ;; Recursively try for more data
-           (tls-stream-fill-buffer stream))
-          (#.+content-type-handshake+
-           ;; Post-handshake messages (e.g., NewSessionTicket, KeyUpdate)
-           ;; TLS 1.3 allows handshake messages to span records or multiple
-           ;; messages to share one record, so we must use the reassembly buffer.
-           (when (zerop (length data))
-             (record-layer-write-alert (tls-stream-record-layer stream)
-                                       +alert-level-fatal+
-                                       +alert-decode-error+)
-             (error 'tls-decode-error
-                    :message ":DECODE_ERROR: Zero-length handshake record"))
-           ;; Append incoming data to the reassembly buffer
-           (setf (tls-stream-handshake-message-buffer stream)
-                 (handshake-buffer-append
-                  (tls-stream-handshake-message-buffer stream) data))
-           ;; Post-handshake messages (KeyUpdate, NewSessionTicket) are small;
-           ;; reject over-large advertised lengths before buffering more.
-           ;; Certificate messages are never legitimate here, so the plain
-           ;; cap applies to all message types.
-           (check-handshake-buffer-size
-            (tls-stream-handshake-message-buffer stream)
-            (tls-stream-record-layer stream)
-            :max-body-size *max-handshake-message-size*)
-           ;; Process all complete handshake messages in the buffer
-           (loop while (handshake-buffer-has-complete-message-p
-                        (tls-stream-handshake-message-buffer stream))
-                 do (multiple-value-bind (message-bytes remaining)
-                        (handshake-buffer-extract-message
-                         (tls-stream-handshake-message-buffer stream))
-                      (setf (tls-stream-handshake-message-buffer stream) remaining)
-                      (let ((msg (parse-handshake-message message-bytes)))
-                        (case (handshake-message-type msg)
-                          (#.+handshake-key-update+
-                           (tls-stream-process-key-update stream (handshake-message-body msg)))
-                          (#.+handshake-new-session-ticket+
-                           (tls-stream-process-new-session-ticket stream (handshake-message-body msg)))
-                          (otherwise
-                           nil)))))
-           ;; Recursively try to get more data
-           (tls-stream-fill-buffer stream))
-          (otherwise
-           (record-layer-write-alert (tls-stream-record-layer stream)
-                                     +alert-level-fatal+
-                                     +alert-unexpected-message+)
-           (error 'tls-error :message (format nil ":UNEXPECTED_RECORD: Unexpected content type: ~D" content-type)))))
+             (error 'tls-error
+                    :message (format nil ":UNEXPECTED_RECORD: Unexpected content type: ~D"
+                                     content-type))))))
     ;; Handle record overflow - send alert and re-signal
     (tls-record-overflow (e)
       (handler-case
@@ -582,7 +612,8 @@
                   (if (listp ech-configs)
                       ech-configs
                       (list ech-configs))))))
-      (let ((hs (perform-client-handshake
+      (let* ((*default-verify-depth* (tls-context-verify-depth context))
+             (hs (perform-client-handshake
                   record-layer
                   :hostname sni-name
                   :alpn-protocols (or alpn-protocols
@@ -704,8 +735,11 @@
     (unless private-key
       (error 'tls-error :message "Server requires a private key"))
     (setf (tls-stream-record-layer stream) record-layer)
-    ;; Perform server handshake
-    (let ((hs (perform-server-handshake
+    ;; Perform server handshake.  Bind the chain-length limit from the context
+    ;; for the duration, so mTLS client-certificate chains are bounded the same
+    ;; way server chains are on the client side.
+    (let* ((*default-verify-depth* (tls-context-verify-depth context))
+           (hs (perform-server-handshake
                record-layer
                cert-chain
                private-key
