@@ -679,11 +679,17 @@
              (ech-transcript (concat-octet-vectors
                               (client-handshake-ech-inner-ch-bytes hs)
                               modified-sh-bytes))
-             (transcript-hash (ironclad:digest-sequence :sha256 ech-transcript))
+             ;; RFC 9639 S7.2: both the transcript hash and the HKDF below use
+             ;; the NEGOTIATED cipher suite's hash, not SHA-256.
+             (ech-cipher-suite (client-handshake-selected-cipher-suite hs))
+             (transcript-hash (ironclad:digest-sequence
+                               (cipher-suite-digest ech-cipher-suite)
+                               ech-transcript))
              ;; Compute expected accept confirmation using inner ClientHello random
              (expected-confirmation (compute-ech-accept-confirmation
                                      (client-handshake-ech-inner-random hs)
-                                     transcript-hash)))
+                                     transcript-hash
+                                     ech-cipher-suite)))
         ;; Compare actual vs expected
         (setf (client-handshake-ech-accepted hs)
               (constant-time-equal actual-confirmation expected-confirmation))))
@@ -788,6 +794,16 @@
                    :state :wait-server-hello)))
         ;; Check for PSK acceptance
         (let ((psk-ext (find-extension extensions +extension-pre-shared-key+)))
+          ;; RFC 8446 S4.1.3: the client MUST abort if the server selects a PSK
+          ;; identity the client did not offer.  Silently dropping the extension
+          ;; (the previous behaviour) let a server advertise an acceptance we
+          ;; never asked for and still complete the handshake.
+          (when (and psk-ext (null (client-handshake-offered-psk hs)))
+            (record-layer-write-alert (client-handshake-record-layer hs)
+                                      +alert-level-fatal+ +alert-illegal-parameter+)
+            (error 'tls-handshake-error
+                   :message ":UNEXPECTED_EXTENSION: Server sent pre_shared_key but no PSK was offered"
+                   :state :wait-server-hello))
           (when (and psk-ext (client-handshake-offered-psk hs))
             ;; Server accepted our PSK — extension data already parsed
             (let* ((psk-data (tls-extension-data psk-ext))

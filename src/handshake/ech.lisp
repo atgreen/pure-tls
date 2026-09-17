@@ -303,11 +303,15 @@
 (defun generate-grease-ech-extension ()
   "Generate a GREASE ECH extension for use when ECH is not available.
    This helps prevent ossification by sending fake ECH data."
-  (let* ((config-id (random 256))
+  ;; Every field must come from the CSPRNG, not CL:RANDOM.  GREASE ECH exists
+  ;; to make "not using ECH" indistinguishable from "using ECH" to a passive
+  ;; observer, so predictable structure works against the one property the
+  ;; feature provides.  (Same class as the ticket_age_add fix in server.lisp.)
+  (let* ((config-id (aref (random-bytes 1) 0))
          ;; Random 32-byte enc (like X25519 public key)
          (enc (random-bytes 32))
-         ;; Random payload (typical encrypted inner CH size)
-         (payload (random-bytes (+ 128 (random 128)))))
+         ;; Random payload length in [128, 255], drawn from the CSPRNG too.
+         (payload (random-bytes (+ 128 (aref (random-bytes 1) 0)))))
     (make-ech-client-hello-outer
      :cipher-suite (make-ech-hpke-cipher-suite
                     :kdf-id +hpke-kdf-hkdf-sha256+
@@ -318,7 +322,8 @@
 
 ;;;; ECH Accept Confirmation
 
-(defun compute-ech-accept-confirmation (inner-random transcript-hash)
+(defun compute-ech-accept-confirmation (inner-random transcript-hash
+                                        &optional (cipher-suite +tls-aes-128-gcm-sha256+))
   "Compute the ECH accept confirmation value.
    This is placed in ServerHello.random[24..31] to signal ECH acceptance.
    Returns 8 bytes.
@@ -334,13 +339,19 @@
    - 0 is a string of Hash.length zero bytes (salt for HKDF-Extract)
    - ClientHelloInner.random is the 32-byte random from the inner ClientHello
    - transcript_ech_conf is the transcript hash up through modified ServerHello"
-  (let* ((hash-len 32)  ; SHA-256 output length
+  ;; RFC 9639 S7.2 ties this derivation to the NEGOTIATED cipher suite's hash,
+  ;; not to SHA-256.  Hardcoding SHA-256 meant that whenever the server chose a
+  ;; SHA-384 suite the confirmation never matched, so ECH was silently treated
+  ;; as REJECTED on every such handshake.
+  (let* ((digest (cipher-suite-digest cipher-suite))
+         (hash-len (ironclad:digest-length digest))
          ;; Step 1: HKDF-Extract(salt=zeros, ikm=inner_random)
          (zero-salt (make-octet-vector hash-len))
-         (prk (hkdf-extract zero-salt inner-random)))
+         (prk (hkdf-extract zero-salt inner-random :digest digest)))
     ;; Step 2: HKDF-Expand-Label with label "ech accept confirmation"
     ;; Note: hkdf-expand-label prepends "tls13 " to make "tls13 ech accept confirmation"
-    (hkdf-expand-label prk "ech accept confirmation" transcript-hash +ech-accept-confirmation-length+)))
+    (hkdf-expand-label prk "ech accept confirmation" transcript-hash
+                       +ech-accept-confirmation-length+ :digest digest)))
 
 ;;;; EncodedClientHelloInner (RFC 9639 Section 5.1)
 ;;;
