@@ -13,6 +13,19 @@ known limitations, references, and acknowledgements.
 
 ## [Unreleased]
 
+### Fixed
+
+- A stream asked to verify against a context whose own verify mode is
+  `+verify-none+` now falls back to the system trust store instead of reaching
+  the handshake with no roots and failing every chain with `UNKNOWN-CA`. This
+  is the shape cl+ssl callers take: the verify decision travels with the
+  stream, not the context, and drakma builds its context with
+  `+ssl-verify-none+` before asking `make-ssl-client-stream` to verify. Any
+  cl+ssl consumer that did not name an explicit CA file was affected; naming
+  one took a different branch and worked, so the same program could succeed on
+  one code path and fail on another. `make-tls-context` keeps its existing
+  policy of not auto-loading roots for a `+verify-none+` context.
+
 ## [1.15.0] - 2026-09-17
 
 Security release, from a triage of the TLS stack.

@@ -491,6 +491,22 @@ short enough for the short form."
          Install Git for Windows or set SSL_CERT_FILE environment variable.")
   (make-trust-store))
 
+(defun effective-trust-store (context verify-mode)
+  "The roots a stream should verify against, given its CONTEXT and the
+VERIFY-MODE that stream was asked for.
+
+These can disagree.  cl+ssl carries the verify decision on the stream rather
+than the context -- drakma builds its context with +ssl-verify-none+ and then
+asks MAKE-SSL-CLIENT-STREAM to verify -- so a context that does not itself
+verify never auto-loaded system roots, and the stream that does verify was
+left with nothing to anchor to and failed every chain with UNKNOWN-CA.  Fill
+that gap here, where the stream's own decision is known.  A context carrying a
+trust store keeps it, and a stream that is not verifying gets nothing."
+  (or (tls-context-trust-store context)
+      (when (and *auto-load-system-trust-store*
+                 (/= verify-mode +verify-none+))
+        (load-system-trust-store))))
+
 (defun context-with-system-trust (context)
   "Return a new context with system trust store loaded."
   (let ((new-ctx (copy-structure context)))

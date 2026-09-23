@@ -575,7 +575,7 @@ flat no matter how many records arrive."
                                           :request-context request-context))
          ;; Set up automatic socket closure on context cancellation
          (cancel-monitor (setup-close-on-cancel request-context socket))
-         (trust-store (tls-context-trust-store context))
+         (trust-store (effective-trust-store context verify))
          ;; SNI uses sni-hostname if provided, otherwise hostname
          (sni-name (or sni-hostname hostname))
          ;; Load client certificate chain from file if path provided

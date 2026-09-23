@@ -64,6 +64,34 @@ restoring the previous value afterwards."
     (let ((ctx (pure-tls:make-tls-context :verify-mode pure-tls:+verify-none+)))
       (is (zerop (context-root-count ctx))))))
 
+(test stream-verify-falls-back-to-system-roots
+  "cl+ssl puts the verify mode on the STREAM, not the context: drakma builds
+its context with +ssl-verify-none+ and then asks make-ssl-client-stream to
+verify.  A context that does not verify therefore still has to yield system
+roots to a stream that does, or every chain fails with UNKNOWN-CA."
+  (with-ssl-cert-file ((test-cert-path "self-signed-valid.pem"))
+    (let ((ctx (pure-tls:make-tls-context :verify-mode pure-tls:+verify-none+)))
+      (is (zerop (context-root-count ctx))
+          "the context itself must still not auto-load; that policy is deliberate")
+      (dolist (verify (list pure-tls:+verify-peer+ pure-tls:+verify-required+))
+        (let ((store (pure-tls::effective-trust-store ctx verify)))
+          (is (and store (plusp (length (pure-tls::trust-store-certificates store))))
+              "a stream asked to verify got no roots from a verify-none context"))))))
+
+(test stream-without-verify-gets-no-roots
+  "A stream that does not verify must not quietly acquire a trust store."
+  (with-ssl-cert-file ((test-cert-path "self-signed-valid.pem"))
+    (let ((ctx (pure-tls:make-tls-context :verify-mode pure-tls:+verify-none+)))
+      (is (null (pure-tls::effective-trust-store ctx pure-tls:+verify-none+))))))
+
+(test stream-verify-keeps-the-context-store
+  "An explicit trust store on the context wins; the fallback only fills a gap."
+  (let ((ctx (pure-tls:make-tls-context
+              :verify-mode pure-tls:+verify-peer+
+              :ca-file (namestring (test-cert-path "self-signed-valid.pem")))))
+    (is (eq (pure-tls::tls-context-trust-store ctx)
+            (pure-tls::effective-trust-store ctx pure-tls:+verify-required+)))))
+
 (test explicit-ca-file-overrides-auto-load
   "An explicit :ca-file is honored regardless of verify mode."
   (let ((ctx (pure-tls:make-tls-context
