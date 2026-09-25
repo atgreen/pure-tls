@@ -830,3 +830,40 @@
 (defun run-handshake-tests ()
   "Run all handshake tests."
   (run! 'handshake-tests))
+
+(test nil-context-means-the-default-context
+  "The cl+ssl compatibility layer hands MAKE-TLS-CLIENT-STREAM
+:context *SSL-GLOBAL-CONTEXT*, which is NIL until something initialises it.
+Every context slot read then answered NIL, silently, and the connection went
+on to fail somewhere far from the cause.  An explicit NIL has to mean the
+default context.  Here the peer accepts and hangs up, so the handshake has
+something to fail on -- and what it must not fail on is NIL being read as a
+context."
+  (let* ((listener (usocket:socket-listen "127.0.0.1" 0
+                                          :reuse-address t
+                                          :element-type '(unsigned-byte 8)))
+         (port (usocket:get-local-port listener))
+         (server (bt:make-thread
+                  (lambda ()
+                    (ignore-errors
+                     (let ((peer (usocket:socket-accept
+                                  listener :element-type '(unsigned-byte 8))))
+                       (usocket:socket-close peer))))
+                  :name "nil-context-test-server")))
+    (unwind-protect
+         (let ((socket (usocket:socket-connect "127.0.0.1" port
+                                               :element-type '(unsigned-byte 8))))
+           (unwind-protect
+                (handler-case
+                    (progn
+                      (pure-tls:make-tls-client-stream (usocket:socket-stream socket)
+                                                       :hostname "localhost"
+                                                       :context nil)
+                      (fail "handshake against a hung-up peer unexpectedly succeeded"))
+                  (type-error (e)
+                    (fail "NIL context was read as a context: ~A" e))
+                  (error ()
+                    (pass "failed on the connection, not on a NIL context")))
+             (ignore-errors (usocket:socket-close socket))))
+      (ignore-errors (bt:join-thread server))
+      (ignore-errors (usocket:socket-close listener)))))

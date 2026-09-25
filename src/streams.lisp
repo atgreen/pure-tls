@@ -532,8 +532,8 @@ flat no matter how many records arrive."
 (defun make-tls-client-stream (socket &key
                                         hostname
                                         sni-hostname
-                                        (context (ensure-default-context))
-                                        (verify (tls-context-verify-mode context))
+                                        context
+                                        (verify nil verify-supplied-p)
                                         alpn-protocols
                                         cipher-suites
                                         client-certificate
@@ -565,6 +565,15 @@ flat no matter how many records arrive."
    REQUEST-CONTEXT - Optional cl-cancel context for timeout/cancellation support.
 
    Returns the TLS stream, or a flexi-stream if EXTERNAL-FORMAT specified."
+  ;; A caller passing :context NIL means "I have no context of my own", not
+  ;; "read your settings off NIL".  The cl+ssl compatibility layer does exactly
+  ;; this whenever *SSL-GLOBAL-CONTEXT* has not been initialised, and every
+  ;; context slot read after that quietly answered NIL.
+  (unless context
+    (setf context (ensure-default-context)))
+  (setf verify (if verify-supplied-p
+                   (or verify +verify-none+)
+                   (tls-context-verify-mode context)))
   (let* ((stream (make-instance 'tls-client-stream
                                 :stream socket
                                 :close-callback close-callback
@@ -575,7 +584,7 @@ flat no matter how many records arrive."
                                           :request-context request-context))
          ;; Set up automatic socket closure on context cancellation
          (cancel-monitor (setup-close-on-cancel request-context socket))
-         (trust-store (tls-context-trust-store context))
+         (trust-store (effective-trust-store context verify))
          ;; SNI uses sni-hostname if provided, otherwise hostname
          (sni-name (or sni-hostname hostname))
          ;; Load client certificate chain from file if path provided
@@ -663,7 +672,7 @@ flat no matter how many records arrive."
         stream)))
 
 (defun make-tls-server-stream (socket &key
-                                        (context (ensure-default-context))
+                                        context
                                         certificate
                                         key
                                         (verify +verify-none+)
@@ -699,6 +708,9 @@ flat no matter how many records arrive."
    REQUEST-CONTEXT - Optional cl-cancel context for timeout/cancellation support.
 
    Returns the TLS stream, or a flexi-stream if EXTERNAL-FORMAT specified."
+  ;; As on the client: an explicit NIL context means the default one.
+  (unless context
+    (setf context (ensure-default-context)))
   (let* ((stream (make-instance 'tls-server-stream
                                 :stream socket
                                 :close-callback close-callback
