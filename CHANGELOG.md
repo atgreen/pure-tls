@@ -25,6 +25,12 @@ known limitations, references, and acknowledgements.
   one took a different branch and worked, so the same program could succeed on
   one code path and fail on another. `make-tls-context` keeps its existing
   policy of not auto-loading roots for a `+verify-none+` context.
+- `make-tls-client-stream` and `make-tls-server-stream` treat an explicit
+  `:context nil` as "use the default context". The default applied only when
+  the argument was left out, so a caller passing NIL — as the cl+ssl layer does
+  until `ensure-initialized` has run — had its context slots read off NIL and
+  got a `TYPE-ERROR` from inside the handshake rather than from the call that
+  was wrong.
 
 ## [1.15.0] - 2026-09-17
 
