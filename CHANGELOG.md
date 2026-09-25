@@ -13,6 +13,13 @@ known limitations, references, and acknowledgements.
 
 ## [Unreleased]
 
+## [1.15.1] - 2026-09-25
+
+Patch release, fixing two bugs on the cl+ssl compatibility path. Between them
+they left a cl+ssl or drakma caller unable to open a verifying connection at
+all unless it named a CA file explicitly; ocicl hit this as `ocicl update`
+failing on every platform while `ocicl list` worked.
+
 ### Fixed
 
 - A stream asked to verify against a context whose own verify mode is
@@ -1571,7 +1578,8 @@ Initial release of pure-tls, a pure Common Lisp implementation of TLS 1.3 (RFC 8
 [CL-SEC-2026-0219]: https://cl-sec.github.io/cl-sec-advisories/#CL-SEC-2026-0219
 [CL-SEC-2026-0220]: https://cl-sec.github.io/cl-sec-advisories/#CL-SEC-2026-0220
 [CL-SEC-2026-0221]: https://cl-sec.github.io/cl-sec-advisories/#CL-SEC-2026-0221
-[Unreleased]: https://github.com/atgreen/pure-tls/compare/v1.15.0...HEAD
+[Unreleased]: https://github.com/atgreen/pure-tls/compare/v1.15.1...HEAD
+[1.15.1]: https://github.com/atgreen/pure-tls/compare/v1.15.0...v1.15.1
 [1.15.0]: https://github.com/atgreen/pure-tls/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/atgreen/pure-tls/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/atgreen/pure-tls/compare/v1.12.0...v1.13.0
