@@ -19,9 +19,6 @@
 
 (in-package #:pure-tls/test)
 
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (require :sb-posix))
-
 (def-suite trust-store-tests
   :description "System trust-store auto-loading in make-tls-context")
 
@@ -29,15 +26,18 @@
 
 (defmacro with-ssl-cert-file ((path) &body body)
   "Run BODY with the SSL_CERT_FILE environment variable bound to PATH,
-restoring the previous value afterwards."
+restoring the previous value afterwards.
+
+Uses (SETF UIOP:GETENV) rather than SB-POSIX so this file loads on any
+implementation ASDF supports: UIOP's setf expander already unsets the variable
+when the new value is NIL, which is exactly what restoring an absent
+SSL_CERT_FILE needs."
   (let ((old (gensym)) (p (gensym)))
     `(let ((,old (uiop:getenv "SSL_CERT_FILE"))
            (,p (namestring ,path)))
        (unwind-protect
-            (progn (sb-posix:setenv "SSL_CERT_FILE" ,p 1) ,@body)
-         (if ,old
-             (sb-posix:setenv "SSL_CERT_FILE" ,old 1)
-             (sb-posix:unsetenv "SSL_CERT_FILE"))))))
+            (progn (setf (uiop:getenv "SSL_CERT_FILE") ,p) ,@body)
+         (setf (uiop:getenv "SSL_CERT_FILE") ,old)))))
 
 (defun context-root-count (ctx)
   "Number of trusted roots loaded into CTX (0 when the trust store is NIL)."
