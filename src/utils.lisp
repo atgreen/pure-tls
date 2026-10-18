@@ -312,7 +312,8 @@ the same length.  Selection is performed byte-by-byte without branching."
   #+abcl (ext:getenv name)
   #+cmucl (rest (assoc name ext:*environment-list* :test #'string=))
   #+clasp (ext:getenv name)
-  #-(or sbcl ccl ecl clisp allegro lispworks abcl cmucl clasp)
+  #+egcl (egcl-ext:getenv name)
+  #-(or sbcl ccl ecl clisp allegro lispworks abcl cmucl clasp egcl)
   (error "get-environment-variable not implemented for this Lisp"))
 
 ;;;; XOR Operations
