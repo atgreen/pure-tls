@@ -290,13 +290,18 @@ the same length.  Selection is performed byte-by-byte without branching."
 
 ;;;; String Encoding
 
+;;; EGCL's runtime codec is far faster than flexi-streams' generic one there:
+;;; decoding a 225 KB CA bundle took 12 s through flexi-streams.
+
 (defun string-to-octets (string)
   "Convert a string to an octet vector using UTF-8 encoding."
-  (flexi-streams:string-to-octets string :external-format :utf-8))
+  #+egcl (egcl-ext:string-to-octets string :external-format :utf-8)
+  #-egcl (flexi-streams:string-to-octets string :external-format :utf-8))
 
 (defun octets-to-string (octets)
   "Convert an octet vector to a string using UTF-8 encoding."
-  (flexi-streams:octets-to-string octets :external-format :utf-8))
+  #+egcl (egcl-ext:octets-to-string octets :external-format :utf-8)
+  #-egcl (flexi-streams:octets-to-string octets :external-format :utf-8))
 
 ;;;; Environment Variables
 
