@@ -388,8 +388,43 @@ short enough for the short form."
        (= (asn1-node-class node) +asn1-class-universal+)
        (= (asn1-node-tag node) +asn1-octet-string+)))
 
+(defvar *trust-store-cache* (make-hash-table :test 'equal)
+  "Trust stores built from CA files and directories, keyed by
+TRUST-STORE-CACHE-KEY.")
+
+(defvar *trust-store-cache-lock* (bt:make-lock "pure-tls trust-store cache"))
+
+(defun trust-store-cache-key (ca-file ca-directory)
+  "The sources' true names and write dates, or NIL when they cannot be read
+(the uncached path then reports the problem)."
+  (flet ((source (path)
+           (when path
+             (let ((true (truename path)))
+               (list (namestring true) (file-write-date true))))))
+    (ignore-errors (list (source ca-file) (source ca-directory)))))
+
 (defun make-trust-store-from-sources (ca-file ca-directory)
-  "Create a trust store from a CA file and/or directory."
+  "Create a trust store from a CA file and/or directory.
+
+   The result is cached per source and write date.  Drakma, through the
+   cl+ssl compatibility layer, makes a new context for every connection, and
+   parsing a system CA bundle of ~150 certificates each time can outlast the
+   peer's patience: the connection sits idle between the TCP connect and the
+   ClientHello while the bundle is parsed.  Trust stores are never modified
+   after they are built, so contexts can share one."
+  (let ((key (trust-store-cache-key ca-file ca-directory)))
+    (if (null key)
+        (%make-trust-store-from-sources ca-file ca-directory)
+        (or (bt:with-lock-held (*trust-store-cache-lock*)
+              (gethash key *trust-store-cache*))
+            (let ((store (%make-trust-store-from-sources ca-file ca-directory)))
+              (when (trust-store-certificates store)
+                (bt:with-lock-held (*trust-store-cache-lock*)
+                  (setf (gethash key *trust-store-cache*) store)))
+              store)))))
+
+(defun %make-trust-store-from-sources (ca-file ca-directory)
+  "Build a trust store from a CA file and/or directory, uncached."
   (let ((certs nil))
     ;; Load from file
     (when ca-file

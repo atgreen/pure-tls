@@ -98,3 +98,47 @@ roots to a stream that does, or every chain fails with UNKNOWN-CA."
               :verify-mode pure-tls:+verify-peer+
               :ca-file (namestring (test-cert-path "self-signed-valid.pem")))))
     (is (plusp (context-root-count ctx)))))
+
+;;; Trust stores built from CA files are cached per source and write date.
+;;; Drakma makes a new context for every connection, so without the cache each
+;;; connection re-parsed the whole CA bundle before its ClientHello.
+
+(defmacro with-ca-file-copy ((var) &body body)
+  "Run BODY with VAR bound to a fresh copy of the self-signed fixture."
+  `(uiop:with-temporary-file (:pathname ,var :type "pem")
+     (uiop:copy-file (test-cert-path "self-signed-valid.pem") ,var)
+     ,@body))
+
+;;; Portable: FILE-WRITE-DATE has one-second resolution, so wait for the next
+;;; second before rewriting the file to be sure it gets a new write date.
+(defun rewrite-with-new-write-date (path)
+  (let ((before (file-write-date path)))
+    (loop do (sleep 0.25)
+             (uiop:copy-file (test-cert-path "self-signed-valid.pem") path)
+          until (/= before (file-write-date path)))))
+
+(test trust-store-cached-per-source
+  "The same CA file yields the same trust store object."
+  (with-ca-file-copy (path)
+    (let ((a (pure-tls::make-trust-store-from-sources path nil))
+          (b (pure-tls::make-trust-store-from-sources path nil)))
+      (is (plusp (length (pure-tls::trust-store-certificates a))))
+      (is (eq a b)))))
+
+(test trust-store-rebuilt-when-source-changes
+  "A new write date on the CA file builds a new trust store."
+  (with-ca-file-copy (path)
+    (let ((a (pure-tls::make-trust-store-from-sources path nil)))
+      (rewrite-with-new-write-date path)
+      (let ((b (pure-tls::make-trust-store-from-sources path nil)))
+        (is (not (eq a b)))
+        (is (plusp (length (pure-tls::trust-store-certificates b))))))))
+
+(test empty-trust-store-not-cached
+  "A source that yields no certificates is not cached, so it fails closed
+until it holds some."
+  (uiop:with-temporary-file (:pathname path :type "pem")
+    (is (zerop (length (pure-tls::trust-store-certificates
+                        (pure-tls::make-trust-store-from-sources path nil)))))
+    (is (null (gethash (pure-tls::trust-store-cache-key path nil)
+                       pure-tls::*trust-store-cache*)))))

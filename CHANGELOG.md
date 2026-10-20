@@ -13,6 +13,18 @@ known limitations, references, and acknowledgements.
 
 ## [Unreleased]
 
+### Fixed
+
+- A trust store built from a CA file or directory is cached, keyed by the
+  source's true name and write date, and shared by every context that names
+  it. drakma, through the cl+ssl compatibility layer, makes a new context for
+  every connection, so each HTTPS request re-parsed the whole CA bundle
+  between the TCP connect and the ClientHello. That is quick on SBCL, but on
+  slower implementations it took long enough that a peer behind an
+  intercepting proxy closed the connection before the handshake began. A
+  changed source is re-read, and a source that yields no certificates is not
+  cached, so it still fails closed every time.
+
 ## [1.15.1] - 2026-09-25
 
 Patch release, fixing two bugs on the cl+ssl compatibility path. Between them
