@@ -13,6 +13,12 @@ known limitations, references, and acknowledgements.
 
 ## [Unreleased]
 
+## [1.15.2] - 2026-10-20
+
+Patch release. A trust store built from a CA file is now parsed once and
+shared, instead of being re-parsed for every connection a cl+ssl or drakma
+caller makes.
+
 ### Fixed
 
 - A trust store built from a CA file or directory is cached, keyed by the
@@ -1590,7 +1596,8 @@ Initial release of pure-tls, a pure Common Lisp implementation of TLS 1.3 (RFC 8
 [CL-SEC-2026-0219]: https://cl-sec.github.io/cl-sec-advisories/#CL-SEC-2026-0219
 [CL-SEC-2026-0220]: https://cl-sec.github.io/cl-sec-advisories/#CL-SEC-2026-0220
 [CL-SEC-2026-0221]: https://cl-sec.github.io/cl-sec-advisories/#CL-SEC-2026-0221
-[Unreleased]: https://github.com/atgreen/pure-tls/compare/v1.15.1...HEAD
+[Unreleased]: https://github.com/atgreen/pure-tls/compare/v1.15.2...HEAD
+[1.15.2]: https://github.com/atgreen/pure-tls/compare/v1.15.1...v1.15.2
 [1.15.1]: https://github.com/atgreen/pure-tls/compare/v1.15.0...v1.15.1
 [1.15.0]: https://github.com/atgreen/pure-tls/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/atgreen/pure-tls/compare/v1.13.0...v1.14.0
