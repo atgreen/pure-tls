@@ -20,12 +20,12 @@
 
 (defun make-octet-vector (size &key (initial-element 0))
   "Create a new octet vector of the specified SIZE."
-  (make-array size :element-type 'octet :initial-element initial-element))
+  (make-array size :element-type '(unsigned-byte 8) :initial-element initial-element))
 
 (defun octet-vector (&rest octets)
   "Create an octet vector from the given OCTETS."
   (make-array (length octets)
-              :element-type 'octet
+              :element-type '(unsigned-byte 8)
               :initial-contents octets))
 
 (defun concat-octet-vectors (&rest vectors)
@@ -360,14 +360,14 @@ Returns DST.  Avoids allocation when a destination buffer is available."
   "Convert an integer to an octet vector (big-endian).
    If MIN-LENGTH is specified, pad with leading zeros if necessary."
   (if (zerop integer)
-      (make-array (max 1 min-length) :element-type 'octet :initial-element 0)
+      (make-array (max 1 min-length) :element-type '(unsigned-byte 8) :initial-element 0)
       (let ((octets nil))
         (loop while (plusp integer)
               do (push (ldb (byte 8 0) integer) octets)
                  (setf integer (ash integer -8)))
         (let* ((octet-vec (coerce octets '(vector (unsigned-byte 8))))
                (result (make-array (max (length octet-vec) min-length)
-                                   :element-type 'octet
+                                   :element-type '(unsigned-byte 8)
                                    :initial-element 0)))
           (replace result octet-vec :start1 (- (length result) (length octet-vec)))
           result))))
