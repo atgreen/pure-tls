@@ -98,3 +98,46 @@ roots to a stream that does, or every chain fails with UNKNOWN-CA."
               :verify-mode pure-tls:+verify-peer+
               :ca-file (namestring (test-cert-path "self-signed-valid.pem")))))
     (is (plusp (context-root-count ctx)))))
+
+;;; Trust stores built from CA files are cached per source and write date.
+;;; Drakma makes a new context for every connection, so without the cache each
+;;; connection re-parsed the whole CA bundle before its ClientHello.
+
+(defmacro with-ca-file-copy ((var) &body body)
+  "Run BODY with VAR bound to a fresh copy of the self-signed fixture."
+  `(uiop:with-temporary-file (:pathname ,var :type "pem")
+     (uiop:copy-file (test-cert-path "self-signed-valid.pem") ,var)
+     ,@body))
+
+(defun set-write-date (path universal-time)
+  (let ((unix (- universal-time (encode-universal-time 0 0 0 1 1 1970 0))))
+    (sb-posix:utime (namestring path) unix unix)))
+
+(test trust-store-cached-per-source
+  "The same CA file yields the same trust store object."
+  (with-ca-file-copy (path)
+    (let ((a (pure-tls::make-trust-store-from-sources path nil))
+          (b (pure-tls::make-trust-store-from-sources path nil)))
+      (is (plusp (length (pure-tls::trust-store-certificates a))))
+      (is (eq a b)))))
+
+(test trust-store-rebuilt-when-source-changes
+  "A new write date on the CA file builds a new trust store."
+  (with-ca-file-copy (path)
+    (let ((a (pure-tls::make-trust-store-from-sources path nil)))
+      (set-write-date path (+ (file-write-date path) 10))
+      (let ((b (pure-tls::make-trust-store-from-sources path nil)))
+        (is (not (eq a b)))
+        (is (plusp (length (pure-tls::trust-store-certificates b))))))))
+
+(test empty-trust-store-not-cached
+  "A source that yields no certificates is not cached, so it fails closed
+until it holds some and then works without a change of write date."
+  (uiop:with-temporary-file (:pathname path :type "pem")
+    (let ((date (file-write-date path)))
+      (is (zerop (length (pure-tls::trust-store-certificates
+                          (pure-tls::make-trust-store-from-sources path nil)))))
+      (uiop:copy-file (test-cert-path "self-signed-valid.pem") path)
+      (set-write-date path date)
+      (is (plusp (length (pure-tls::trust-store-certificates
+                          (pure-tls::make-trust-store-from-sources path nil))))))))
