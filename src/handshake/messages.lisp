@@ -526,7 +526,7 @@
         (let* ((old-len (if buffer (length buffer) 0))
                (needed (+ old-len data-len))
                (new (make-array (max needed 64)
-                                :element-type 'octet
+                                :element-type '(unsigned-byte 8)
                                 :adjustable t
                                 :fill-pointer needed)))
           (when buffer
