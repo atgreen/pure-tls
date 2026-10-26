@@ -19,6 +19,7 @@
 
 (in-package #:pure-tls/test)
 
+#-egcl
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (require :sb-posix))
 
@@ -34,10 +35,15 @@ restoring the previous value afterwards."
     `(let ((,old (uiop:getenv "SSL_CERT_FILE"))
            (,p (namestring ,path)))
        (unwind-protect
-            (progn (sb-posix:setenv "SSL_CERT_FILE" ,p 1) ,@body)
+            (progn
+              #+egcl (egcl-ext:setenv "SSL_CERT_FILE" ,p t)
+              #-egcl (sb-posix:setenv "SSL_CERT_FILE" ,p 1)
+              ,@body)
          (if ,old
-             (sb-posix:setenv "SSL_CERT_FILE" ,old 1)
-             (sb-posix:unsetenv "SSL_CERT_FILE"))))))
+             #+egcl (egcl-ext:setenv "SSL_CERT_FILE" ,old t)
+             #-egcl (sb-posix:setenv "SSL_CERT_FILE" ,old 1)
+             #+egcl (egcl-ext:unsetenv "SSL_CERT_FILE")
+             #-egcl (sb-posix:unsetenv "SSL_CERT_FILE"))))))
 
 (defun context-root-count (ctx)
   "Number of trusted roots loaded into CTX (0 when the trust store is NIL)."
