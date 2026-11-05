@@ -13,6 +13,22 @@ known limitations, references, and acknowledgements.
 
 ## [Unreleased]
 
+### Fixed
+
+- A CA directory named without a trailing slash is read. SSL_CERT_DIR and
+  OpenSSL's CApath conventionally name one that way, and Guix System sets
+  `SSL_CERT_DIR=/etc/ssl/certs`, but `make-trust-store-from-directory`
+  merged `*.pem` and `*.crt` into the name as into a file's and so listed
+  the parent directory. The trust store came out empty, and with
+  SSL_CERT_DIR set and SSL_CERT_FILE not, every verifying connection failed
+  with UNKNOWN-CA. The same held for `:ca-directory`, the cl+ssl layer's
+  `:verify-location`, and the `/etc/ssl/certs` fallback.
+- The trust store built from SSL_CERT_DIR, or from a default certificate
+  directory, is cached like one from a CA file (1.15.2), keyed by the
+  directory's true name and write date. It was rebuilt for every context,
+  reading every certificate in the directory before each connection's
+  ClientHello.
+
 ## [1.15.2] - 2026-10-20
 
 Patch release. A trust store built from a CA file is now parsed once and

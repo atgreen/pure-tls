@@ -843,14 +843,17 @@ TRUST-ANCHOR-MODE controls how trusted-roots interact with system store:
   (certificates nil :type list))
 
 (defun make-trust-store-from-directory (path)
-  "Load all certificates from a directory into a trust store."
-  (let ((certs nil))
-    (dolist (file (directory (merge-pathnames "*.pem" path)))
+  "Load all certificates from the directory PATH into a trust store.
+   PATH may name the directory without a trailing slash, as SSL_CERT_DIR
+   and OpenSSL's CApath conventionally do."
+  (let ((dir (uiop:ensure-directory-pathname path))
+        (certs nil))
+    (dolist (file (directory (merge-pathnames "*.pem" dir)))
       (handler-case
           (push (parse-certificate-from-file file) certs)
         (error (e)
           (warn "Failed to load certificate ~A: ~A" file e))))
-    (dolist (file (directory (merge-pathnames "*.crt" path)))
+    (dolist (file (directory (merge-pathnames "*.crt" dir)))
       (handler-case
           (push (parse-certificate-from-file file) certs)
         (error (e)

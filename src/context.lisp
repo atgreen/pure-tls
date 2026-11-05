@@ -461,7 +461,7 @@ TRUST-STORE-CACHE-KEY.")
   (let ((cert-dir (get-environment-variable "SSL_CERT_DIR")))
     (when (and cert-dir (probe-file cert-dir))
       (return-from load-system-trust-store
-        (make-trust-store-from-directory cert-dir))))
+        (make-trust-store-from-sources nil cert-dir))))
   ;; 3. Platform-specific paths
   (if (windows-p)
       (load-windows-trust-store)
@@ -488,7 +488,7 @@ TRUST-STORE-CACHE-KEY.")
     (dolist (dir dirs)
       (when (probe-file dir)
         (return-from load-unix-trust-store
-          (make-trust-store-from-directory dir)))))
+          (make-trust-store-from-sources nil dir)))))
   ;; No system store found
   (warn "Could not find system CA certificates. Set SSL_CERT_FILE environment variable or use :ca-file parameter.")
   (make-trust-store))
