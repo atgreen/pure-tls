@@ -199,3 +199,12 @@ a fresh directory holding a copy of the self-signed fixture."
     (with-environment (("SSL_CERT_FILE" nil) ("SSL_CERT_DIR" dir))
       (let ((ctx (pure-tls:make-tls-context :verify-mode pure-tls:+verify-required+)))
         (is (plusp (context-root-count ctx)))))))
+
+(test ssl-cert-dir-trust-store-cached
+  "SSL_CERT_DIR's trust store is built once and shared, as a CA file's is."
+  (with-ca-directory (dir)
+    (with-environment (("SSL_CERT_FILE" nil) ("SSL_CERT_DIR" dir))
+      (let ((a (pure-tls::load-system-trust-store))
+            (b (pure-tls::load-system-trust-store)))
+        (is (plusp (length (pure-tls::trust-store-certificates a))))
+        (is (eq a b))))))

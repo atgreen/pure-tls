@@ -23,6 +23,11 @@ known limitations, references, and acknowledgements.
   SSL_CERT_DIR set and SSL_CERT_FILE not, every verifying connection failed
   with UNKNOWN-CA. The same held for `:ca-directory`, the cl+ssl layer's
   `:verify-location`, and the `/etc/ssl/certs` fallback.
+- The trust store built from SSL_CERT_DIR, or from a default certificate
+  directory, is cached like one from a CA file (1.15.2), keyed by the
+  directory's true name and write date. It was rebuilt for every context,
+  reading every certificate in the directory before each connection's
+  ClientHello.
 
 ## [1.15.2] - 2026-10-20
 
