@@ -13,6 +13,12 @@ known limitations, references, and acknowledgements.
 
 ## [Unreleased]
 
+## [1.15.3] - 2026-11-06
+
+Security patch release. The DER parser no longer loops to heap exhaustion on a
+constructed element whose declared length runs past the end of the input, so a
+malformed peer certificate can no longer take the process down.
+
 ### Security
 
 - The DER parser no longer loops to heap exhaustion on a constructed element
@@ -1610,7 +1616,8 @@ Initial release of pure-tls, a pure Common Lisp implementation of TLS 1.3 (RFC 8
 [CL-SEC-2026-0219]: https://cl-sec.github.io/cl-sec-advisories/#CL-SEC-2026-0219
 [CL-SEC-2026-0220]: https://cl-sec.github.io/cl-sec-advisories/#CL-SEC-2026-0220
 [CL-SEC-2026-0221]: https://cl-sec.github.io/cl-sec-advisories/#CL-SEC-2026-0221
-[Unreleased]: https://github.com/atgreen/pure-tls/compare/v1.15.2...HEAD
+[Unreleased]: https://github.com/atgreen/pure-tls/compare/v1.15.3...HEAD
+[1.15.3]: https://github.com/atgreen/pure-tls/compare/v1.15.2...v1.15.3
 [1.15.2]: https://github.com/atgreen/pure-tls/compare/v1.15.1...v1.15.2
 [1.15.1]: https://github.com/atgreen/pure-tls/compare/v1.15.0...v1.15.1
 [1.15.0]: https://github.com/atgreen/pure-tls/compare/v1.14.0...v1.15.0
