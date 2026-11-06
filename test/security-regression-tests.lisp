@@ -1315,6 +1315,46 @@ rejection paths send a fatal alert before signalling."
     (is (pure-tls::parse-der ok) "A well-formed nested structure must parse")
     (signals pure-tls:tls-decode-error (pure-tls::parse-der overrun))))
 
+;;;; ---------------------------------------------------------------------------
+;;;; Finding: parse-der loops to heap exhaustion on a constructed length that
+;;;; overruns the input (CWE-835, GitHub #30, remote DoS).
+;;;;
+;;;; PARSE-DER-CONTENTS computed END-POS from the declared length without
+;;;; checking it against the buffer.  When a constructed element declared more
+;;;; content than remained, END-POS sat past the buffer end; once the buffer was
+;;;; exhausted PARSE-DER-NODE returned NIL without advancing the position, so the
+;;;; loop pushed NIL every iteration and grew the node list until SBCL died with
+;;;; 'Heap exhausted, game over' -- fatal and uncatchable.  pure-tls parses
+;;;; peer-supplied DER during the handshake before any verification, so a
+;;;; malformed certificate (or a client cert sent to a server requesting one)
+;;;; reached this with no authentication.
+;;;;
+;;;; Secure behaviour: a declared length larger than the remaining input must
+;;;; raise TLS-DECODE-ERROR, and a long-form length may not use more than
+;;;; +ASN1-MAX-LENGTH-OCTETS+ octets.
+;;;; ---------------------------------------------------------------------------
+
+(test der-constructed-length-may-not-overrun-input
+  "A constructed length past the end of the input must error, not loop forever."
+  ;; SEQUENCE claiming 256 content bytes (82 01 00), then only INTEGER 5 (3
+  ;; bytes).  The children exhaust the buffer while END-POS is still 256 bytes
+  ;; ahead.  Before the fix this pushed NIL until the heap was gone; reaching
+  ;; the SIGNALS check at all proves the process survived.
+  (let ((overrun (make-array 7 :element-type '(unsigned-byte 8)
+                               :initial-contents '(#x30 #x82 #x01 #x00 #x02 #x01 #x05))))
+    (signals pure-tls:tls-decode-error (pure-tls::parse-der overrun)))
+  ;; A simple short-form overrun: SEQUENCE declares 5 content bytes, none follow.
+  (let ((short (make-array 2 :element-type '(unsigned-byte 8)
+                             :initial-contents '(#x30 #x05))))
+    (signals pure-tls:tls-decode-error (pure-tls::parse-der short))))
+
+(test der-long-form-length-octets-are-capped
+  "A long-form length using more than the cap of octets must be refused."
+  ;; 0x30 SEQUENCE, 0x85 = long form with 5 length octets (> +ASN1-MAX-LENGTH-OCTETS+).
+  (let ((too-many (make-array 7 :element-type '(unsigned-byte 8)
+                                :initial-contents '(#x30 #x85 #x00 #x00 #x00 #x00 #x01))))
+    (signals pure-tls:tls-decode-error (pure-tls::parse-der too-many))))
+
 (test der-oid-decoding-is-strict-and-complete
   "OID decoding must handle multi-byte first subidentifiers and reject padding."
   ;; 2.5.29.19 (basicConstraints) = 55 1D 13

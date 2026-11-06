@@ -42,6 +42,14 @@ fatal and uncatchable - it kills the image, not the connection - so the bound
 has to be enforced here rather than handled by a caller.  RFC 5280 structures
 nest well under 20 levels; 64 leaves generous headroom.")
 
+(defconstant +asn1-max-length-octets+ 4
+  "Maximum number of long-form length octets accepted when parsing DER.
+The long form permits up to 127 octets, so a peer can declare a length as an
+arbitrarily large bignum.  Four octets express every length a real X.509
+structure needs (up to ~4GB) while keeping the declared length a fixnum, so a
+hostile length can be compared against the buffer cheaply rather than driving
+allocation.  DER implementations commonly cap here for the same reason.")
+
 ;;;; ASN.1 Node Structure
 
 (defstruct asn1-node
@@ -117,16 +125,30 @@ exhaust the control stack."
        nil)
       ;; Long form
       (t
-       (let ((num-octets (logand first-byte #x7f))
-             (length 0))
-         (dotimes (i num-octets)
-           (setf length (logior (ash length 8) (buffer-read-octet buf))))
-         length)))))
+       (let ((num-octets (logand first-byte #x7f)))
+         (when (> num-octets +asn1-max-length-octets+)
+           (error 'tls-decode-error
+                  :message (format nil ":DECODE_ERROR: DER length field uses ~D octets (max ~D)"
+                                   num-octets +asn1-max-length-octets+)))
+         (let ((length 0))
+           (dotimes (i num-octets)
+             (setf length (logior (ash length 8) (buffer-read-octet buf))))
+           length))))))
 
 (defun parse-der-contents (buf length &optional (depth 0))
   "Parse the contents of a constructed type.
 DEPTH is the nesting level of the enclosing node; children are parsed one
 level deeper (see +ASN1-MAX-DEPTH+)."
+  ;; The declared length must fit in what is left of the buffer.  Without this,
+  ;; a length that overruns the input put END-POS past the buffer end: once the
+  ;; buffer was exhausted PARSE-DER-NODE returned NIL without advancing the
+  ;; position, so the loop pushed NIL forever and grew the list until the heap
+  ;; was exhausted (fatal and uncatchable on SBCL).  Checking here keeps END-POS
+  ;; inside the buffer, which guarantees each iteration consumes at least the
+  ;; next identifier octet and the loop terminates.
+  (when (> length (buffer-remaining buf))
+    (error 'tls-decode-error
+           :message ":DECODE_ERROR: DER constructed length runs past the end of the input"))
   (let ((end-pos (+ (tls-buffer-position buf) length))
         (nodes nil))
     (loop while (< (tls-buffer-position buf) end-pos)
