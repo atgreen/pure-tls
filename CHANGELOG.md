@@ -13,6 +13,20 @@ known limitations, references, and acknowledgements.
 
 ## [Unreleased]
 
+### Security
+
+- The DER parser no longer loops to heap exhaustion on a constructed element
+  whose declared length runs past the end of the input (GitHub #30). Such a
+  length left `parse-der-contents` with an end position beyond the buffer;
+  once the input was exhausted, `parse-der-node` returned NIL without
+  advancing, so the loop grew an unbounded list of NILs until SBCL died with a
+  fatal, uncatchable "Heap exhausted". pure-tls parses peer-supplied DER during
+  the handshake before any verification, so a malformed certificate — or a
+  client certificate sent to a server that requests one — could take the
+  process down with no authentication. A constructed length larger than the
+  remaining input now raises `tls-decode-error`, and a long-form length may use
+  at most four octets.
+
 ## [1.15.2] - 2026-10-20
 
 Patch release. A trust store built from a CA file is now parsed once and

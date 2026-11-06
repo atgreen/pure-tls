@@ -302,18 +302,14 @@ the same length.  Selection is performed byte-by-byte without branching."
 
 (defun get-environment-variable (name)
   "Get an environment variable value, or NIL if not set.
-   Portable across multiple Common Lisp implementations."
-  #+sbcl (sb-ext:posix-getenv name)
-  #+ccl (ccl:getenv name)
-  #+ecl (ext:getenv name)
-  #+clisp (ext:getenv name)
-  #+allegro (sys:getenv name)
-  #+lispworks (lispworks:environment-variable name)
-  #+abcl (ext:getenv name)
-  #+cmucl (rest (assoc name ext:*environment-list* :test #'string=))
-  #+clasp (ext:getenv name)
-  #-(or sbcl ccl ecl clisp allegro lispworks abcl cmucl clasp)
-  (error "get-environment-variable not implemented for this Lisp"))
+   Portable across multiple Common Lisp implementations.
+
+   This was a per-implementation table whose fallback arm signalled
+   \"not implemented for this Lisp\", which closed the door on every
+   implementation not named in it. UIOP:GETENV is that same table, maintained by
+   ASDF, and pure-tls already calls it directly elsewhere (see
+   FETCH-CRL-VIA-PROXY in src/x509/crl.lisp)."
+  (uiop:getenv name))
 
 ;;;; XOR Operations
 
