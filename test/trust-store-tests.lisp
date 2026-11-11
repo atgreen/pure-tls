@@ -111,10 +111,17 @@ roots to a stream that does, or every chain fails with UNKNOWN-CA."
 
 ;;; Portable: FILE-WRITE-DATE has one-second resolution, so wait for the next
 ;;; second before rewriting the file to be sure it gets a new write date.
-(defun rewrite-with-new-write-date (path)
-  (let ((before (file-write-date path)))
+(defun rewrite-with-new-write-date (path &optional (fixture "self-signed-valid.pem"))
+  "Rewrite PATH in place with the contents of FIXTURE.  In place: unlike
+UIOP:COPY-FILE, which renames the old file away and creates a new one, this
+leaves the entries of PATH's directory, and so its write date, as they were."
+  (let ((before (file-write-date path))
+        (bytes (alexandria:read-file-into-byte-vector (test-cert-path fixture))))
     (loop do (sleep 0.25)
-             (uiop:copy-file (test-cert-path "self-signed-valid.pem") path)
+             (with-open-file (out path :direction :output
+                                       :element-type '(unsigned-byte 8)
+                                       :if-exists :supersede)
+               (write-sequence bytes out))
           until (/= before (file-write-date path)))))
 
 (test trust-store-cached-per-source
@@ -208,3 +215,28 @@ a fresh directory holding a copy of the self-signed fixture."
             (b (pure-tls::load-system-trust-store)))
         (is (plusp (length (pure-tls::trust-store-certificates a))))
         (is (eq a b))))))
+
+;;; A CA directory's own write date changes when an entry is added, removed
+;;; or renamed, but not when a certificate file in it is rewritten in place,
+;;; so a cache keyed on the directory alone kept trusting a rotated-out root,
+;;; and kept rejecting its replacement, until the process restarted.
+
+(test ca-directory-trust-store-rebuilt-when-certificate-rewritten
+  "Rewriting a certificate file in a CA directory in place builds a new trust
+store, holding the new certificate."
+  (with-ca-directory (dir)
+    (let ((file (merge-pathnames "self-signed-valid.pem"
+                                 (uiop:ensure-directory-pathname dir)))
+          (dir-date (file-write-date dir))
+          (a (pure-tls::make-trust-store-from-sources nil dir)))
+      (rewrite-with-new-write-date file "resumption-ca.pem")
+      (is (= dir-date (file-write-date dir))
+          "the rewrite changed the directory's write date, so this test no ~
+           longer exercises an in-place rewrite")
+      (let ((b (pure-tls::make-trust-store-from-sources nil dir)))
+        (is (not (eq a b)))
+        (is (equalp (list (pure-tls::x509-certificate-raw-der
+                           (pure-tls::parse-certificate-from-file
+                            (test-cert-path "resumption-ca.pem"))))
+                    (mapcar #'pure-tls::x509-certificate-raw-der
+                            (pure-tls::trust-store-certificates b))))))))

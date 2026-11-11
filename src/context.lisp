@@ -395,18 +395,32 @@ TRUST-STORE-CACHE-KEY.")
 (defvar *trust-store-cache-lock* (bt:make-lock "pure-tls trust-store cache"))
 
 (defun trust-store-cache-key (ca-file ca-directory)
-  "The sources' true names and write dates, or NIL when they cannot be read
-(the uncached path then reports the problem)."
+  "The sources' true names and write dates, and those of each certificate
+file in CA-DIRECTORY, or NIL when a source cannot be read (the uncached path
+then reports the problem).  A directory's own write date changes when an
+entry is added, removed or renamed, but not when a certificate file in it is
+rewritten in place, as rotating a root may do."
   (flet ((source (path)
-           (when path
-             (let ((true (truename path)))
-               (list (namestring true) (file-write-date true))))))
-    (ignore-errors (list (source ca-file) (source ca-directory)))))
+           (let ((true (truename path)))
+             (list (namestring true) (file-write-date true))))
+         (entry (file)
+           ;; DIRECTORY gives true names already.  A file removed between
+           ;; the listing and this gets a NIL date rather than leaving the
+           ;; whole directory uncached; the next key, without it, differs.
+           (list (namestring file) (ignore-errors (file-write-date file)))))
+    (ignore-errors
+     (list (and ca-file (source ca-file))
+           (and ca-directory
+                (cons (source ca-directory)
+                      (sort (mapcar #'entry
+                                    (trust-store-directory-files ca-directory))
+                            #'string< :key #'first)))))))
 
 (defun make-trust-store-from-sources (ca-file ca-directory)
   "Create a trust store from a CA file and/or directory.
 
-   The result is cached per source and write date.  Drakma, through the
+   The result is cached per source and write date, a directory's including
+   those of its certificate files (TRUST-STORE-CACHE-KEY).  Drakma, through the
    cl+ssl compatibility layer, makes a new context for every connection, and
    parsing a system CA bundle of ~150 certificates each time can outlast the
    peer's patience: the connection sits idle between the TCP connect and the

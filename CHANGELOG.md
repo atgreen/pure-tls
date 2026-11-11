@@ -25,9 +25,11 @@ known limitations, references, and acknowledgements.
   `:verify-location`, and the `/etc/ssl/certs` fallback.
 - The trust store built from SSL_CERT_DIR, or from a default certificate
   directory, is cached like one from a CA file (1.15.2), keyed by the
-  directory's true name and write date. It was rebuilt for every context,
-  reading every certificate in the directory before each connection's
-  ClientHello.
+  directory's true name and write date and by the name and write date of
+  each `*.pem` and `*.crt` file in it, so a certificate rewritten in place,
+  which leaves the directory's write date alone, is read again. It was
+  rebuilt for every context, reading every certificate in the directory
+  before each connection's ClientHello.
 
 ## [1.15.2] - 2026-10-20
 
