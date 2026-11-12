@@ -15,6 +15,17 @@ known limitations, references, and acknowledgements.
 
 ### Fixed
 
+- `stream-read-sequence` on a `tls-stream` now blocks until the requested
+  range is filled or the connection closes, per the gray-streams contract,
+  instead of returning a short read as soon as the underlying socket was
+  momentarily drained. The early return (a `listen` check after the first
+  buffer fill) meant a caller that trusts the returned length — dexador reads
+  a `Content-Length` body with one `read-sequence` into a fixed buffer — got a
+  zero-filled tail whenever the server delivered slower than the client read.
+  Through the cl+ssl layer this showed up as JSON bodies with embedded NUL
+  bytes, or truncated gzip, intermittently (packet-timing dependent) in the
+  wild (GitHub #32). `stream-read-byte` already blocked correctly, so byte-wise
+  (chunked) reads were unaffected.
 - A CA directory named without a trailing slash is read. SSL_CERT_DIR and
   OpenSSL's CApath conventionally name one that way, and Guix System sets
   `SSL_CERT_DIR=/etc/ssl/certs`, but `make-trust-store-from-directory`
