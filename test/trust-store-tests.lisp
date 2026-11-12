@@ -111,10 +111,17 @@ roots to a stream that does, or every chain fails with UNKNOWN-CA."
 
 ;;; Portable: FILE-WRITE-DATE has one-second resolution, so wait for the next
 ;;; second before rewriting the file to be sure it gets a new write date.
-(defun rewrite-with-new-write-date (path)
-  (let ((before (file-write-date path)))
+(defun rewrite-with-new-write-date (path &optional (fixture "self-signed-valid.pem"))
+  "Rewrite PATH in place with the contents of FIXTURE.  In place: unlike
+UIOP:COPY-FILE, which renames the old file away and creates a new one, this
+leaves the entries of PATH's directory, and so its write date, as they were."
+  (let ((before (file-write-date path))
+        (bytes (alexandria:read-file-into-byte-vector (test-cert-path fixture))))
     (loop do (sleep 0.25)
-             (uiop:copy-file (test-cert-path "self-signed-valid.pem") path)
+             (with-open-file (out path :direction :output
+                                       :element-type '(unsigned-byte 8)
+                                       :if-exists :supersede)
+               (write-sequence bytes out))
           until (/= before (file-write-date path)))))
 
 (test trust-store-cached-per-source
@@ -142,3 +149,96 @@ until it holds some."
                         (pure-tls::make-trust-store-from-sources path nil)))))
     (is (null (gethash (pure-tls::trust-store-cache-key path nil)
                        pure-tls::*trust-store-cache*)))))
+
+;;; A CA directory named without a trailing slash, as SSL_CERT_DIR and
+;;; OpenSSL's CApath conventionally are (Guix System sets
+;;; SSL_CERT_DIR=/etc/ssl/certs), used to be read as a file name: "*.pem"
+;;; merged into it named the parent directory, and the trust store came out
+;;; empty, so every verifying connection failed with UNKNOWN-CA.
+
+(defun call-with-environment (bindings thunk)
+  "Call THUNK with each (NAME VALUE) of BINDINGS set in the environment, a
+NIL VALUE unsetting NAME, and restore the previous values afterwards.
+
+Uses (SETF UIOP:GETENV), as WITH-SSL-CERT-FILE does, rather than SB-POSIX, so
+this file loads on any implementation ASDF supports: UIOP's setf expander
+already unsets the variable when the new value is NIL."
+  (flet ((set-all (pairs)
+           (loop for (name value) in pairs
+                 do (setf (uiop:getenv name) value))))
+    (let ((old (loop for (name) in bindings
+                     collect (list name (uiop:getenv name)))))
+      (unwind-protect (progn (set-all bindings) (funcall thunk))
+        (set-all old)))))
+
+(defmacro with-environment ((&rest bindings) &body body)
+  `(call-with-environment (list ,@(loop for (name value) in bindings
+                                        collect `(list ,name ,value)))
+                          (lambda () ,@body)))
+
+(defmacro with-ca-directory ((var) &body body)
+  "Run BODY with VAR bound to the namestring, without a trailing slash, of
+a fresh directory holding a copy of the self-signed fixture."
+  (let ((dir (gensym "DIR")))
+    `(let ((,dir (uiop:ensure-directory-pathname
+                  (merge-pathnames
+                   (format nil "pure-tls-ca-dir-~36R"
+                           (random (expt 36 8) (make-random-state t)))
+                   (uiop:temporary-directory)))))
+       (ensure-directories-exist ,dir)
+       (unwind-protect
+            (progn
+              (uiop:copy-file (test-cert-path "self-signed-valid.pem")
+                              (merge-pathnames "self-signed-valid.pem" ,dir))
+              (let ((,var (string-right-trim "/\\" (namestring ,dir))))
+                ,@body))
+         (uiop:delete-directory-tree ,dir :validate t)))))
+
+(test trust-store-from-directory-without-trailing-slash
+  "A CA directory is read with or without a trailing slash."
+  (with-ca-directory (dir)
+    (dolist (name (list dir (concatenate 'string dir "/")))
+      (is (plusp (length (pure-tls::trust-store-certificates
+                          (pure-tls::make-trust-store-from-directory name))))
+          "no certificate read from ~S" name))))
+
+(test ssl-cert-dir-without-trailing-slash
+  "SSL_CERT_DIR named without a trailing slash yields its certificates."
+  (with-ca-directory (dir)
+    (with-environment (("SSL_CERT_FILE" nil) ("SSL_CERT_DIR" dir))
+      (let ((ctx (pure-tls:make-tls-context :verify-mode pure-tls:+verify-required+)))
+        (is (plusp (context-root-count ctx)))))))
+
+(test ssl-cert-dir-trust-store-cached
+  "SSL_CERT_DIR's trust store is built once and shared, as a CA file's is."
+  (with-ca-directory (dir)
+    (with-environment (("SSL_CERT_FILE" nil) ("SSL_CERT_DIR" dir))
+      (let ((a (pure-tls::load-system-trust-store))
+            (b (pure-tls::load-system-trust-store)))
+        (is (plusp (length (pure-tls::trust-store-certificates a))))
+        (is (eq a b))))))
+
+;;; A CA directory's own write date changes when an entry is added, removed
+;;; or renamed, but not when a certificate file in it is rewritten in place,
+;;; so a cache keyed on the directory alone kept trusting a rotated-out root,
+;;; and kept rejecting its replacement, until the process restarted.
+
+(test ca-directory-trust-store-rebuilt-when-certificate-rewritten
+  "Rewriting a certificate file in a CA directory in place builds a new trust
+store, holding the new certificate."
+  (with-ca-directory (dir)
+    (let ((file (merge-pathnames "self-signed-valid.pem"
+                                 (uiop:ensure-directory-pathname dir)))
+          (dir-date (file-write-date dir))
+          (a (pure-tls::make-trust-store-from-sources nil dir)))
+      (rewrite-with-new-write-date file "resumption-ca.pem")
+      (is (= dir-date (file-write-date dir))
+          "the rewrite changed the directory's write date, so this test no ~
+           longer exercises an in-place rewrite")
+      (let ((b (pure-tls::make-trust-store-from-sources nil dir)))
+        (is (not (eq a b)))
+        (is (equalp (list (pure-tls::x509-certificate-raw-der
+                           (pure-tls::parse-certificate-from-file
+                            (test-cert-path "resumption-ca.pem"))))
+                    (mapcar #'pure-tls::x509-certificate-raw-der
+                            (pure-tls::trust-store-certificates b))))))))
