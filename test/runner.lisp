@@ -24,6 +24,8 @@
             (let ((cancel-ok (run! 'cancel-tests)))
               (format t "~%--- Cancellation Integration Tests ---~%")
               (let ((cancel-integration-ok (run! 'cancel-integration-tests)))
+                (format t "~%--- Stream I/O Tests ---~%")
+              (let ((stream-io-ok (run! 'stream-io-tests)))
                 (format t "~%--- OpenSSL Tests ---~%")
               (let ((openssl-ok (run! 'openssl-tests)))
                 (format t "~%--- BoringSSL Pattern Tests ---~%")
@@ -38,7 +40,7 @@
                     (let ((resumption-ok (run! 'resumption-interop-tests)))
                     (format t "~%=== Summary ===~%")
                     (format t "Note: Run (run-network-tests) separately for network tests.~%")
-                    (and crypto-ok mldsa-ok record-ok handshake-ok cert-ok cancel-ok cancel-integration-ok openssl-ok boringssl-ok x509test-ok security-ok trust-store-ok resumption-ok)))))))))))))))
+                    (and crypto-ok mldsa-ok record-ok handshake-ok cert-ok cancel-ok cancel-integration-ok stream-io-ok openssl-ok boringssl-ok x509test-ok security-ok trust-store-ok resumption-ok))))))))))))))))
 
 (defun run-openssl-tests ()
   "Run OpenSSL test suite adaptation tests.

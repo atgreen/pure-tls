@@ -29,4 +29,5 @@
    #:boringssl-tests
    #:x509test-tests
    #:security-regression-tests
-   #:resumption-interop-tests))
+   #:resumption-interop-tests
+   #:stream-io-tests))

@@ -383,17 +383,19 @@ flat no matter how many records arrive."
       (check-tls-context)))
   (when (tls-stream-closed-p stream)
     (return-from stream-read-sequence start))
-  (let ((pos start)
-        (first-read t))  ; Track if this is the first read
+  (let ((pos start))
     (loop while (< pos end)
           do (progn
-               ;; Refill buffer if needed
+               ;; Refill buffer if needed.  Block until application data lands
+               ;; or the connection closes, per the gray-streams READ-SEQUENCE
+               ;; contract: the method fills [START,END) and returns an index
+               ;; short of END only at end of file.  Returning early while the
+               ;; stream was merely momentarily drained (as an earlier LISTEN
+               ;; check did) left callers that trust the returned length -- a
+               ;; dexador Content-Length body read into a fixed buffer -- with a
+               ;; zero-filled tail.  STREAM-READ-BYTE already blocks the same
+               ;; way, which is why byte-wise (chunked) reads were unaffected.
                (when (zerop (tls-stream-buffer-remaining stream))
-                 ;; After first successful read, don't block if no data available
-                 ;; This prevents deadlock when peer is waiting for response
-                 (when (and (not first-read)
-                            (not (listen (tls-stream-underlying-stream stream))))
-                   (return-from stream-read-sequence pos))
                  (handler-case
                      (tls-stream-fill-buffer stream)
                    (tls-connection-closed ()
@@ -408,8 +410,7 @@ flat no matter how many records arrive."
                           :end1 (+ pos to-copy)
                           :start2 (tls-stream-input-position stream))
                  (incf pos to-copy)
-                 (incf (tls-stream-input-position stream) to-copy)
-                 (setf first-read nil))))  ; Mark that we've read some data
+                 (incf (tls-stream-input-position stream) to-copy))))
     pos))
 
 (defmethod stream-listen ((stream tls-stream))
