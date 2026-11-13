@@ -422,13 +422,18 @@ flat no matter how many records arrive."
 (defmethod stream-write-byte ((stream tls-stream) byte)
   (when (tls-stream-closed-p stream)
     (error 'tls-error :message "Cannot write to closed stream"))
-  (let ((buf (tls-stream-output-buffer stream))
-        (pos (tls-stream-output-position stream)))
-    (setf (aref buf pos) byte)
-    (incf (tls-stream-output-position stream))
-    ;; Flush if buffer is full
+  (let ((buf (tls-stream-output-buffer stream)))
+    ;; Flush a full buffer BEFORE writing, not after. stream-force-output clears
+    ;; the position only once the record is sent, so if that send fails -- e.g.
+    ;; the peer aborted the connection -- the position stays at (length buf). A
+    ;; post-write flush would then let the next write do (aref buf (length buf)),
+    ;; raising a confusing "Invalid index N for (array N)" instead of surfacing
+    ;; the real connection error. Flushing first makes a failed flush raise here,
+    ;; and guarantees the write below is always in bounds.
     (when (= (tls-stream-output-position stream) (length buf))
-      (force-output stream)))
+      (force-output stream))
+    (setf (aref buf (tls-stream-output-position stream)) byte)
+    (incf (tls-stream-output-position stream)))
   byte)
 
 (defmethod stream-write-sequence ((stream tls-stream) sequence start end &key)
