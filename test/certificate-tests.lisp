@@ -239,6 +239,46 @@
       (is (pure-tls::verify-certificate-chain (list cert) (list cert))
           "Self-signed cert should pass if explicitly trusted"))))
 
+(test verified-chain-cache-preserves-security-invariants
+  "The verified-chain cache must speed up repeat verification without weakening
+it: a cached success is still re-checked for expiry on every call, a failed
+chain is never cached as a success, and a warm cache still returns T for a
+genuinely valid chain."
+  (let ((pure-tls:*use-windows-certificate-store* nil)
+        (pure-tls:*use-macos-keychain* nil)
+        ;; A private cache so the assertions do not depend on other tests.
+        (pure-tls:*verified-chain-cache* (pure-tls::%make-verified-chain-cache)))
+    (let* ((leaf (pure-tls:parse-certificate-from-file
+                  (test-cert-path "openssl/servercert.pem")))
+           (root (pure-tls:parse-certificate-from-file
+                  (test-cert-path "openssl/rootcert.pem")))
+           (nb (pure-tls::x509-certificate-validity-not-before leaf))
+           (na (pure-tls::x509-certificate-validity-not-after leaf))
+           (valid-now (+ nb (floor (- na nb) 2))))
+      ;; Warm the cache with a valid verification.
+      (is (pure-tls::verify-certificate-chain (list leaf) (list root)
+                                              :now valid-now :trust-anchor-mode :replace)
+          "Valid chain should verify and populate the cache")
+      ;; A second call hits the cache and must still succeed.
+      (is (pure-tls::verify-certificate-chain (list leaf) (list root)
+                                              :now valid-now :trust-anchor-mode :replace)
+          "Cached valid chain should still verify")
+      ;; Same cached chain, but now past notAfter: the live date check must
+      ;; reject it even though the signature work is cached.
+      (signals pure-tls:tls-certificate-error
+        (pure-tls::verify-certificate-chain (list leaf) (list root)
+                                            :now (+ na 1) :trust-anchor-mode :replace))
+      ;; A chain that does not anchor must fail, and failure must not be cached:
+      ;; both the first and a repeated attempt must signal.
+      (let ((wrong-root (pure-tls:parse-certificate-from-file
+                         (test-cert-path "openssl/p384-root.pem"))))
+        (signals pure-tls:tls-verification-error
+          (pure-tls::verify-certificate-chain (list leaf) (list wrong-root)
+                                              :now valid-now :trust-anchor-mode :replace))
+        (signals pure-tls:tls-verification-error
+          (pure-tls::verify-certificate-chain (list leaf) (list wrong-root)
+                                              :now valid-now :trust-anchor-mode :replace))))))
+
 (test parse-superfish-ca
   "Test parsing the Superfish malware CA certificate"
   (let* ((cert-path (test-cert-path "ca-superfish.crt"))

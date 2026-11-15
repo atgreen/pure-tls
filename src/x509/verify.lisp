@@ -301,6 +301,115 @@ a full list lives at https://publicsuffix.org/.")
              :message "Certificate has expired"))
     t))
 
+;;;; Verified-chain cache
+;;;
+;;; The signature-chain and trust-anchor steps of verification (issuer-name
+;;; chaining, CA/path-length constraints, the cryptographic signatures, and
+;;; anchoring to a trusted root) are a pure function of the DER bytes of the
+;;; chain and of the effective trust anchors.  They dominate verification cost
+;;; -- an allocation profile of repeated verification is >80% bignum arithmetic
+;;; inside the public-key signature check (RSA modexp or EC point math) -- and a
+;;; peer that reconnects presents the identical chain each time.  Caching the
+;;; *success* of those steps, keyed by the chain and anchor DER, lets a repeat
+;;; verification skip the arithmetic entirely.
+;;;
+;;; What is NOT cached, and still runs on every call (including cache hits):
+;;;   * notBefore/notAfter validity -- a cached chain can expire between calls.
+;;;   * ExtendedKeyUsage / purpose, unknown critical extensions.
+;;;   * Revocation.  When CHECK-REVOCATION is requested the cache is bypassed
+;;;     entirely, because a cached verdict must never outrun fresh CRL/OCSP state.
+;;; Only positive results are cached; a failure always re-runs and re-signals,
+;;; so error reporting is unchanged and a transient miss cannot be poisoned.
+
+(defstruct (verified-chain-cache (:constructor %make-verified-chain-cache))
+  "A bounded LRU of chain/anchor fingerprints whose signature-chain verification
+has already succeeded.  TABLE maps a 32-byte key to the TICK at which it was
+last used; membership is the cached 'verified' fact."
+  (table (make-hash-table :test 'equalp) :type hash-table)
+  (capacity 1024 :type (integer 1))
+  (tick 0 :type unsigned-byte)
+  (lock (bt:make-lock "pure-tls verified-chain cache")))
+
+(defvar *verified-chain-cache* (%make-verified-chain-cache)
+  "Process-wide verified-chain cache, or NIL to disable caching.  Bound per
+thread or set to NIL to force full verification (e.g. in tests).")
+
+(defun certificate-verification-fingerprint (cert)
+  "Return a SHA-256 over the bytes chain verification consumes for CERT -- its
+TBS then its signature -- a stable identity for the verified-chain cache.
+Computed fresh on each call (not memoized) so it always reflects CERT's current
+bytes; a certificate mutated after parsing therefore gets a different identity
+rather than a stale one.  Returns NIL when either field is absent (e.g. a
+certificate built in-image rather than parsed from DER), which disables caching
+for that certificate -- not a safe thing to key a cached cryptographic verdict
+on."
+  (let ((tbs (x509-certificate-tbs-raw cert))
+        (sig (x509-certificate-signature cert)))
+    (when (and tbs sig)
+      (let ((digest (ironclad:make-digest :sha256)))
+        (ironclad:update-digest digest tbs)
+        (ironclad:update-digest digest sig)
+        (ironclad:produce-digest digest)))))
+
+(defparameter +verified-chain-key-separator+
+  (coerce #(255 0 255 0 255 0 255 0) '(simple-array (unsigned-byte 8) (*)))
+  "Domain separator folded between the chain fingerprints and the anchor
+fingerprints so a cert moving from chain to anchor set cannot alias a key.")
+
+(defun verified-chain-cache-key (chain trusted-roots purpose trust-anchor-mode max-depth)
+  "Fold the chain, the effective trust anchors, and the verdict-affecting options
+into one 32-byte key, or return NIL to disable caching for this verification.
+TRUSTED-ROOTS here is the already-combined anchor set, so TRUST-ANCHOR-MODE's
+effect on it is captured; it is included anyway, with PURPOSE and MAX-DEPTH, so a
+change in any option cannot collide with a cached verdict.  NIL is returned when
+any certificate lacks a verification fingerprint -- an in-image certificate not
+parsed from DER -- so such chains always run the full verification."
+  (let ((digest (ironclad:make-digest :sha256)))
+    (dolist (cert chain)
+      (let ((fp (certificate-verification-fingerprint cert)))
+        (unless fp (return-from verified-chain-cache-key nil))
+        (ironclad:update-digest digest fp)))
+    (ironclad:update-digest digest +verified-chain-key-separator+) ; chain | anchors
+    (dolist (root trusted-roots)
+      (let ((fp (certificate-verification-fingerprint root)))
+        (unless fp (return-from verified-chain-cache-key nil))
+        (ironclad:update-digest digest fp)))
+    (ironclad:update-digest digest
+                            (ironclad:ascii-string-to-byte-array
+                             (format nil "|~S|~S|~S" purpose trust-anchor-mode max-depth)))
+    (ironclad:produce-digest digest)))
+
+(defun verified-chain-cached-p (cache key)
+  "True if KEY is a known-verified chain; refreshes its LRU recency as a side
+effect."
+  (bt:with-lock-held ((verified-chain-cache-lock cache))
+    (let ((table (verified-chain-cache-table cache)))
+      (when (nth-value 1 (gethash key table))
+        (setf (gethash key table) (incf (verified-chain-cache-tick cache)))
+        t))))
+
+(defun verified-chain-cache-store (cache key)
+  "Record KEY as verified, evicting the least-recently-used entry if CACHE is at
+capacity."
+  (bt:with-lock-held ((verified-chain-cache-lock cache))
+    (let ((table (verified-chain-cache-table cache)))
+      (setf (gethash key table) (incf (verified-chain-cache-tick cache)))
+      (when (> (hash-table-count table) (verified-chain-cache-capacity cache))
+        (let ((oldest-key nil) (oldest-tick most-positive-fixnum))
+          (maphash (lambda (k tick)
+                     (when (< tick oldest-tick)
+                       (setf oldest-tick tick oldest-key k)))
+                   table)
+          (when oldest-key (remhash oldest-key table)))))))
+
+(defun clear-verified-chain-cache (&optional (cache *verified-chain-cache*))
+  "Drop all cached chain verdicts.  Call after changing trust policy in a way the
+anchor DER does not capture."
+  (when cache
+    (bt:with-lock-held ((verified-chain-cache-lock cache))
+      (clrhash (verified-chain-cache-table cache))
+      (setf (verified-chain-cache-tick cache) 0))))
+
 ;;;; Certificate Chain Verification
 
 (defun verify-certificate-chain (chain trusted-roots
@@ -449,6 +558,19 @@ a full list lives at https://publicsuffix.org/.")
                :message (format nil "Certificate has unknown critical extension(s): ~A"
                                unknown-critical)))))
 
+  ;; The remaining steps -- signature chaining and trust-anchoring -- are a pure
+  ;; function of the chain and anchor DER, so a prior success for this exact
+  ;; (chain, anchors, options) can be reused.  The validity/EKU/critical-extension
+  ;; checks above have already run live; revocation, when requested, disables the
+  ;; cache (see the cache commentary).
+  (let ((cache-key (and *verified-chain-cache*
+                        (not check-revocation)
+                        (verified-chain-cache-key chain trusted-roots purpose
+                                                  trust-anchor-mode max-depth))))
+    (when (and cache-key
+               (verified-chain-cached-p *verified-chain-cache* cache-key))
+      (return-from verify-certificate-chain t))
+
   ;; Verify the chain links (name matching, CA constraints, key usage, signatures)
   (loop for cert in chain
         for issuer in (rest chain)
@@ -520,7 +642,12 @@ a full list lives at https://publicsuffix.org/.")
       (error 'tls-verification-error
              :message "Certificate chain not anchored in trusted root"
              :reason :unknown-ca)))
-  t)
+  ;; Every signature and the anchor check passed -- remember this chain so a
+  ;; reconnecting peer presenting the same certificate bytes skips the
+  ;; arithmetic next time.
+  (when cache-key
+    (verified-chain-cache-store *verified-chain-cache* cache-key))
+  t))
 
 (defun certificate-issued-by-p (cert issuer-cert)
   "Check if CERT was issued by ISSUER-CERT (by comparing names)."
@@ -610,6 +737,15 @@ a full list lives at https://publicsuffix.org/.")
           (replace expected computed-hash :start1 (length prefix))
           (ironclad:constant-time-equal digest-info expected))))))
 
+(defun certificate-cached-public-key (issuer-cert thunk)
+  "Return ISSUER-CERT's Ironclad public key, parsing it via THUNK on first use.
+   A certificate's subjectPublicKeyInfo is immutable, so the parsed key object is
+   memoized on the certificate; this removes the per-verification DER re-parse and
+   key allocation when one issuer signs many certificates.  A THUNK returning NIL
+   (e.g. an unparseable EC point) is not cached, so the caller still fails."
+  (or (x509-certificate-cached-public-key issuer-cert)
+      (setf (x509-certificate-cached-public-key issuer-cert) (funcall thunk))))
+
 (defun verify-certificate-signature (cert issuer-cert)
   "Verify that CERT's signature was made by ISSUER-CERT's key.
    Returns T on success, signals TLS-CERTIFICATE-ERROR on failure."
@@ -637,7 +773,9 @@ a full list lives at https://publicsuffix.org/.")
                                :rsa-pkcs1-sha384
                                :rsa-pkcs1-sha512))
            (let* ((hash-algo (cert-sig-algorithm-to-hash algorithm))
-                  (public-key (parse-rsa-public-key public-key-bytes)))
+                  (public-key (certificate-cached-public-key
+                               issuer-cert
+                               (lambda () (parse-rsa-public-key public-key-bytes)))))
              (verify-rsa-pkcs1v15-signature public-key tbs signature hash-algo)))
           ;; RSA-PSS - use parameters from certificate
           ((member algorithm '(:rsa-pss :rsassa-pss))
@@ -647,7 +785,9 @@ a full list lives at https://publicsuffix.org/.")
              (when (eql hash-algo :sha1)
                (error 'tls-certificate-error
                       :message "SHA-1 is not supported for RSA-PSS signatures (cryptographically broken)"))
-             (let ((public-key (parse-rsa-public-key public-key-bytes)))
+             (let ((public-key (certificate-cached-public-key
+                                issuer-cert
+                                (lambda () (parse-rsa-public-key public-key-bytes)))))
                ;; Ironclad's PSS-VERIFY hashes its MESSAGE argument itself (see
                ;; pkcs1.lisp: m-hash = (digest-sequence digest-name message)), so
                ;; TBS is passed raw.  Pre-hashing here verified against H(H(tbs))
@@ -681,7 +821,10 @@ a full list lives at https://publicsuffix.org/.")
                                 (:secp521r1 66)))
                   (r-bytes (ironclad:integer-to-octets r :n-bits (* 8 coord-size)))
                   (s-bytes (ironclad:integer-to-octets s :n-bits (* 8 coord-size)))
-                  (public-key (make-ecdsa-public-key-from-der key-algorithm public-key-bytes)))
+                  (public-key (certificate-cached-public-key
+                               issuer-cert
+                               (lambda () (make-ecdsa-public-key-from-der
+                                           key-algorithm public-key-bytes)))))
              (when public-key
                (ironclad:verify-signature public-key hash
                                           (ironclad:make-signature curve :r r-bytes :s s-bytes)))))

@@ -511,6 +511,13 @@
    chain must be rejected."
   (let ((pure-tls:*use-windows-certificate-store* nil)
         (pure-tls:*use-macos-keychain* nil)
+        ;; This test verifies the pristine chain, then mutates the root's PARSED
+        ;; basicConstraints in place without changing its DER -- a state no
+        ;; certificate parsed from the wire can reach.  The verified-chain cache
+        ;; keys on the certificate bytes (TBS+signature), which the mutation
+        ;; leaves identical, so it would serve the pre-mutation verdict.  Disable
+        ;; it so this exercises the path-length check directly.
+        (pure-tls:*verified-chain-cache* nil)
         (now (get-universal-time)))
     (destructuring-bind (leaf inter)
         (%pem-chain (test-cert-path "openssl/goodcn2-chain.pem"))

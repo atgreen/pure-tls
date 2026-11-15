@@ -44,7 +44,14 @@
   (subject-public-key-info nil)
   (extensions nil :type list)
   ;; Signature
-  (signature nil))
+  (signature nil)
+  ;; Memoized issuer public key: this certificate's Ironclad public key, parsed
+  ;; once on first use as the issuer in a signature check.  A certificate's
+  ;; subjectPublicKeyInfo is immutable, so this never goes stale.  (The
+  ;; verified-chain cache computes its per-certificate fingerprint fresh from
+  ;; TBS-RAW and SIGNATURE on each call rather than memoizing it, so a mutated
+  ;; certificate cannot present a stale identity.)
+  (cached-public-key nil))
 
 (defstruct x509-name
   "X.509 Distinguished Name."

@@ -118,6 +118,10 @@
    #:*server-ticket-key*
    #:session-ticket-cache-clear
 
+   ;; Verified-chain cache
+   #:*verified-chain-cache*
+   #:clear-verified-chain-cache
+
    ;; Platform-specific verification
    #:*use-windows-certificate-store*
    #+windows #:verify-certificate-chain-windows
